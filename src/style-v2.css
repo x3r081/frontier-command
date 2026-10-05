@@ -50,6 +50,36 @@
   .deployment-intro-card { padding: 15px; }
   .deployment-intro-card button { min-height: 44px; margin-top: 14px; }
 }
+
+.camera-nav {
+  position: absolute;
+  z-index: 4;
+  left: 20px;
+  bottom: 63px;
+  width: 147px;
+  padding: 8px 9px 7px;
+  border: 1px solid rgba(139, 194, 154, .55);
+  background: linear-gradient(145deg, rgba(6, 23, 21, .92), rgba(8, 20, 16, .86));
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .4), inset 0 1px rgba(204, 255, 209, .08);
+  backdrop-filter: blur(5px);
+  color: #d5e6d4;
+  font-family: "Barlow Condensed", sans-serif;
+}
+.camera-nav-label { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; color: #d8ff8b; font-size: 10px; font-weight: 800; letter-spacing: .13em; }
+.camera-nav-label span { color: #a8c8b0; font-size: 8px; letter-spacing: .07em; }
+.camera-nav-pad { display: grid; grid-template-columns: repeat(3, 29px); grid-template-rows: repeat(2, 27px); justify-content: center; gap: 2px; }
+.camera-nav-pad button { width: 29px; height: 27px; padding: 0; border: 1px solid rgba(123, 175, 136, .55); background: rgba(26, 53, 39, .83); color: #d9f7ce; font: 700 17px/1 "Barlow Condensed", sans-serif; }
+.camera-nav-pad button:hover, .camera-nav-pad button:active { border-color: #c9ff66; background: rgba(82, 128, 66, .72); color: #fff; }
+.camera-nav-pad button[data-camera-pan="up"] { grid-column: 2; grid-row: 1; }
+.camera-nav-pad button[data-camera-pan="left"] { grid-column: 1; grid-row: 2; }
+.camera-nav-pad button[data-camera-pan="down"] { grid-column: 2; grid-row: 2; }
+.camera-nav-pad button[data-camera-pan="right"] { grid-column: 3; grid-row: 2; }
+.camera-nav-note { display: block; margin-top: 5px; color: #a8c8b0; font-size: 7px; letter-spacing: .035em; text-align: center; white-space: nowrap; }
+.battlefield-wrap:has(.deployment-intro:not(.hidden)) .camera-nav { visibility: hidden; }
+.manual-camera-callout { display: grid; gap: 5px; margin-top: 13px; padding: 12px 14px; border: 1px solid rgba(201, 255, 102, .45); background: rgba(29, 55, 38, .7); color: #d9e9d4; font-size: 12px; line-height: 1.5; }
+.manual-camera-callout strong { color: #c9ff66; font: 800 13px/1 "Barlow Condensed", sans-serif; letter-spacing: .11em; }
+.manual-camera-callout kbd { display: inline-block; margin: 0 1px; padding: 0 4px; border: 1px solid rgba(201, 255, 102, .55); color: #f2ffe5; font: 700 11px/1.5 "Barlow Condensed", sans-serif; }
+@media (max-width: 670px) { .camera-nav { display: none; } }
 .battlefield-wrap:has(.deployment-intro:not(.hidden)) .campaign-guidance,
 .battlefield-wrap:has(.deployment-intro:not(.hidden)) .campaign-tracker,
 .battlefield-wrap:has(.deployment-intro:not(.hidden)) .battlefield-picker,

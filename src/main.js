@@ -4114,7 +4114,7 @@ function updateQuickStartGuidance(powerState) {
   }else if(quickStartStage===0){
     tip={key:'select',title:'Select your combat squad',copy:touchGuide
       ?'Tap a soldier, scout, or tank. Hold and drag to select several. Keep the Harvester gathering crystal.'
-      :'Click a soldier, scout, or tank; drag a box to select several. Keep the Harvester gathering crystal.'};
+      :'Click a soldier, scout, or tank; drag to select several. Pan with WASD or arrows. Keep the Harvester gathering crystal.'};
   }else if(game.victoryMode==='elimination'&&quickStartStage<=1){
     tip={key:'elimination-scout',title:'Locate the enemy Command Yard',copy:touchGuide
       ?'Move your squad across the map. Destroy the enemy Command Yard, combat forces, and active industry.'
@@ -5450,10 +5450,10 @@ function frame(now) {
     }else gameSeconds=Math.max(gameSeconds,game.time||0);
     displayTime+=dt;uiTimer+=dt;minimapTimer+=dt;
     const panSpeed=13*dt/camera.zoom;
-    if(panKeys.has('ArrowLeft')||panKeys.has('KeyQ'))camera.x-=panSpeed;
-    if(panKeys.has('ArrowRight')||panKeys.has('KeyD'))camera.x+=panSpeed;
-    if(panKeys.has('ArrowUp')||panKeys.has('KeyW'))camera.y-=panSpeed;
-    if(panKeys.has('ArrowDown'))camera.y+=panSpeed;
+    if(panKeys.has('ArrowLeft')||panKeys.has('KeyA')||panKeys.has('KeyQ')||panKeys.has('PanLeft'))camera.x-=panSpeed;
+    if(panKeys.has('ArrowRight')||panKeys.has('KeyD')||panKeys.has('PanRight'))camera.x+=panSpeed;
+    if(panKeys.has('ArrowUp')||panKeys.has('KeyW')||panKeys.has('PanUp'))camera.y-=panSpeed;
+    if(panKeys.has('ArrowDown')||panKeys.has('KeyS')||panKeys.has('PanDown'))camera.y+=panSpeed;
     clampCamera();
     if(!replayMode&&currentMode!=='multiplayer'){
       processEvents();
@@ -6125,6 +6125,30 @@ canvas.addEventListener('pointercancel',e=>{
 });
 canvas.addEventListener('contextmenu',e=>{e.preventDefault();if(!game||paused||replayMode||pointer.touchPan||pointer.touchSelecting)return;setPointer(e);issueContext(pointer.wx,pointer.wy,e.shiftKey);});
 canvas.addEventListener('wheel',e=>{e.preventDefault();if(!game)return;const p=eventPoint(e);changeZoom(e.deltaY<0?1:-1,p.x,p.y);},{passive:false});
+const cameraPanOffsets={up:[0,-1],left:[-1,0],down:[0,1],right:[1,0]};
+const cameraKeyDirections={KeyW:'up',KeyA:'left',KeyS:'down',KeyD:'right',KeyQ:'left',ArrowUp:'up',ArrowLeft:'left',ArrowDown:'down',ArrowRight:'right'};
+function nudgeCamera(direction,tiles=3){
+  if(!game)return;
+  const [dx,dy]=cameraPanOffsets[direction];
+  camera.x+=dx*tiles/camera.zoom;
+  camera.y+=dy*tiles/camera.zoom;
+  clampCamera();
+}
+document.querySelectorAll('[data-camera-pan]').forEach(button=>{
+  const direction=button.dataset.cameraPan;
+  const heldKey=`Pan${direction[0].toUpperCase()}${direction.slice(1)}`;
+  button.addEventListener('pointerdown',event=>{
+    if(!game||!playing||paused)return;
+    panKeys.add(heldKey);
+    button.setPointerCapture(event.pointerId);
+  });
+  for(const type of ['pointerup','pointercancel','lostpointercapture'])
+    button.addEventListener(type,()=>panKeys.delete(heldKey));
+  button.addEventListener('click',()=>{
+    if(!game||!playing||paused)return;
+    nudgeCamera(direction);
+  });
+});
 minimap.addEventListener('pointerdown',e=>{
   if(!game)return;
   const r=minimap.getBoundingClientRect();
@@ -6213,20 +6237,33 @@ window.addEventListener('keydown',e=>{
   }
   if(replayMode&&playing){
     if(e.key==='Escape'){e.preventDefault();returnToMenu();return;}
-    if(e.target.closest?.('button,a,input,select,textarea,summary,[contenteditable="true"],[role="button"]'))return;
-    if(e.code==='Space'){e.preventDefault();togglePause();return;}
+    if(e.target.closest?.('input,select,textarea,[contenteditable="true"]'))return;
     if(e.target.closest?.('#replay-controls'))return;
-    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','KeyW','KeyQ','KeyD'].includes(e.code)){
-      e.preventDefault();panKeys.add(e.code);
+    if(['KeyW','KeyA','KeyS','KeyD','KeyQ'].includes(e.code)){
+      e.preventDefault();if(!e.repeat)nudgeCamera(cameraKeyDirections[e.code],.75);panKeys.add(e.code);
+      return;
+    }
+    if(e.target.closest?.('button,a,summary,[role="button"]'))return;
+    if(e.code==='Space'){e.preventDefault();togglePause();return;}
+    if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code)){
+      e.preventDefault();if(!e.repeat)nudgeCamera(cameraKeyDirections[e.code],.75);panKeys.add(e.code);
     }
     return;
   }
   if(e.key==='Escape'){if(!$('#manual').classList.contains('hidden'))closeManual();else if(!$('#setup').classList.contains('hidden'))closeSetup();else if(placeId)cancelPlacement();else if(commandAbilityMode)cancelCommandAbility();else if(attackMoveMode||routePlanMode){attackMoveMode=false;hide('#attack-hint');setRoutePlanMode(false);}else if(playing)togglePause();return;}
-  if(!playing||paused||e.target.closest?.('button,a,input,select,textarea,summary,[contenteditable="true"],[role="button"]'))return;
-  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown','Space'].includes(e.code))e.preventDefault();
-  panKeys.add(e.code);
+  if(!playing||paused||e.target.closest?.('input,select,textarea,[contenteditable="true"]'))return;
+  if(['KeyW','KeyA','KeyS','KeyD','KeyQ'].includes(e.code)&&
+    !(e.shiftKey&&['KeyA','KeyS'].includes(e.code))){
+    e.preventDefault();if(!e.repeat)nudgeCamera(cameraKeyDirections[e.code],.75);panKeys.add(e.code);return;
+  }
+  if(e.code==='KeyA'&&e.shiftKey&&!e.repeat){e.preventDefault();panKeys.delete(e.code);startTargetOrder('attack','ATTACK MOVE');return;}
+  if(e.code==='KeyS'&&e.shiftKey&&!e.repeat){e.preventDefault();panKeys.delete(e.code);resultMessage(game.issueStop(),'ORDERS STOPPED');return;}
+  if(e.target.closest?.('button,a,summary,[role="button"]'))return;
+  if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code)){
+    e.preventDefault();if(!e.repeat)nudgeCamera(cameraKeyDirections[e.code],.75);panKeys.add(e.code);return;
+  }
+  if(e.code==='Space')e.preventDefault();
   if(e.code==='Space')centerOnBase();
-  if(e.code==='KeyA')startTargetOrder('attack','ATTACK MOVE');
   if(e.code==='KeyG')resultMessage(game.issueGuard(),'GUARD POSITION SET');
   if(e.code==='KeyP')startTargetOrder('patrol','PATROL');
   if(e.code==='KeyF')startTargetOrder('follow','FOLLOW','SELECT FRIENDLY TARGET');
@@ -6235,7 +6272,6 @@ window.addEventListener('keydown',e=>{
   if(e.code==='KeyV')startTargetOrder('force','FORCE FIRE');
   if(e.code==='KeyM')startTargetOrder('forceMove','FORCE MOVE');
   if(e.code==='KeyN'){e.preventDefault();if(!e.repeat)cycleUnits();}
-  if(e.code==='KeyS')resultMessage(game.issueStop(),'ORDERS STOPPED');
   if(e.code==='KeyH'){
     if(e.shiftKey)resultMessage(game.issueBloomExpedition?.()||{ok:false,reason:'Stormglass expeditions are unavailable.'},'STORMGLASS EXPEDITION ORDERED');
     else resultMessage(game.issueHarvest(),'HARVEST ORDERED');
