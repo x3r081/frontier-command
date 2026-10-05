@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128" fill="none" stroke-linejoin="round" stroke-linecap="round" role="img">
+<defs>
+  <linearGradient id="roof" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#a6b9bf"/><stop offset=".48" stop-color="#5a7882"/><stop offset="1" stop-color="#253f4c"/></linearGradient>
+  <linearGradient id="roofDark" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#697e88"/><stop offset="1" stop-color="#213842"/></linearGradient>
+  <linearGradient id="left" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#365663"/><stop offset="1" stop-color="#172a34"/></linearGradient>
+  <linearGradient id="right" x1="0" y1="0" x2="0" y2="1"><stop stop-color="#2b4754"/><stop offset="1" stop-color="#0d222d"/></linearGradient>
+  <linearGradient id="metal" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#d9e5e3"/><stop offset=".43" stop-color="#819aa2"/><stop offset="1" stop-color="#354e5a"/></linearGradient>
+  <linearGradient id="steel" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#95adb6"/><stop offset=".45" stop-color="#52707e"/><stop offset="1" stop-color="#263f4c"/></linearGradient>
+  <linearGradient id="glass" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#b7faff"/><stop offset=".32" stop-color="#58d5de"/><stop offset="1" stop-color="#127789"/></linearGradient>
+  <linearGradient id="cyan" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#bdfaff"/><stop offset=".5" stop-color="#49dce4"/><stop offset="1" stop-color="#1798b0"/></linearGradient>
+  <linearGradient id="gold" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#ffe8a1"/><stop offset=".45" stop-color="#f4b85a"/><stop offset="1" stop-color="#ba6e28"/></linearGradient>
+  <linearGradient id="ore" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#fff0b6"/><stop offset=".48" stop-color="#f6b753"/><stop offset="1" stop-color="#98522e"/></linearGradient>
+  <radialGradient id="glow"><stop stop-color="#8ff7fb" stop-opacity=".74"/><stop offset="1" stop-color="#39bfd0" stop-opacity="0"/></radialGradient>
+  <filter id="blur"><feGaussianBlur stdDeviation="3"/></filter>
+  <filter id="softGlow" x="-80%" y="-80%" width="260%" height="260%"><feGaussianBlur stdDeviation="2.2" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
+  <clipPath id="roofClip"><path d="M64 24 111 49 64 76 17 49Z"/></clipPath>
+</defs>
+<g><ellipse cx="64" cy="94" rx="37" ry="13" fill="#07161e" opacity=".5" filter="url(#blur)"/>
+  <path d="M34 40 48 32l5 10v48l-9 9-12-5Z" fill="#1d3641" stroke="#8fa8ac" stroke-width="2"/>
+  <path d="M94 40 80 32l-5 10v48l9 9 12-5Z" fill="#1d3641" stroke="#8fa8ac" stroke-width="2"/>
+  <path d="M34 50h13m-13 13h13m-13 13h13m-12 12h11m36-38h13M81 63h13M81 76h13M82 88h11" stroke="#607b84" stroke-width="3"/>
+  <path d="M48 38 64 30l16 8 6 49-22 15-22-15Z" fill="url(#steel)" stroke="#153440" stroke-width="3"/>
+  <path d="M50 42 64 35l14 7 2 22-16 9-16-9Z" fill="url(#roofDark)" stroke="#a4bcc1" stroke-width="2"/>
+  <path d="M54 45 64 40l10 5 2 12-12 7-12-7Z" fill="url(#glass)" opacity=".85"/>
+  <path d="M42 29 27 17 23 25l20 21m43-17 15-12 4 8-20 21" fill="url(#gold)" stroke="#683e22" stroke-width="2.5"/>
+  <path d="m22 25 15-2m69 2-15-2" stroke="#ffe0a0" stroke-width="3"/>
+  <path d="M50 82 64 90 78 82" stroke="#f7c674" stroke-width="3"/>
+  <path d="M56 83v9m16-9v9" stroke="#efb452" stroke-width="2"/>
+</g></svg>

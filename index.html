@@ -1,0 +1,507 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#09110f" />
+    <title>Frontier Command — Real-time strategy</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;500;600;700;800&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="/src/style.css" />
+    <link rel="stylesheet" href="/src/style-v2.css" />
+  </head>
+  <body>
+    <div id="app">
+      <div id="launch-status" class="launch-status hidden" role="status" aria-live="polite"><span class="launch-status-mark" aria-hidden="true">◆</span> CONNECTING TO COMMAND RECORDS…</div>
+      <div id="menu" class="menu-screen">
+        <div class="menu-art-drift" aria-hidden="true"></div>
+        <div class="menu-vignette"></div>
+        <div class="menu-grid"></div>
+        <div class="menu-scanline"></div>
+        <div class="menu-content">
+          <div class="eyebrow"><span class="eyebrow-line"></span> STRATEGIC COMMAND NETWORK <span class="eyebrow-line"></span></div>
+          <div class="brand-lockup">
+            <div class="brand-mark"><span></span><span></span><span></span></div>
+            <div>
+              <div class="brand-small">OPERATION</div>
+              <h1>FRONTIER<br /><em>COMMAND</em></h1>
+            </div>
+          </div>
+          <p class="menu-lead">Build a base. Claim the crystal fields. Command an army. Control the frontier.</p>
+          <div class="menu-actions">
+            <button id="quick-start" class="button-primary" aria-label="Deploy now: guided Cadet skirmish"><span>DEPLOY NOW</span><span class="button-arrow">↗</span></button>
+            <button id="campaign-menu" class="button-secondary">STORY CAMPAIGN <span>›</span></button>
+            <button id="configure-game" class="button-secondary">CUSTOM SKIRMISH <span>›</span></button>
+            <button id="multiplayer-menu" class="button-secondary">MULTIPLAYER <span>›</span></button>
+            <button id="leaderboard-menu" class="button-secondary">COMMANDER RECORDS <span>›</span></button>
+            <button id="replay-menu" class="button-secondary hidden">WATCH LAST BATTLE <span>›</span></button>
+            <button id="recover-game" class="button-secondary hidden">RECOVER INTERRUPTED BATTLE · UNRANKED</button>
+            <button id="load-menu" class="button-secondary">CONTINUE SAVED GAME <span>›</span></button>
+          </div>
+          <div class="menu-reference-links"><button id="how-to-menu" class="text-button">FIELD MANUAL <span>↗</span></button><button id="armory-menu" class="text-button armory-entry">ARMORY <span>↗</span></button></div>
+        </div>
+        <div class="menu-bottom"><span>FC // 01</span><span>AN ORIGINAL RTS HOMAGE</span><span>© FRONTIER COMMAND</span></div>
+        <div class="menu-decor decor-a"></div><div class="menu-decor decor-b"></div>
+      </div>
+
+      <div id="campaign-select" class="modal-backdrop hidden">
+        <div id="campaign-panel" class="campaign-panel" role="dialog" aria-modal="true" aria-labelledby="campaign-title" aria-describedby="campaign-description">
+          <button class="modal-close" data-close="campaign-select" aria-label="Close campaign selection">×</button>
+          <div class="panel-kicker">FRONTIER CAMPAIGN // 15 MISSIONS</div>
+          <h2 id="campaign-title">THE SHARD VALLEY CAMPAIGN</h2>
+          <p id="campaign-description">Command both rival factions through the Shard Valley war. Choose a covert or industrial route after Black Shard; either path leads back to the main campaign.</p>
+          <div class="campaign-difficulty-row"><span>DIFFICULTY</span><div id="campaign-difficulty" class="segmented" role="group" aria-label="Campaign difficulty"><button type="button" data-difficulty="easy" aria-pressed="false">EASY</button><button type="button" data-difficulty="normal" class="active" aria-pressed="true">NORMAL</button><button type="button" data-difficulty="hard" aria-pressed="false">HARD</button></div></div>
+          <div class="campaign-record-note">Verified commander progress follows your profile. Local practice progress stays in this browser; medals and Field Orders are tracked by difficulty.</div>
+          <div id="campaign-order-summary" class="campaign-order-summary" aria-live="polite">FIELD ORDERS · 0 / 30 EARNED · NORMAL</div>
+          <div id="campaign-list" class="campaign-list"></div>
+          <section id="mission-briefing" class="mission-briefing hidden" role="dialog" aria-modal="true" aria-labelledby="briefing-title" aria-describedby="briefing-copy briefing-objective">
+            <div class="briefing-faction" id="briefing-faction"><img id="briefing-faction-art" alt="" /><span id="briefing-faction-name"></span></div>
+            <div class="briefing-content"><div class="panel-kicker" id="briefing-number">OPERATION 01</div><h2 id="briefing-title" tabindex="-1"></h2>
+              <div class="briefing-meta"><span id="briefing-mechanic"></span><span id="briefing-record"></span></div>
+              <h3>INTELLIGENCE</h3><p id="briefing-copy"></p><h3>OBJECTIVE</h3><p id="briefing-objective" class="briefing-objective"></p>
+              <div class="doctrine-heading"><h3 id="doctrine-heading">CAMPAIGN DOCTRINE</h3><span>SELECT ONE PER SORTIE</span></div>
+              <div id="doctrine-options" class="doctrine-options" role="radiogroup" aria-labelledby="doctrine-heading"></div>
+              <div class="field-order-heading"><h3 id="field-order-heading">OPTIONAL FIELD ORDER</h3><span>TAKE A SIDE CONTRACT</span></div>
+              <div id="field-order-options" class="field-order-options" role="radiogroup" aria-labelledby="field-order-heading"></div>
+              <div id="requisition-section" class="requisition-section hidden">
+                <div class="requisition-heading"><h3 id="requisition-heading">ROUTE REQUISITION</h3><span id="requisition-balance">0 / 3 AVAILABLE</span></div>
+                <p id="requisition-explainer">Complete distinct Field Orders along your route to earn supplies. Spend one on a successful sortie; a loss preserves it. Ranked use requires verified orders.</p>
+                <div id="requisition-options" class="requisition-options" role="radiogroup" aria-labelledby="requisition-heading"></div>
+              </div>
+              <div id="carryover-section" class="carryover-section hidden">
+                <div class="carryover-heading"><h3 id="carryover-heading">CARRYOVER INTEL</h3><span>PREVIOUS OPERATION</span></div>
+                <p id="carryover-explainer">Previous operation Field Orders unlock Intel at this difficulty. Ranked use requires a verified online record.</p>
+                <div id="carryover-options" class="carryover-options" role="radiogroup" aria-labelledby="carryover-heading"></div>
+              </div>
+              <section id="veteran-section" class="veteran-section hidden" aria-labelledby="veteran-heading">
+                <div class="veteran-heading"><h3 id="veteran-heading">SURVIVOR ATTACHMENT</h3><span id="veteran-status">CHECKING RECORDS</span></div>
+                <div id="veteran-briefing" class="veteran-briefing" aria-live="polite"></div>
+              </section>
+              <div class="briefing-actions"><button id="briefing-back" class="button-secondary" type="button">← BACK TO OPERATIONS</button><button id="briefing-deploy" class="button-primary" type="button"><span>DEPLOY</span><span class="button-arrow">↗</span></button></div>
+            </div>
+          </section>
+          <div class="campaign-footer"><span>PROGRESS SAVES AUTOMATICALLY</span><button id="campaign-close" class="button-secondary">RETURN TO TITLE <span>›</span></button></div>
+        </div>
+      </div>
+
+      <div id="multiplayer-modal" class="modal-backdrop hidden">
+        <section class="multiplayer-panel" role="dialog" aria-modal="true" aria-labelledby="multiplayer-title" aria-describedby="multiplayer-description">
+          <div class="multiplayer-heading">
+            <button id="multiplayer-back" class="modal-back-link" type="button" aria-label="Return to title">← <span>BACK</span></button>
+            <button id="multiplayer-close" class="modal-close" type="button" aria-label="Close multiplayer">×</button>
+            <div class="panel-kicker">COMMAND NETWORK // MULTIPLAYER</div>
+            <h2 id="multiplayer-title">PLAY TOGETHER</h2>
+            <p id="multiplayer-description">Challenge a friend in a private room or find an opponent for casual or ranked 1v1.</p>
+          </div>
+
+          <section id="multiplayer-rematch-offer" class="network-card rematch-offer hidden" aria-label="Rematch invitation" aria-live="polite">
+            <div><span>REMATCH INVITATION</span><strong id="multiplayer-rematch-offer-title">A commander wants another match</strong><small id="multiplayer-rematch-offer-detail"></small></div>
+            <div class="rematch-offer-actions"><button class="button-primary" type="button" data-rematch-accept>ACCEPT REMATCH ↗</button><button class="button-secondary" type="button" data-rematch-decline>DECLINE</button></div>
+          </section>
+          <div class="multiplayer-grid">
+            <section class="network-card profile-card" aria-labelledby="profile-heading">
+              <div class="network-card-heading"><span class="network-index">01</span><div><h3 id="profile-heading">YOUR CALLSIGN</h3><p>Share your handle and friend code with your crew.</p></div></div>
+              <label for="profile-handle">Commander handle</label>
+              <div class="inline-field"><input id="profile-handle" name="handle" type="text" maxlength="24" autocomplete="nickname" placeholder="Choose a handle" /><button id="save-profile-handle" class="small-action profile-save-button" type="button">SAVE HANDLE</button></div>
+              <div class="friend-code-row"><span>FRIEND CODE</span><strong id="friend-code-value">— — — — — — — —</strong><button id="copy-friend-code" class="quiet-button" type="button">COPY CODE</button></div>
+            </section>
+
+            <section class="network-card friends-card" aria-labelledby="friends-heading">
+              <div class="network-card-heading"><span class="network-index">02</span><div><h3 id="friends-heading">FRIENDS</h3><p>Add commanders by their unique friend code.</p></div></div>
+              <form id="friend-request-form" class="stacked-field">
+                <label for="friend-request-input">Friend code</label>
+                <div class="inline-field"><input id="friend-request-input" name="friendCode" type="text" maxlength="8" autocomplete="off" autocapitalize="characters" spellcheck="false" placeholder="8-character friend code" /><button id="send-friend-request" class="small-action" type="submit">SEND REQUEST <span>↗</span></button></div>
+              </form>
+              <div class="list-heading"><span>YOUR FRIENDS</span><span id="friends-count">0 ONLINE</span></div>
+              <ul id="friends-list" class="friends-list" aria-live="polite" aria-relevant="additions text">
+                <li id="friends-empty" class="empty-list-state"><span class="empty-state-mark">◎</span><span><strong>No friends yet</strong><small>Add a friend code above to build your crew.</small></span></li>
+              </ul>
+            </section>
+
+            <section class="network-card room-card" aria-labelledby="room-heading">
+              <div class="network-card-heading"><span class="network-index">03</span><div><h3 id="room-heading">CREATE OR JOIN</h3><p>Host a private room or enter a code from a friend.</p></div></div>
+              <button id="create-room" class="room-action" type="button"><span class="room-action-icon">＋</span><span><strong>CREATE A ROOM</strong><small>Start a lobby and invite your friends.</small></span><span class="room-action-arrow">›</span></button>
+              <form id="join-room-form" class="stacked-field join-room-form">
+                <label for="join-room-code">Room code</label>
+                <div class="inline-field"><input id="join-room-code" name="roomCode" type="text" autocomplete="off" placeholder="Enter a room code" /><button id="join-room" class="small-action" type="submit">JOIN ROOM <span>↗</span></button></div>
+              </form>
+            </section>
+
+            <section id="matchmaking-card" class="network-card matchmaking-card" aria-labelledby="matchmaking-heading">
+              <div class="network-card-heading"><span class="network-index">04</span><div><h3 id="matchmaking-heading">PUBLIC 1V1</h3><p>Choose an unrated or ranked match.</p></div></div>
+              <div class="queue-choice">
+                <div class="queue-choice-copy"><strong>CASUAL</strong><small>Unrated match · no rating change</small></div>
+              <button id="find-casual-match" class="button-primary matchmaking-action" type="button"><span>FIND CASUAL MATCH</span><span class="button-arrow">↗</span></button>
+              <button id="cancel-casual-search" class="quiet-button matchmaking-cancel hidden" type="button">CANCEL SEARCH</button>
+                <p id="matchmaking-status" class="matchmaking-status" role="status" aria-live="polite" aria-atomic="true">A matched opponent can see your callsign and friend code.</p>
+              </div>
+              <div class="queue-choice ranked-choice">
+                <div class="queue-choice-copy"><strong>RANKED</strong><small>Starts with similar ratings; the search widens while you wait.</small></div>
+                <button id="find-ranked-match" class="button-secondary matchmaking-action" type="button" disabled aria-describedby="ranked-status"><span>FIND RANKED MATCH</span><span class="button-arrow">↗</span></button>
+                <button id="cancel-ranked-search" class="quiet-button matchmaking-cancel hidden" type="button">CANCEL SEARCH</button>
+                <p id="ranked-status" class="matchmaking-status" role="status" aria-live="polite" aria-atomic="true">Checking ranked season support…</p>
+              </div>
+            </section>
+
+            <section id="room-lobby" class="network-card lobby-card hidden" aria-labelledby="lobby-heading" aria-live="polite">
+              <div class="network-card-heading"><span class="network-index">05</span><div><h3 id="lobby-heading">MISSION LOBBY</h3><p id="lobby-status">Waiting for commanders to join.</p></div></div>
+              <div class="room-share-row"><div><span>ROOM CODE</span><strong id="room-code">— — — —</strong></div><div><span>INVITE LINK</span><strong id="room-share-link">Create a room to get a link</strong></div><button id="copy-room-link" class="quiet-button" type="button">COPY INVITE</button></div>
+              <div class="lobby-settings" aria-label="Match settings">
+                <div><label for="room-map">BATTLEFIELD</label><select id="room-map" aria-describedby="room-setting-note"></select></div>
+                <div><label for="room-victory-mode">VICTORY RULE</label><select id="room-victory-mode" aria-describedby="room-setting-note"><option value="dominion">Relay Dominion · hold 2 relays</option><option value="elimination">Elimination · destroy rival forces</option></select></div>
+                <p id="room-setting-note">The host chooses the map and victory rule before both commanders mark ready.</p>
+              </div>
+              <div class="list-heading"><span>COMMAND ROSTER</span><span>READY CHECK</span></div>
+              <ul id="room-roster" class="room-roster" aria-label="Command roster"></ul>
+              <div class="lobby-actions"><button id="leave-room" class="quiet-button" type="button">LEAVE ROOM</button><div class="lobby-host-actions"><button id="ready-toggle" class="button-secondary ready-button" type="button" aria-pressed="false">MARK READY</button><button id="start-multiplayer-game" class="button-primary start-button" type="button" disabled><span>START OPERATION</span><span class="button-arrow">↗</span></button></div></div>
+            </section>
+          </div>
+          <div id="multiplayer-feedback" class="network-feedback" role="status" aria-live="polite"></div>
+        </section>
+      </div>
+
+      <div id="leaderboard-modal" class="modal-backdrop hidden">
+        <section class="leaderboard-panel" role="dialog" aria-modal="true" aria-labelledby="leaderboard-title" aria-describedby="leaderboard-description">
+          <button id="leaderboard-back" class="modal-back-link" type="button" aria-label="Return to title">← <span>BACK</span></button>
+          <button id="leaderboard-close" class="modal-close" type="button" aria-label="Close commander records">×</button>
+          <div class="panel-kicker">FRONTIER ARCHIVE // COMMANDER RECORDS</div>
+          <h2 id="leaderboard-title">COMMANDER RECORDS</h2>
+          <p id="leaderboard-description">Review solo and 1v1 results, revisit local replays, and compare verified solo victories.</p>
+          <section class="my-battles" aria-labelledby="my-battles-heading">
+            <div class="local-replay-heading"><div><h3 id="my-battles-heading">MY BATTLES</h3><p>Every server verified solo result, including defeats.</p></div><button id="my-battles-refresh" class="quiet-button" type="button">REFRESH</button><span id="my-battles-count" class="records-count">—</span></div>
+            <div id="my-battles-status" class="my-battles-status" role="status" aria-live="polite">Connect to load your verified history.</div>
+            <div id="my-battles-list" class="my-battles-list" aria-live="polite"></div>
+          </section>
+          <section class="my-battles" aria-labelledby="my-1v1-matches-heading">
+            <div class="local-replay-heading"><div><h3 id="my-1v1-matches-heading">MY 1V1 MATCHES</h3><p>Private multiplayer results linked to your commander profile.</p></div><button id="my-1v1-matches-refresh" class="quiet-button" type="button">REFRESH</button><span id="my-1v1-matches-count" class="records-count">—</span></div>
+            <div id="my-1v1-matches-status" class="my-battles-status" role="status" aria-live="polite">Connect to load your recorded 1v1 history.</div>
+            <div id="my-1v1-matches-list" class="my-battles-list" aria-live="polite"></div>
+            <button id="my-1v1-matches-more" class="quiet-button hidden" type="button">LOAD MORE MATCHES</button>
+          </section>
+          <section class="ranked-records" aria-labelledby="ranked-records-heading">
+            <div class="local-replay-heading"><div><h3 id="ranked-records-heading">RANKED 1V1 · SEASON <span id="ranked-season">—</span></h3><p id="ranked-own-record">Your ranked record is unavailable.</p></div><button id="ranked-records-refresh" class="quiet-button" type="button">REFRESH</button></div>
+            <div id="ranked-records-status" class="my-battles-status" role="status" aria-live="polite">Loading ranked standings.</div>
+            <ol id="ranked-leaderboard-list" class="ranked-leaderboard-list" aria-label="Top ten ranked commanders"></ol>
+          </section>
+          <section class="local-replay-archive" aria-labelledby="local-replay-heading">
+            <div class="local-replay-heading"><div><h3 id="local-replay-heading">LOCAL REPLAY ARCHIVE</h3><p>Up to 10 complete solo battles saved on this device.</p></div><span id="local-replay-count" class="records-count">0 / 10</span></div>
+            <div id="local-replay-list" class="local-replay-list" aria-live="polite"></div>
+          </section>
+          <div class="leaderboard-summary"><span class="record-emblem">◈</span><span><strong>SOLO LEADERBOARD</strong><small>Verified server board · campaign and skirmish</small></span><span class="records-count" id="leaderboard-count">0 RECORDS</span></div>
+          <p id="leaderboard-note" class="leaderboard-note hidden" role="status" aria-live="polite"></p>
+          <div class="leaderboard-filters" aria-label="Filter leaderboard results">
+            <div class="leaderboard-filter">
+              <label for="leaderboard-mode">Mode</label>
+              <select id="leaderboard-mode" aria-label="Filter by mode">
+                <option value="">All Modes</option><option value="campaign">Campaign</option><option value="skirmish">Skirmish</option>
+              </select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-scenario">Scenario</label>
+              <select id="leaderboard-scenario" aria-label="Filter by scenario"></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-difficulty">Difficulty</label>
+              <select id="leaderboard-difficulty" aria-label="Filter by difficulty">
+                <option value="">All Difficulties</option><option value="easy">Easy</option><option value="normal">Normal</option><option value="hard">Hard</option>
+              </select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-opening">Opening</label>
+              <select id="leaderboard-opening" aria-label="Filter by skirmish opening" disabled><option value="established">Forward Base</option><option value="command-rig">Command Rig</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-victory-mode">Victory Rules</label>
+              <select id="leaderboard-victory-mode" aria-label="Filter by skirmish victory rules" disabled><option value="dominion">Relay Dominion</option><option value="elimination">Elimination</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-ai-profile">Enemy Commander</label>
+              <select id="leaderboard-ai-profile" aria-label="Filter by enemy commander" disabled><option value="">All Commanders</option><option value="raider">Raider</option><option value="relay-marshal">Relay Marshal</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-doctrine">Doctrine</label>
+              <select id="leaderboard-doctrine" aria-label="Filter by doctrine"><option value="">All Doctrines</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-field-order">Field Order</label>
+              <select id="leaderboard-field-order" aria-label="Filter by field order"><option value="">All Field Orders</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-carryover">Carryover Intel</label>
+              <select id="leaderboard-carryover" aria-label="Filter by carryover intel"><option value="">All Carryovers</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-veteran">Survivor</label>
+              <select id="leaderboard-veteran" aria-label="Filter by survivor attachment"><option value="">All Attachments</option><option value="none">No Attachment</option><option value="veteran">Veteran Attachment</option><option value="elite">Elite Attachment</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-supply">Requisition</label>
+              <select id="leaderboard-supply" aria-label="Filter by route requisition"><option value="">All Requisitions</option></select>
+            </div>
+            <div class="leaderboard-filter">
+              <label for="leaderboard-route-payoff">Branch Route</label>
+              <select id="leaderboard-route-payoff" aria-label="Filter Red Ledger by branch route"><option value="">All Routes</option></select>
+            </div>
+          </div>
+          <p class="leaderboard-scroll-hint" id="leaderboard-scroll-hint">Swipe the table horizontally to see Result, Score, and Time.</p>
+          <div class="leaderboard-table-wrap" aria-describedby="leaderboard-scroll-hint">
+            <table class="leaderboard-table">
+              <caption class="visually-hidden">Single-player leaderboard results</caption>
+              <thead><tr><th scope="col">RANK</th><th scope="col">COMMANDER</th><th scope="col">OPERATION</th><th scope="col">RESULT</th><th scope="col">SCORE</th><th scope="col">TIME</th></tr></thead>
+              <tbody id="leaderboard-list"></tbody>
+            </table>
+            <div id="leaderboard-empty" class="leaderboard-empty"><span class="empty-state-mark">◈</span><strong>No current ruleset records yet</strong><p>Complete a solo battle to join this board. Past verified results remain in My Battles.</p></div>
+          </div>
+        </section>
+      </div>
+
+      <div id="setup" class="modal-backdrop hidden">
+        <div class="setup-panel" role="dialog" aria-modal="true" aria-labelledby="setup-title" aria-describedby="setup-description">
+          <button class="modal-close" data-close="setup" aria-label="Close skirmish setup">×</button>
+          <div class="panel-kicker">MISSION CONFIGURATION</div>
+          <h2 id="setup-title">CHOOSE YOUR COMMAND</h2>
+          <p id="setup-description">Two rival forces. One frontier. Outbuild and outmaneuver your opponent.</p>
+          <div class="setup-label" id="faction-options-label">FACTION</div>
+          <div class="faction-grid" role="group" aria-labelledby="faction-options-label">
+            <button class="faction-card active" data-faction="aegis" aria-pressed="true">
+              <span class="faction-symbol aegis-symbol">◆</span><span class="faction-name">AEGIS<br />DIRECTORATE</span>
+              <span class="faction-desc">Fortify crystal fields. Guardian tanks can Brace to protect nearby armor; powered refineries boost extraction.</span>
+            </button>
+            <button class="faction-card" data-faction="vesper" aria-pressed="false">
+              <span class="faction-symbol vesper-symbol">◇</span><span class="faction-name">VESPER<br />COLLECTIVE</span>
+              <span class="faction-desc">Raid and recover. Specter tanks can Ghost Run along a move order; structure kills yield salvage.</span>
+            </button>
+          </div>
+          <div class="setup-body">
+            <div class="setup-choices">
+          <div class="setup-label" id="difficulty-options-label">OPPONENT SKILL</div>
+          <div class="segmented" id="difficulty-options" role="group" aria-labelledby="difficulty-options-label">
+            <button data-difficulty="easy" aria-pressed="false">CADET</button><button class="active" data-difficulty="normal" aria-pressed="true">VETERAN</button><button data-difficulty="hard" aria-pressed="false">ELITE</button>
+          </div>
+          <div class="setup-label" id="victory-mode-label">VICTORY RULES</div>
+          <div class="victory-mode-options" role="group" aria-labelledby="victory-mode-label">
+            <button class="victory-mode-option active" type="button" data-victory-mode="dominion" aria-pressed="true"><strong>RELAY DOMINION</strong><small>Hold two relays uncontested until the countdown ends.</small></button>
+            <button class="victory-mode-option" type="button" data-victory-mode="elimination" aria-pressed="false"><strong>ELIMINATION</strong><small>Destroy the enemy Command Yard, combat forces, and active industry.</small></button>
+          </div>
+          <div class="setup-label" id="opening-options-label">OPENING FORCE</div>
+          <div class="opening-options" id="opening-options" role="group" aria-labelledby="opening-options-label">
+            <button class="opening-option active" type="button" data-opening="established" aria-pressed="true"><strong>FORWARD BASE</strong><small>Industry online · immediate battle</small></button>
+            <button class="opening-option" type="button" data-opening="command-rig" aria-pressed="false"><strong>COMMAND RIG</strong><small>Deploy your yard · build from scratch</small></button>
+          </div>
+          <div class="setup-label" id="map-options-label">BATTLEFIELD</div>
+          <div class="map-options" id="map-options" role="group" aria-labelledby="map-options-label">
+            <button class="map-option active" type="button" data-map="shard-valley" aria-pressed="true"><canvas width="96" height="72" aria-hidden="true"></canvas><span><strong>SHARD VALLEY</strong><small>Open diagonal front · central crystal</small></span></button>
+            <button class="map-option" type="button" data-map="twin-passes" aria-pressed="false"><canvas width="96" height="72" aria-hidden="true"></canvas><span><strong>TWIN PASSES</strong><small>Rock divide · two crossings</small></span></button>
+            <button class="map-option" type="button" data-map="delta-crossing" aria-pressed="false"><canvas width="96" height="72" aria-hidden="true"></canvas><span><strong>DELTA CROSSING</strong><small>Flooded middle · breakable bridges · airlift opening</small></span></button>
+            <button class="map-option" type="button" data-map="canyon-ring" aria-pressed="false"><canvas width="96" height="72" aria-hidden="true"></canvas><span><strong>CANYON RING</strong><small>Broken canyon spine · two passages</small></span></button>
+            <button class="map-option" type="button" data-map="storm-basin" aria-pressed="false"><canvas width="96" height="72" aria-hidden="true"></canvas><span><strong>STORM BASIN</strong><small>Storm scar · crystal causeways</small></span></button>
+          </div>
+            </div>
+            <div class="setup-intel">
+          <div class="setup-label setup-intel-label">BATTLEFIELD INTEL</div>
+          <div id="map-tactic-note" class="map-tactic-note hidden" role="status" aria-live="polite">
+            <div class="map-atlas"><canvas id="map-atlas-preview" width="512" height="384" role="img" aria-label="Selected battlefield route preview"></canvas><span>SAMPLE ROUTE · <i class="map-legend-player">◆</i> YOUR ENTRY &nbsp; <i class="map-legend-enemy">◆</i> RIVAL &nbsp; <i class="map-legend-relay">○</i> RELAY</span></div>
+            <div class="map-tactic-copy"><div class="map-tactic-heading"><span class="map-tactic-mark" aria-hidden="true">✈</span><strong>DELTA CROSSING · AIR INSERTION</strong></div><p>Both forces start with an Airlift Dropship and nearby infantry. The two center bridges can be demolished to redirect ground armies, then restored by an engineer. Ground forces on a collapsing span are lost.</p><small>BRIDGE ORDERS · Select an armed unit and right-click a bridge to attack it. Select an engineer and right-click a destroyed bridge to rebuild from the bank. On touch, use Attack or Repair to target the bridge. Board the Dropship with <kbd>L</kbd> and unload with <kbd>U</kbd>.</small></div>
+          </div>
+          <div id="opening-tactic-note" class="map-tactic-note hidden" role="status" aria-live="polite"><span class="map-tactic-mark" aria-hidden="true">⌂</span><div><strong>COMMAND RIG · CLASSIC OPENING</strong><p>Deploy your rig with <kbd>E</kbd>, then build power, a Refinery, and production. Send the escort to contest a relay early; the rival can win while your base is intact.</p></div></div>
+            </div>
+          </div>
+          <button id="launch-game" class="button-primary setup-launch"><span>BEGIN OPERATION</span><span class="button-arrow">↗</span></button>
+        </div>
+      </div>
+
+      <div id="manual" class="modal-backdrop hidden">
+        <div class="manual-panel" role="dialog" aria-modal="true" aria-labelledby="manual-title" aria-describedby="manual-description">
+          <button class="modal-close" data-close="manual" aria-label="Close field manual">×</button>
+          <div class="panel-kicker">FIELD MANUAL // 01</div>
+          <h2 id="manual-title">COMMAND THE FRONTIER</h2>
+          <p id="manual-description" class="manual-intro">Choose a field topic to read its orders. Open several to compare tactics.</p>
+          <div class="manual-columns">
+            <details class="manual-topic"><summary><span>01 / ECONOMY</span><b aria-hidden="true">+</b></summary><p>Build a refinery. Harvesters collect glowing crystal and return it for credits. Expand to more fields to fund your army. Silo capacity prevents waste. Aegis extracts extra crystal from fields near a powered friendly refinery. Vesper combat units recover salvage credits when they destroy completed enemy structures. Most destroyed ground vehicles leave salvage for two minutes: select an Engineer and right click a visible wreck, or use the Engineer task button on touch, then protect the Engineer through its four second recovery. Either commander can claim it.</p></details>
+            <details class="manual-topic"><summary><span>02 / BASE & RESEARCH</span><b aria-hidden="true">+</b></summary><p>Place structures near your existing base. Power plants keep production and radar online. Build barracks, factories and a Research Center to unlock stronger units. A powered Research Center lets you choose one permanent focus from the Research tab: Logistics speeds harvesting, Siege increases structure damage, or Signal restores command energy and ability cooldowns faster. Research costs credits and takes time; losing power pauses progress. After a focus finishes, choose one Tactical Package in Research for 700 credits and 38 seconds. Breach Window, Interdiction Pulse, or Rally Signal then appears in Support as a targetable command with its own energy cost and cooldown. Defense Walls block ground approaches. Adjacent friendly ground units behind a wall take 28% less direct ballistic and cannon damage; splash and flanking fire bypass this cover. Walls can be repaired or sold, but cannot keep a base alive. After a War Factory, build a powered Field Workshop near the front to repair friendly ground vehicles for credits.</p></details>
+            <details class="manual-topic"><summary><span>03 / COMMAND</span><b aria-hidden="true">+</b></summary><p>Left click selects. Drag to select a squad. Selecting one armed unit or powered defense shows its firing radius on the battlefield. Right click moves, attacks a target, or sends a harvester to crystal. Select units and press ROUTE at the bottom of the battlefield to tap successive waypoints or visible enemies; ATTACK or MOVE changes the planned order type, and ROUTE or Escape ends planning. Holding Shift while right-clicking also queues orders. On touch screens, tap to select, drag the battlefield to pan, or hold briefly then drag to box-select a squad; use command buttons to target orders. A loaded Harvester can Return Cargo early with J; each Refinery unloads one Harvester at a time. Alt + left click or M then click force moves without engaging; N cycles through your units, starting with idle combat units, and centers the view. Attack Move fights through a destination; Guard holds an anchor, Patrol loops to a clicked endpoint, Follow escorts an ally, and Scatter spreads a threatened squad. Force Fire targets ground, including empty terrain. Cycle combat stances with T: Aggressive engages freely, Defensive stays near its post, and Hold Fire waits for an explicit attack order. Armed light and heavy ground vehicles take 15% less damage from attacks arriving within 60° of their front and 20% more from behind; side hits are unchanged. Turn armor toward incoming fire and split your force to flank. A selected vehicle marks its protected front in cyan and exposed rear in amber. Splash checks each vehicle separately. Vesper Specter Tanks suppress a ground unit's weapon on their first concealed strike. Select one Guardian or Specter tank and use its field action, or press E: Brace protects nearby ground armor for seven seconds; Ghost Run requires a move order and speeds that flank while its weapon is silent for six seconds. Both recover in 30 seconds. Use the sidebar to construct and train. When a friendly force takes damage, the live-feed badge at the foot of the battlefield shows its sector; select the badge to center on it.</p></details>
+            <details class="manual-topic"><summary><span>04 / RELAYS & STORMS</span><b aria-hidden="true">+</b></summary><p>Hold Resonance Relays with nearby forces to gain command energy. Select RELAYS in the command header to choose a protocol directly for each uncontested relay you own. Shelter protects nearby forces from ion storms; a secure Aegis Shelter relay also restores nearby friendly infantry at 1 HP per second. While secure, Overdrive adds +0.45 command energy per second and lets friendly ground units within 2.3 tiles reload 15% faster. Logistics adds 10% of accepted Harvester cargo for each secure relay set to it when cargo unloads at a Refinery, up to 30% and only within credit storage capacity. It earns nothing without deliveries or while contested. Overdrive and Logistics trade away that relay’s storm shelter and Aegis recovery; Logistics also trades away Overdrive’s reload and energy bonus. Each switch locks for 12 seconds. Contested and unowned relays cannot switch protocols. Older battle replays retain their two original protocols. Storm surges enrich crystal fields, conceal threats, and damage exposed units. In skirmish and multiplayer, each surge also opens a public 90-second Stormglass Bloom around an enriched crystal patch. Click STORMGLASS in the command header to locate it. Select a Harvester with at least one armed ground escort per Harvester; while the Bloom is active, HARVEST becomes BLOOM. Choose it or press Shift+H to send the group to reachable charged crystal. Loaded Harvesters return to a Refinery when the Bloom closes. Press H for ordinary harvesting or give a direct order to override the expedition. Crystal gathered there earns 35% extra when delivered to a Refinery, within credit storage capacity; the premium remains on cargo after the Bloom closes. Guard the route through the storm. Use Tactical Scan, Overcharge, and Shield Pulse from Support. During an ion warning or surge, Relay Stormcall can pull the storm toward a visible point near one of your relays. Breach Window marks a visible area where friendly ground weapons hit structures 45% harder for 12 seconds; Interdiction suppresses visible enemy mobile weapons for three seconds; Rally heals and redirects nearby armed ground units. Each is exclusive to its researched package.</p></details>
+            <details class="manual-topic"><summary><span>05 / VICTORY</span><b aria-hidden="true">+</b></summary><p>Scout through the fog, secure resource fields, and complete your operation objective. Choose Elimination to destroy the rival's combat forces, command, and active industry, or Relay Dominion to hold two relays for 90 seconds (120 seconds on Cadet). In solo Elimination, amber last-seen contacts in Objects and on powered radar mark old hostile sightings; scout those sectors to confirm. Keep your command base alive. After a complete solo battle, watch its local replay from the debrief or title screen.</p></details>
+            <details class="manual-topic"><summary><span>06 / VETERANCY</span><b aria-hidden="true">+</b></summary><p>Combat units earn experience by damaging and defeating enemies. Veterans gain 5% damage and maximum health; Elite units gain 10%. When an armed ground unit reaches Elite, select it and choose one permanent field modification from the selection card: Bulwark reduces incoming damage by 15% after armor and cover, while Rangefinder adds one tile to weapon range. The selected unit's firing-radius guide reflects Rangefinder. The choice lasts for that battle and survives a saved battle.</p></details>
+            <details class="manual-topic"><summary><span>07 / TRANSPORT</span><b aria-hidden="true">+</b></summary><p>Train an Armored Carrier at a War Factory for three protected infantry seats, or an Airlift Dropship at a Helipad for four seats and fast routes over water and cliffs. Select infantry and right click a friendly carrier, or press L and target it. Select a loaded carrier, press U, and choose clear ground to deploy. Destroyed carriers may eject survivors nearby with heavy damage.</p></details>
+            <details class="manual-topic"><summary><span>08 / BATTLE RECORDS</span><b aria-hidden="true">+</b></summary><p>Complete a solo operation to keep its latest replay on this device. The debrief lets you watch it with pause and speed controls. When online, Commander Records verifies a complete battle from its recorded orders before ranking a victory; loading a mid-battle save starts an unranked session. Ranked campaign missions unlock from this profile’s verified victories at the selected difficulty. Local medals still allow offline practice. A living armed Survivor Attachment from a completed mission can join the next operation, retaining its earned rank and Elite modification.</p></details>
+            <details class="manual-topic"><summary><span>09 / SQUAD GROUPS</span><b aria-hidden="true">+</b></summary><p>Organize forces for fast flanks and defense. On a narrow screen, select units, tap + beside a squad number to save them, then tap that number to recall the group. The count shows surviving members and the bright border marks the current selection. Keyboard players can assign with Ctrl + 1…9 and recall with 1…9; Shift + number also centers the camera on a recalled group.</p></details>
+          </div>
+          <details class="manual-shortcuts"><summary>KEYBOARD SHORTCUTS <span class="manual-shortcuts-show">SHOW KEYS</span><span class="manual-shortcuts-hide">HIDE KEYS</span></summary>
+          <div class="shortcut-box"><strong>SHORTCUTS</strong><span><kbd>O</kbd> open battlefield object list; arrows browse, Enter chooses, Esc closes</span><span><kbd>A</kbd> attack move</span><span><kbd>M</kbd> force move target</span><span><kbd>Alt + click</kbd> force move</span><span><kbd>N</kbd> next unit</span><span><kbd>G</kbd> guard</span><span><kbd>P</kbd> patrol</span><span><kbd>F</kbd> follow</span><span><kbd>T</kbd> cycle stance</span><span><kbd>L</kbd> board carrier</span><span><kbd>U</kbd> unload carrier</span><span><kbd>V</kbd> force fire</span><span><kbd>X</kbd> scatter</span><span><kbd>S</kbd> stop</span><span><kbd>H</kbd> harvest</span><span><kbd>J</kbd> return cargo</span><span><kbd>E</kbd> deploy MCV</span><span><kbd>R</kbd> repair / Engineer task</span><span><kbd>Space</kbd> center base</span><span><kbd>Ctrl + 1…9</kbd> assign squad</span><span><kbd>1…9</kbd> recall squad</span></div>
+          </details>
+          <button class="button-secondary manual-done" data-close="manual">UNDERSTOOD <span>›</span></button>
+        </div>
+      </div>
+
+      <div id="armory" class="modal-backdrop hidden">
+        <section class="armory-panel" role="dialog" aria-modal="true" aria-labelledby="armory-title" aria-describedby="armory-description">
+          <button class="modal-close" data-close="armory" aria-label="Close armory">×</button>
+          <header class="armory-heading"><div class="panel-kicker">FRONTIER INTELLIGENCE // FIELD ARCHIVE</div><h2 id="armory-title">ARMORY <span>/ CODEX</span></h2><p id="armory-description">Review known forces and structures. Entries describe the current combat roster.</p></header>
+          <div class="armory-controls">
+            <div class="segmented" role="group" aria-label="Faction"><button type="button" data-armory-faction="aegis" aria-pressed="true" class="active">AEGIS</button><button type="button" data-armory-faction="vesper" aria-pressed="false">VESPER</button></div>
+            <div class="segmented" role="group" aria-label="Catalog category"><button type="button" data-armory-kind="units" aria-pressed="true" class="active">UNITS</button><button type="button" data-armory-kind="structures" aria-pressed="false">STRUCTURES</button></div>
+          </div>
+          <div class="armory-layout"><nav id="armory-list" class="armory-list" aria-label="Catalog entries"></nav><article id="armory-detail" class="armory-detail" aria-live="polite"></article></div>
+          <footer class="armory-footer"><span>FIELD INTELLIGENCE · ROSTER REFERENCE</span><button class="button-secondary" type="button" data-close="armory">CLOSE <span>×</span></button></footer>
+        </section>
+      </div>
+
+      <div id="game-shell" class="game-shell hidden">
+        <header class="topbar">
+          <div class="topbar-brand"><div class="mini-brand">◆</div><div><span>FRONTIER</span><strong>COMMAND</strong></div></div>
+          <div class="topbar-divider"></div>
+          <div class="operation-name"><span>OPERATION</span><strong>CRYSTAL FRONT</strong></div>
+          <div class="topbar-spacer"></div>
+          <div class="topbar-stat credit-stat"><span class="stat-icon">◈</span><div><small>CREDITS</small><strong id="credits-value">0</strong></div></div>
+          <div class="topbar-stat power-stat"><span class="stat-icon">ϟ</span><div><small>POWER</small><strong id="power-value">0 / 0</strong></div><div id="power-meter" class="mini-meter"><span></span></div></div>
+          <div class="topbar-stat command-energy"><span class="stat-icon">◌</span><div><small>COMMAND</small><strong id="energy-value">30 / 100</strong></div></div>
+          <button type="button" id="relay-status-button" class="topbar-stat relay-status" aria-label="Open relay protocols" aria-controls="production-list" title="Open relay protocols"><span class="stat-icon" aria-hidden="true">⌖</span><span class="relay-status-values"><small>RELAYS</small><strong id="relay-value">0 / 3</strong></span></button>
+          <div id="relay-dominion" class="relay-dominion hidden" role="progressbar" aria-label="Relay Dominion countdown" aria-valuemin="0" aria-valuemax="90" aria-valuenow="0"><span class="dominion-mark" aria-hidden="true">◈</span><div><small id="dominion-owner">RELAY DOMINION</small><strong id="dominion-countdown">90 SEC TO VICTORY</strong><span class="dominion-track"><i id="dominion-progress"></i></span></div></div>
+          <button id="storm-status-button" type="button" class="topbar-stat storm-status" aria-label="Center on the ion storm"><span class="stat-icon" aria-hidden="true">ϟ</span><span class="storm-status-values"><small>ION STORM</small><strong id="storm-value">CALM</strong></span></button>
+          <div class="topbar-stat status-stat"><span class="status-light"></span><div><small>STATUS</small><strong id="game-status">ONLINE</strong></div></div>
+          <button id="mute-toggle" class="icon-button" title="Toggle sound" aria-label="Toggle sound">♫</button>
+          <button id="menu-toggle" class="icon-button" title="Pause / menu" aria-label="Pause or open menu">☰</button>
+        </header>
+        <div class="main-layout">
+          <main id="battlefield-wrap" class="battlefield-wrap">
+            <canvas id="battlefield" aria-label="Battlefield" tabindex="0"></canvas>
+            <canvas id="overlay-canvas" aria-hidden="true"></canvas>
+            <div class="game-vignette"></div>
+            <section id="deployment-intro" class="deployment-intro hidden" role="status" aria-live="polite" aria-labelledby="deployment-intro-title" aria-describedby="deployment-intro-objective">
+              <div class="deployment-intro-card">
+                <span class="deployment-intro-kicker">FRONTIER COMMAND · DEPLOYMENT</span>
+                <h1 id="deployment-intro-title"></h1>
+                <p id="deployment-intro-objective"></p>
+                <p id="deployment-intro-opponent" class="deployment-intro-opponent hidden"></p>
+                <button id="deployment-intro-enter" type="button">ENTER BATTLEFIELD <span aria-hidden="true">↗</span></button>
+              </div>
+            </section>
+            <div class="battlefield-top"><span class="coordinate-label" id="coord-label">SECTOR -- // --</span><div class="objective-pill"><span class="objective-dot"></span><span id="objective-text">DESTROY ENEMY COMMAND BASE</span></div><div id="multiplayer-status" class="multiplayer-status hidden" role="status"><span aria-hidden="true">◉</span><span id="multiplayer-status-text">NETWORK CONNECTED</span></div></div>
+            <div id="ai-profile-badge" class="ai-profile-badge hidden" role="note"><small>ENEMY COMMANDER</small><strong id="ai-profile-name"></strong></div>
+            <div class="battlefield-picker">
+              <button id="battlefield-picker-toggle" class="battlefield-picker-toggle" type="button" aria-expanded="false" aria-controls="battlefield-picker-panel" aria-label="Open battlefield object list" title="Find visible objects (O)">OBJECTS <span aria-hidden="true">⌄</span></button>
+              <section id="battlefield-picker-panel" class="battlefield-picker-panel hidden" aria-label="Battlefield objects">
+                <div class="battlefield-picker-heading"><strong>VISIBLE OBJECTS</strong><small>ARROWS TO BROWSE · ENTER TO CHOOSE · ESC TO CLOSE</small></div>
+                <ul id="battlefield-picker-list" class="battlefield-picker-list"></ul>
+                <p id="battlefield-picker-empty" class="battlefield-picker-empty hidden">No friendly forces or visible objects.</p>
+                <p id="battlefield-picker-status" class="battlefield-picker-status" role="status" aria-live="polite"></p>
+              </section>
+            </div>
+            <button id="relay-locator" class="relay-locator hidden" type="button" aria-live="polite" title="Center on a visible relay">⌖ <span id="relay-locator-text"></span></button>
+            <button id="salvage-locator" class="salvage-locator hidden" type="button" title="Center on the public salvage drop" aria-label="Center on the public salvage drop">
+              <span class="salvage-locator-glyph" aria-hidden="true">◇</span>
+              <span class="salvage-locator-copy"><strong>SALVAGE DROP</strong><small id="salvage-locator-status">INCOMING</small><span class="salvage-locator-track" aria-hidden="true"><i id="salvage-locator-progress"></i></span></span>
+              <span class="salvage-locator-go" aria-hidden="true">↗</span>
+            </button>
+            <aside id="campaign-guidance" class="campaign-guidance hidden" role="note" aria-labelledby="campaign-guidance-title">
+              <div class="campaign-guidance-head"><span id="campaign-guidance-label">FIELD TIP · OPERATION 01</span><button id="campaign-guidance-dismiss" type="button" aria-label="Dismiss field guidance">×</button></div>
+              <strong id="campaign-guidance-title"></strong><p id="campaign-guidance-copy"></p>
+              <div id="campaign-guidance-progress" class="campaign-guidance-progress hidden" role="progressbar" aria-label="Credits banked toward mission objective" aria-valuemin="0" aria-valuemax="2200" aria-valuenow="0"><span id="campaign-guidance-progress-fill"></span></div>
+            </aside>
+            <aside id="campaign-tracker" class="campaign-tracker hidden" aria-label="Live campaign objective progress">
+              <span class="campaign-tracker-label">MISSION PROGRESS</span>
+              <strong id="campaign-tracker-title"></strong>
+              <div class="campaign-tracker-rows"><span id="campaign-progress-primary"></span><span id="campaign-progress-secondary"></span></div>
+              <div id="campaign-field-order-tracker" class="campaign-field-order-tracker hidden" aria-label="Field order progress">
+                <span>FIELD ORDER</span><strong id="campaign-field-order-title"></strong><small id="campaign-field-order-status"></small>
+              </div>
+            </aside>
+            <div id="placement-hint" class="placement-hint hidden">LEFT CLICK TO PLACE <span>·</span> ESC TO CANCEL</div>
+            <div id="attack-hint" class="placement-hint hidden">CHOOSE TARGET <span>·</span> ESC TO CANCEL</div>
+            <div id="toast-container" class="toast-container" role="status" aria-live="polite" aria-relevant="additions" aria-atomic="false"></div>
+            <div id="replay-controls" class="replay-controls hidden" aria-label="Battle replay controls">
+              <div class="replay-heading"><span>RECORDED BATTLE</span><strong id="replay-time">00:00 / 00:00</strong></div>
+              <input id="replay-track" class="replay-track" type="range" min="0" max="0" step="1" value="0" aria-label="Seek through battle replay" aria-valuetext="00:00 of 00:00">
+              <div id="replay-moments" class="replay-moments hidden" role="group" aria-label="Jump to key battle moments"><span>KEY MOMENTS</span><div id="replay-moment-list" class="replay-moment-list"></div></div>
+              <span id="replay-seek-status" class="replay-seek-status" role="status" aria-live="polite"></span>
+              <div class="replay-buttons"><button id="replay-toggle" type="button">PAUSE</button><button id="replay-speed" type="button">1× SPEED</button><button id="replay-restart" type="button">RESTART</button><button id="replay-exit" type="button">EXIT REPLAY</button></div>
+            </div>
+            <div class="battlefield-bottom"><button id="tactical-alert" class="signal-mark tactical-alert" type="button" disabled aria-label="No tactical alerts">◢ <span id="tactical-alert-text">LIVE FEED</span></button><button id="route-plan-toggle" class="route-plan-toggle" type="button" aria-pressed="false" aria-label="Enable route planning for selected units" title="Plan a route with successive battlefield taps" disabled><span aria-hidden="true">↗</span> ROUTE</button><button id="mobile-radar-toggle" class="mobile-radar-toggle" type="button" aria-controls="minimap-panel" aria-expanded="false" aria-label="Show minimap">▦ <span>RADAR</span></button><div class="zoom-controls"><button id="zoom-out" title="Zoom out" aria-label="Zoom out">−</button><span id="zoom-value">100%</span><button id="zoom-in" title="Zoom in" aria-label="Zoom in">+</button></div></div>
+            <nav id="mobile-squads" class="mobile-squads" aria-label="Squad control groups" data-expanded="false">
+              <button id="mobile-squads-toggle" class="mobile-squads-toggle" type="button" aria-expanded="false" aria-controls="mobile-squad-slots" aria-label="Expand squad assignment controls">
+                <span>SQUADS</span><span class="mobile-squads-chevron" aria-hidden="true">⌄</span>
+              </button>
+              <div id="mobile-squad-slots" class="mobile-squad-slots">
+                <div class="mobile-squad-slot" data-squad-slot="1"><button type="button" class="mobile-squad-recall" data-squad-recall="1" aria-pressed="false"><b>1</b><span>EMPTY</span></button><button type="button" class="mobile-squad-assign" data-squad-assign="1" aria-label="Assign current selection to squad 1" title="Assign current selection">＋</button></div>
+                <div class="mobile-squad-slot" data-squad-slot="2"><button type="button" class="mobile-squad-recall" data-squad-recall="2" aria-pressed="false"><b>2</b><span>EMPTY</span></button><button type="button" class="mobile-squad-assign" data-squad-assign="2" aria-label="Assign current selection to squad 2" title="Assign current selection">＋</button></div>
+                <div class="mobile-squad-slot" data-squad-slot="3"><button type="button" class="mobile-squad-recall" data-squad-recall="3" aria-pressed="false"><b>3</b><span>EMPTY</span></button><button type="button" class="mobile-squad-assign" data-squad-assign="3" aria-label="Assign current selection to squad 3" title="Assign current selection">＋</button></div>
+                <div class="mobile-squad-slot" data-squad-slot="4"><button type="button" class="mobile-squad-recall" data-squad-recall="4" aria-pressed="false"><b>4</b><span>EMPTY</span></button><button type="button" class="mobile-squad-assign" data-squad-assign="4" aria-label="Assign current selection to squad 4" title="Assign current selection">＋</button></div>
+              </div>
+            </nav>
+          </main>
+          <aside id="command-panel" class="command-panel">
+            <div class="panel-header"><div><small>TACTICAL DISPLAY</small><strong>COMMAND INTERFACE</strong></div><button id="blueprint-view-toggle" class="blueprint-view-toggle" type="button" aria-label="Switch to compact blueprint grid" aria-pressed="false" title="Switch to compact blueprint grid" hidden>▦</button><span class="panel-code">FC-SYS 01</span></div>
+            <div id="minimap-panel" class="minimap-wrap"><canvas id="minimap" width="280" height="160" aria-label="Minimap. Friendly forces are squares, visible enemies are diamonds, and unknown relays are circles."></canvas><div class="radar-offline-card"><span class="radar-offline-icon" aria-hidden="true">⌁</span><strong role="status" aria-live="polite">RADAR OFFLINE</strong><small>BUILD RADAR ARRAY · MAINTAIN POWER</small><button id="radar-blueprint-link" type="button" aria-label="Show Radar Array blueprint in Structures">SHOW BLUEPRINT <span aria-hidden="true">↗</span></button></div><span class="minimap-corner tl"></span><span class="minimap-corner tr"></span><span class="minimap-corner bl"></span><span class="minimap-corner br"></span><div class="minimap-coords">SECTOR OVERVIEW <span id="enemy-count">SIGNAL UNKNOWN</span></div></div>
+            <div class="tabs"><button id="mobile-deck-toggle" class="mobile-deck-toggle" type="button" aria-controls="command-panel" aria-expanded="true" aria-label="Focus battlefield and collapse command deck"><span class="mobile-deck-toggle-icon" aria-hidden="true">⌄</span><span class="mobile-deck-toggle-label">FIELD</span><span id="mobile-deck-peek" class="mobile-deck-peek" aria-hidden="true">COMMAND DECK · 00 ACTIVE</span></button><button class="tab active" data-tab="structures">STRUCTURES</button><button class="tab" data-tab="units">UNITS</button><button class="tab" data-tab="support">SUPPORT</button><button class="tab" data-tab="research">RESEARCH</button></div>
+            <div class="production-scroll-wrap">
+              <div id="production-list" class="production-list"></div>
+              <section id="blueprint-details" class="blueprint-details" aria-label="Blueprint details" aria-live="polite" hidden>
+                <div class="blueprint-details-heading"><span>BLUEPRINT INTEL</span><button id="blueprint-details-close" type="button" aria-label="Close blueprint details">×</button></div>
+                <strong id="blueprint-details-name"></strong>
+                <small id="blueprint-details-cost"></small>
+                <p id="blueprint-details-description"></p>
+                <small id="blueprint-details-status"></small>
+              </section>
+              <button id="production-scroll-cue" class="production-scroll-cue hidden" type="button" aria-label="Scroll to more blueprints" title="More blueprints below">⌄</button>
+            </div>
+            <div class="selected-header"><span>SELECTION</span><span id="selection-count">00 ACTIVE</span></div>
+            <div id="selection-card" class="selection-card" tabindex="-1"><div id="selection-content"><div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div></div><button id="promotion-trigger" class="promotion-trigger hidden" type="button" aria-label="Choose this Elite unit’s permanent field modification">✦ CHOOSE MOD</button></div>
+            <div id="command-actions" class="command-actions" aria-label="Selected unit commands">
+              <button id="cmd-attack" title="Attack move (A)"><span>⌖</span>ATTACK</button>
+              <button id="cmd-move" title="Force move without engaging (M or Alt+click)"><span>➤</span>MOVE</button>
+              <button id="cmd-guard" title="Guard this position (G)"><span>⬡</span>GUARD</button>
+              <button id="cmd-patrol" title="Patrol to a destination (P)"><span>⇄</span>PATROL</button>
+              <button id="cmd-follow" title="Follow a friendly unit (F)"><span>⟐</span>FOLLOW</button>
+              <button id="cmd-service" title="Send selected damaged vehicles to a Field Workshop"><span>✚</span>SERVICE</button>
+              <button id="cmd-stop" title="Stop (S)"><span>▣</span>STOP</button>
+              <button id="cmd-harvest" title="Harvest (H)"><span>◈</span>HARVEST</button>
+              <button id="cmd-repair" title="Repair (R)"><span>✚</span>REPAIR</button>
+              <button id="cmd-scatter" title="Scatter selected units (X)"><span>✧</span>SCATTER</button>
+              <button id="cmd-force" title="Force fire at a terrain point (V or Ctrl+click)"><span>✹</span>FIRE</button>
+              <button id="cmd-board" title="Board a friendly ground or air carrier with selected infantry (L)"><span>⇥</span>BOARD</button>
+              <button id="cmd-unload" title="Move a loaded carrier and unload passengers on clear ground (U)"><span>⇤</span>UNLOAD</button>
+              <button id="cmd-stance" title="Cycle combat stance (T)" aria-label="Cycle combat stance" disabled><span>◉</span>STANCE</button>
+              <button id="cmd-deploy" title="Deploy selected Mobile Command Rig (E)"><span>⌂</span>DEPLOY</button>
+              <button id="cmd-return" class="hidden" title="Return partial cargo to a refinery (J)"><span>↩</span>RETURN</button>
+            </div>
+            <div class="panel-footer"><span id="systems-status">▲ ALL SYSTEMS NOMINAL</span><span id="clock-display">00:00</span></div>
+          </aside>
+        </div>
+      </div>
+
+      <div id="promotion-modal" class="modal-backdrop hidden">
+        <section class="promotion-panel" role="dialog" aria-modal="true" aria-labelledby="promotion-title" aria-describedby="promotion-intro">
+          <button id="promotion-close" class="modal-close" type="button" aria-label="Close field modification choice">×</button>
+          <div class="panel-kicker">ELITE FIELD MODIFICATION // ONE PER UNIT</div>
+          <h2 id="promotion-title">MAKE THIS UNIT YOURS</h2>
+          <p id="promotion-intro"><strong id="promotion-unit-name">ELITE UNIT</strong> has earned a permanent field modification. Choose its role for the rest of this battle.</p>
+          <div class="promotion-options">
+            <button type="button" data-promotion="bulwark"><span class="promotion-option-icon" aria-hidden="true">⬡</span><strong>BULWARK</strong><small>15% less incoming damage</small><em>Hold the line and survive the counterattack.</em></button>
+            <button type="button" data-promotion="rangefinder"><span class="promotion-option-icon" aria-hidden="true">⌖</span><strong>RANGEFINDER</strong><small>+1 tile weapon range</small><em>Strike first and cover more ground.</em></button>
+          </div>
+          <p class="promotion-live-note" id="promotion-live-note"></p>
+        </section>
+      </div>
+
+      <div id="save-slots-modal" class="modal-backdrop hidden">
+        <section class="manual-panel save-slots-panel" role="dialog" aria-modal="true" aria-labelledby="save-slots-title" aria-describedby="save-slots-description">
+          <button id="save-slots-close" class="modal-close" type="button" aria-label="Close save slots">×</button>
+          <div class="panel-kicker">COMMAND ARCHIVE // SOLO OPERATIONS</div>
+          <h2 id="save-slots-title">SAVE GAME</h2>
+          <p id="save-slots-description">Choose one of three manual save slots.</p>
+          <div id="save-slot-list" role="list" aria-live="polite"></div>
+          <div id="save-slot-confirmation" role="status" aria-live="assertive"></div>
+          <button id="save-slots-cancel" class="button-secondary" type="button">CANCEL</button>
+        </section>
+      </div>
+
+      <div id="pause-modal" class="modal-backdrop hidden">
+        <div class="pause-panel" role="dialog" aria-modal="true" aria-labelledby="pause-title"><div class="panel-kicker">COMMAND PAUSED</div><h2 id="pause-title">OPERATIONS MENU</h2><button id="resume-game" class="button-primary">RESUME OPERATION <span>↗</span></button><div class="graphics-setting"><div class="graphics-setting-heading"><strong>GRAPHICS QUALITY</strong><span id="graphics-quality-status" role="status" aria-live="polite">ULTRA</span></div><div id="graphics-quality-options" class="graphics-setting-options" role="group" aria-label="Graphics quality"><button type="button" data-graphics-quality="eco" aria-pressed="false">ECO</button><button type="button" data-graphics-quality="balanced" aria-pressed="false">BALANCED</button><button type="button" data-graphics-quality="ultra" aria-pressed="true">ULTRA</button></div><p>Changes scene resolution, shadows, and terrain detail immediately.</p><div class="graphics-fps-readout"><span id="graphics-fps-label">APPROX. RECENT FPS</span><output id="graphics-fps-value" aria-labelledby="graphics-fps-label">—</output></div><p class="graphics-fps-note">Average of recent visible gameplay requestAnimationFrame callback intervals. Paused, hidden-tab, and replay-seeking time is excluded.</p></div><button id="save-game" class="button-secondary">SAVE GAME <span>›</span></button><button id="load-game" class="button-secondary">LOAD GAME <span>›</span></button><button id="restart-game" class="button-secondary">RESTART SKIRMISH <span>›</span></button><button id="help-game" class="button-secondary">FIELD MANUAL <span>›</span></button><button id="quit-game" class="button-secondary">RETURN TO TITLE <span>›</span></button></div>
+      </div>
+      <div id="end-modal" class="modal-backdrop hidden"><div class="end-panel" role="dialog" aria-modal="true" aria-labelledby="end-title" aria-describedby="end-copy"><div id="end-kicker" class="panel-kicker">MISSION COMPLETE</div><h2 id="end-title">VICTORY</h2><p id="end-copy">The frontier is yours.</p><p id="campaign-epilogue" class="campaign-epilogue hidden"></p><div id="campaign-identity" class="campaign-identity hidden"></div><div id="campaign-field-order-result" class="campaign-field-order-result hidden"></div><section id="campaign-veteran-result" class="campaign-veteran-result hidden" aria-labelledby="campaign-veteran-heading"><span id="campaign-veteran-heading">SURVIVOR ATTACHMENT</span><div id="campaign-veteran-detail"></div></section><section id="skirmish-debrief" class="skirmish-debrief hidden" aria-labelledby="skirmish-debrief-heading"><h3 id="skirmish-debrief-heading">TACTICAL DEBRIEF</h3><div id="skirmish-debrief-facts" class="skirmish-debrief-facts"></div><p id="skirmish-debrief-note" class="skirmish-debrief-note"></p></section><div id="end-stats" class="end-stats"></div><section id="campaign-loss-review" class="campaign-loss-review hidden" aria-labelledby="campaign-loss-heading"><h3 id="campaign-loss-heading">TACTICAL REVIEW</h3><p id="campaign-loss-observation"></p><div><span>NEXT DEPLOYMENT</span><strong id="campaign-loss-action"></strong></div></section><div id="campaign-result" class="campaign-result hidden" aria-live="polite"></div><div id="campaign-handoff" class="campaign-handoff hidden"></div><div id="end-record-status" class="end-record-status" role="status" aria-live="polite"></div><section id="post-match-rematch" class="post-match-rematch hidden" aria-label="Offer a rematch"><div><span>ONE MORE ROUND</span><strong>RUN IT BACK</strong><small>Same battlefield and victory rule. Both commanders choose when to ready up.</small></div><button id="post-match-rematch-request" class="button-primary" type="button">OFFER REMATCH ↗</button><p id="post-match-rematch-status" role="status" aria-live="polite"></p></section><section id="end-rematch-offer" class="post-match-rematch rematch-offer hidden" aria-label="Rematch invitation" aria-live="polite"><div><span>REMATCH INVITATION</span><strong id="end-rematch-offer-title">A commander wants another match</strong><small id="end-rematch-offer-detail"></small></div><div class="rematch-offer-actions"><button class="button-primary" type="button" data-rematch-accept>ACCEPT REMATCH ↗</button><button class="button-secondary" type="button" data-rematch-decline>DECLINE</button></div></section><section id="post-match-opponent" class="post-match-opponent hidden" aria-label="Connect with your opponent"><div><span>AFTER THE MATCH</span><strong id="post-match-opponent-name"></strong><small id="post-match-opponent-code"></small></div><button id="post-match-add-opponent" class="button-secondary" type="button">ADD OPPONENT ↗</button><p id="post-match-opponent-status" role="status" aria-live="polite"></p></section><div id="solo-benchmark" class="end-record-status hidden" role="status" aria-live="polite"></div><button id="end-next" class="button-primary hidden">NEXT OPERATION <span>↗</span></button><button id="end-restart" class="button-primary">PLAY AGAIN <span>↗</span></button><button id="end-replay" class="button-secondary hidden">WATCH BATTLE REPLAY <span>›</span></button><button id="end-menu" class="button-secondary">MAIN MENU <span>›</span></button></div></div>
+    </div>
+    <script type="module" src="/src/main.js"></script>
+  </body>
+</html>

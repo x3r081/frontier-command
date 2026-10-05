@@ -1,0 +1,22 @@
+{
+  "name": "frontier-command",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "node scripts/dev-server.js",
+    "dev:server": "node server/index.js",
+    "build": "vite build",
+    "stress": "node scripts/dense-battle-stress.js",
+    "preview": "vite preview --host 0.0.0.0",
+    "test": "node --test tests/*.test.js server/*.test.js",
+    "start": "node server/index.js"
+  },
+  "devDependencies": {
+    "vite": "^7.1.0"
+  },
+  "dependencies": {
+    "three": "^0.186.1",
+    "ws": "^8.22.0"
+  }
+}

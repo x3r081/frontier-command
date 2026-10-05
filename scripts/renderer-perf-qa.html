@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Renderer Performance QA</title>
+  <style>
+    html,body{margin:0;width:100%;height:100%;overflow:hidden;background:#111b1b;color:#eaf3e9;font:14px system-ui,sans-serif}
+    #stage{position:absolute;inset:0}canvas{display:block;width:100%;height:100%}
+    #panel{position:fixed;z-index:4;top:12px;left:12px;padding:12px;background:#07110ee8;border:1px solid #668878;max-width:min(440px,calc(100vw - 48px));max-height:calc(100vh - 48px);overflow:auto}
+    button{margin:3px;padding:6px 8px;background:#1b342a;color:#eaf3e9;border:1px solid #6d977c;cursor:pointer}
+    pre{white-space:pre-wrap;font:12px ui-monospace,monospace;color:#d8ebda}
+  </style>
+</head>
+<body>
+  <div id="stage"><canvas id="battlefield"></canvas></div>
+  <section id="panel">
+    <strong>Renderer QA · in-memory only</strong><br>
+    <div id="controls">
+      <button data-case="sparse-shard">Sparse Shard</button>
+      <button data-case="sparse-delta">Sparse Delta</button>
+      <button data-case="sparse-storm">Sparse Storm</button>
+      <button data-case="landmark-twin">Twin Landmark</button>
+      <button data-case="landmark-delta">Delta Landmark</button>
+      <button data-case="landmark-canyon">Canyon Landmark</button>
+      <button data-case="dense-twin">Dense Twin</button>
+      <button data-case="dense-delta">Dense Delta</button>
+      <button data-case="dense-canyon">Dense Canyon</button>
+      <button data-case="dense-storm">Dense Storm</button>
+      <br><button data-quality="eco">Eco</button>
+      <button data-quality="balanced">Balanced</button>
+      <button data-quality="ultra">Ultra</button>
+    </div>
+    <pre id="report">Loading renderer and assets…</pre>
+  </section>
+  <script type="module" src="./renderer-perf-qa.js"></script>
+</body>
+</html>

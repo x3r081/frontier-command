@@ -1,0 +1,17 @@
+.git
+.gitignore
+.dockerignore
+Dockerfile
+node_modules
+dist
+coverage
+.DS_Store
+*.log
+.env*
+docs
+qa
+scripts
+tests
+server/*.test.js
+server/data.json
+server/data.json.*.tmp
