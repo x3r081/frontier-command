@@ -8,6 +8,7 @@ import { campaignDossierView } from './game/campaignDossier.js';
 import { CAMPAIGN_ROUTE_ORDERED_IDS, campaignNextChoices } from './game/campaignRoute.js';
 import { SoloClock, SOLO_STEP_SECONDS } from './game/soloClock.js';
 import { createTacticalDamageMonitor } from './game/tacticalDamage.js';
+import { createTacticalFronts } from './game/tacticalFronts.js';
 import { recordBattleMoment, selectReplayMoments } from './game/battleMoments.js';
 import { createSoloRecorder, createSoloPlayback, validateSoloReplay, SOLO_REPLAY_VERSION } from './game/replay.js';
 import { loadSoloReplayArchive, addSoloReplayToArchive, deleteSoloReplayFromArchive,
@@ -166,7 +167,13 @@ let soloRecoveryElapsed = 0;
 let musicCombat = 0;
 let groups = {};
 const tacticalDamageMonitor = createTacticalDamageMonitor();
+const tacticalFronts = createTacticalFronts();
 let tacticalAlert = null;
+let tacticalFrontsOpen = false;
+let tacticalFocusedKey = null;
+let tacticalFocus = null;
+let tacticalFrontSignature = '';
+let lastTacticalSoundTime = -Infinity;
 let panKeys = new Set();
 let camera = { x: 0, y: 0, zoom: 1 };
 let pointer = { x: 0, y: 0, wx: 0, wy: 0, down: false, dragging: false, forceMove: false, sx: 0, sy: 0, pan: false, panX: 0, panY: 0, touchPan: false, touchMoved: false, touchSelecting: false, touchStartedAt: 0 };
@@ -749,42 +756,110 @@ function toast(message, warning = false, duration = 3600) {
 }
 function resetTacticalFeed() {
   tacticalDamageMonitor.reset();
+  tacticalFronts.reset();
   tacticalAlert = null;
+  tacticalFocusedKey = null;
+  tacticalFocus = null;
+  tacticalFrontSignature = null;
+  lastTacticalSoundTime = -Infinity;
+  setTacticalFrontsOpen(false);
   renderTacticalAlert();
+}
+function activeTacticalFronts() {
+  return game && playing && !replayMode && !gameEnded ? tacticalFronts.active(game.time) : [];
+}
+function tacticalFrontLabel(front) {
+  const def = game.unitDefs?.[front.defId] || game.buildingDefs?.[front.defId];
+  const name = front.kind === 'engineer' ? 'HOSTILE ENGINEER' : (def?.name || keyName(front.defId)).toUpperCase();
+  const condition = front.kind === 'engineer' ? 'SPOTTED' : front.kind === 'lost' ? 'LOST' : 'DAMAGED';
+  const sector = `${Math.floor(front.x)} // ${Math.floor(front.y)}`;
+  return {name,condition,sector};
+}
+function setTacticalFrontsOpen(open, {focusFirst = false, restoreFocus = false} = {}) {
+  tacticalFrontsOpen = !!open && activeTacticalFronts().length > 0;
+  $('#tactical-fronts').classList.toggle('hidden', !tacticalFrontsOpen);
+  $('#tactical-front-toggle').setAttribute('aria-expanded', String(tacticalFrontsOpen));
+  if(tacticalFrontsOpen && focusFirst) $('#tactical-front-list button')?.focus();
+  else if(!tacticalFrontsOpen && restoreFocus) $('#tactical-front-toggle').focus();
+}
+function focusTacticalFront(front) {
+  if(!front || !game || !playing || replayMode || gameEnded || game.time >= front.until) return;
+  tacticalFocusedKey = front.key;
+  const def=game.buildingDefs?.[front.defId];
+  const radius=def?Math.max(1.25,Math.max(def.w,def.h)/2+.35):1.25;
+  tacticalFocus = {x:front.x,y:front.y,kind:front.kind,radius,startedAt:displayTime};
+  centerCamera(front.x,front.y);
+  setTacticalFrontsOpen(false);
+  renderTacticalAlert();
+  drawMinimap();
+}
+function cycleTacticalFront() {
+  if(paused || !activeTacticalFronts().length) return;
+  focusTacticalFront(tacticalFronts.focusNext(game.time,tacticalFocusedKey));
 }
 function renderTacticalAlert() {
   const button = $('#tactical-alert');
-  const active = tacticalAlert && game && game.time < tacticalAlert.until &&
-    playing && !replayMode && !gameEnded;
+  const fronts = activeTacticalFronts();
+  const focused = fronts.find(front=>front.key===tacticalFocusedKey);
+  tacticalAlert = focused && focused.priority >= fronts[0].priority ? focused : fronts[0] || null;
+  const active = !!tacticalAlert;
   button.disabled = !active;
   button.classList.toggle('active', !!active);
   button.classList.toggle('lost', !!active && tacticalAlert.kind === 'lost');
+  const toggle = $('#tactical-front-toggle');
+  toggle.disabled = !active;
+  toggle.classList.toggle('active', !!active);
+  $('#tactical-front-count').textContent = String(fronts.length);
+  toggle.setAttribute('aria-label', `${tacticalFrontsOpen ? 'Hide' : 'Show'} ${fronts.length} recent tactical ${fronts.length===1?'alert':'alerts'}`);
+  if(!active) setTacticalFrontsOpen(false);
+  const signature = fronts.map(front=>`${front.key}:${front.id}:${front.kind}:${front.count}:${front.x}:${front.y}:${Math.floor(game.time-front.at)}:${front.key===tacticalFocusedKey}`).join('|');
+  if(signature!==tacticalFrontSignature) {
+    tacticalFrontSignature = signature;
+    const list = $('#tactical-front-list');
+    const focusedKey = list.contains(document.activeElement) ? document.activeElement.dataset.frontKey : null;
+    list.replaceChildren(...fronts.map(front=>{
+      const {name,condition,sector} = tacticalFrontLabel(front);
+      const row = document.createElement('li');
+      const action = document.createElement('button');
+      action.type = 'button'; action.className = `tactical-front-row ${front.kind}`;
+      action.dataset.frontKey = front.key;
+      action.classList.toggle('is-focused', front.key===tacticalFocusedKey);
+      action.setAttribute('aria-label', `${name} ${condition.toLowerCase()} at sector ${sector}. ${front.count>1?`${front.count} forces affected nearby. `:''}Center camera on this alert.`);
+      const icon = document.createElement('span'); icon.className = 'tactical-front-icon'; icon.setAttribute('aria-hidden','true'); icon.textContent = front.kind==='lost'?'×':front.kind==='engineer'?'!':'◢';
+      const copy = document.createElement('span'); copy.className = 'tactical-front-copy';
+      const title = document.createElement('strong'); title.textContent = name;
+      const detail = document.createElement('small'); detail.textContent = `${condition} · ${sector}`;
+      copy.append(title,detail);
+      const meta = document.createElement('span'); meta.className = 'tactical-front-meta';
+      const age = Math.max(0,Math.floor(game.time-front.at));
+      meta.textContent = front.count>1?`${front.count} FORCES`:(age<1?'NOW':`${age}S AGO`);
+      action.append(icon,copy,meta);row.append(action);return row;
+    }));
+    if(focusedKey) list.querySelector(`[data-front-key="${focusedKey}"]`)?.focus();
+  }
   if (!active) {
     $('#tactical-alert-text').textContent = 'LIVE FEED';
     button.setAttribute('aria-label', 'No tactical alerts');
     button.title = 'Tactical alerts appear here when your forces take damage';
     return;
   }
-  const def = game.unitDefs?.[tacticalAlert.defId] || game.buildingDefs?.[tacticalAlert.defId];
   const engineer = tacticalAlert.kind === 'engineer';
-  const name = engineer ? 'HOSTILE ENGINEER' : (def?.name || keyName(tacticalAlert.defId)).toUpperCase();
-  const sector = `${Math.floor(tacticalAlert.x)} // ${Math.floor(tacticalAlert.y)}`;
-  const condition = engineer ? 'SPOTTED' : tacticalAlert.kind === 'lost' ? 'LOST' : 'DAMAGED';
+  const {name,condition,sector} = tacticalFrontLabel(tacticalAlert);
   const shortName = ({ command: 'YARD', harvester: 'HARVESTER', refinery: 'REFINERY',
     factory: 'FACTORY', power: 'POWER' })[tacticalAlert.defId] || name;
   $('#tactical-alert-text').textContent = innerWidth <= 670
     ? engineer ? 'ENGINEER SPOTTED' : `${shortName} ${tacticalAlert.kind === 'lost' ? 'LOST' : 'HIT'}`
     : `${name} ${condition} · ${sector}`;
-  button.setAttribute('aria-label', `${name} ${condition.toLowerCase()} at sector ${sector}. Center camera on alert.`);
-  button.title = `Center on ${name.toLowerCase()} alert · sector ${sector}`;
+  button.setAttribute('aria-label', `${name} ${condition.toLowerCase()} at sector ${sector}. Jump to next tactical alert. F3 cycles alerts.`);
+  button.title = `Jump to tactical alert · F3 cycles ${fronts.length} ${fronts.length===1?'location':'locations'}`;
 }
 function scanTacticalDamage() {
   if (!game || !playing || replayMode || gameEnded) { renderTacticalAlert(); return; }
-  const next = tacticalDamageMonitor.observe(game);
-  if (next && (!tacticalAlert || game.time >= tacticalAlert.until ||
-      next.priority >= tacticalAlert.priority)) {
-    tacticalAlert = { ...next, until: game.time + (next.kind === 'lost' ? 10 : 8) };
-    if (next.priority >= 3) audio.play('alert');
+  const next = tacticalDamageMonitor.observeAll(game);
+  tacticalFronts.ingest(next, game.time);
+  if (next.some(alert=>alert.priority>=3) && game.time-lastTacticalSoundTime>=2.5) {
+    lastTacticalSoundTime = game.time;
+    audio.play('alert');
   }
   renderTacticalAlert();
 }
@@ -3060,6 +3135,7 @@ function resizeCanvases() {
   const rect = canvas.parentElement.getBoundingClientRect();
   dpr = Math.min(devicePixelRatio || 1, 2);
   visibleW = rect.width; visibleH = rect.height;
+  $('.battlefield-wrap').style.setProperty('--tactical-feed-space',`${Math.max(72,rect.height-76)}px`);
   canvas.style.width = `${rect.width}px`; canvas.style.height = `${rect.height}px`;
   overlay.width = Math.round(rect.width * dpr); overlay.height = Math.round(rect.height * dpr);
   overlay.style.width = `${rect.width}px`; overlay.style.height = `${rect.height}px`;
@@ -4118,11 +4194,11 @@ function render(t) {
   octx.clearRect(0,0,visibleW,visibleH);
   if(renderer3d){
     syncRendererView();
-    renderer3d.render(game,{centerX:renderer3d.centerX,centerY:renderer3d.centerY,zoom:camera.zoom,time:t,placeId,pointerWorld:{x:pointer.wx,y:pointer.wy}});
+    renderer3d.render(game,{centerX:renderer3d.centerX,centerY:renderer3d.centerY,zoom:camera.zoom,time:t,placeId,pointerWorld:{x:pointer.wx,y:pointer.wy},tacticalFocus:replayMode?null:tacticalFocus});
     draw3dHealthOverlay();
     drawBridgeHealthOverlay();
     if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);drawDeadSignalMarkers(t);}
-    drawQueuedRoute();drawSelectionBox();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();
+    drawQueuedRoute();drawSelectionBox();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();drawTacticalFocusOverlay(t);
     return;
   }
   ctx.clearRect(0,0,visibleW,visibleH);
@@ -4132,7 +4208,32 @@ function render(t) {
   for(const wreck of game.wrecks||[])drawWreckFallback(wreck,t);
   const entities=[...game.buildings.map(o=>({o,k:0,y:o.y+o.h})),...game.units.filter(o=>!o.embarkedIn).map(o=>({o,k:1,y:o.y}))].sort((a,b)=>a.y-b.y);
   for(const e of entities){if(e.k===0)drawBuilding(e.o,t);else drawUnit(e.o,t);}
-  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);drawDeadSignalMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();
+  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);drawDeadSignalMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();drawTacticalFocusOverlay(t);
+}
+function drawTacticalFocusOverlay(time) {
+  if(!tacticalFocus || replayMode) return;
+  const age=time-tacticalFocus.startedAt;
+  if(age<0 || age>=2.6) return;
+  const p=toScreen(tacticalFocus.x,tacticalFocus.y), reduced=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const radius=Math.max(14,scale()*tacticalFocus.radius), fade=age>2.1?(2.6-age)/.5:1;
+  octx.save();octx.translate(p.x,p.y);octx.globalAlpha=fade;
+  octx.strokeStyle=tacticalFocus.kind==='lost'?'#ff8f83':tacticalFocus.kind==='engineer'?'#79e2ce':'#ffbf62';octx.lineWidth=1.8;
+  if(renderer3d) {
+    // Crisp corners keep the chosen location readable through tall own-force
+    // models and crystals without changing the terrain marker's depth rules.
+    const halfW=Math.max(20,radius),halfH=halfW*.62,length=Math.max(6,halfW*.24);
+    octx.translate(0,-halfH*.25);octx.shadowColor=octx.strokeStyle;octx.shadowBlur=4;
+    octx.beginPath();
+    for(const xSign of [-1,1])for(const ySign of [-1,1]) {
+      const x=xSign*halfW,y=ySign*halfH;
+      octx.moveTo(x-xSign*length,y);octx.lineTo(x,y);octx.lineTo(x,y-ySign*length);
+    }
+    octx.stroke();octx.restore();return;
+  }
+  octx.setLineDash([6,4]);octx.beginPath();octx.ellipse(0,0,radius,radius*.6,0,0,Math.PI*2);octx.stroke();
+  octx.setLineDash([]);octx.globalAlpha=.4*fade;
+  const ring=radius*(reduced ? .7 : .47+Math.min(1,age/2.1)*.64);
+  octx.beginPath();octx.ellipse(0,0,ring,ring*.6,0,0,Math.PI*2);octx.stroke();octx.restore();
 }
 function drawSalvageDropFallback(t){
   const drop=game?.salvageDrop;
@@ -4471,12 +4572,15 @@ function drawMinimap() {
     mctx.lineTo(px,py+4);mctx.lineTo(px-4,py);mctx.closePath();mctx.fill();
     mctx.restore();
   }
-  if(tacticalAlert&&game.time<tacticalAlert.until&&!replayMode){
-    const px=tacticalAlert.x*cw,py=tacticalAlert.y*ch;
-    const radius=5+2.5*(1+Math.sin(displayTime*7));
-    mctx.strokeStyle=tacticalAlert.kind==='lost'?'#ff7869':'#ffd17b';
+  const reducedAlertMotion=matchMedia('(prefers-reduced-motion: reduce)').matches;
+  for(const front of activeTacticalFronts()){
+    const px=front.x*cw,py=front.y*ch;
+    const focused=front.key===tacticalFocusedKey;
+    const radius=focused?8:reducedAlertMotion?6:6+1.8*Math.sin(displayTime*4);
+    const color=front.kind==='lost'?'#ff7869':front.kind==='engineer'?'#79e2ce':'#ffd17b';
+    mctx.strokeStyle=color;
     mctx.lineWidth=2;mctx.beginPath();mctx.arc(px,py,radius,0,Math.PI*2);mctx.stroke();
-    mctx.fillStyle=tacticalAlert.kind==='lost'?'#ff7869':'#ffd17b';
+    mctx.fillStyle=color;
     mctx.fillRect(px-1.5,py-1.5,3,3);
   }
   for(const missionTarget of missionTargets){
@@ -6318,11 +6422,9 @@ function processEvents() {
       if(game.mode!=='skirmish'||replayMode||raider?.owner!=='enemy'||raider.hp<=0||
           !game.isVisible(raider,'player')||!Number.isFinite(e.sectorX)||!Number.isFinite(e.sectorY))continue;
       // Keep the observed sector fixed: the alert must not track a raider into fog.
-      if(!tacticalAlert||game.time>=tacticalAlert.until||tacticalAlert.priority<=4){
-        tacticalAlert={kind:'engineer',defId:'engineer',x:e.sectorX+0.5,y:e.sectorY+0.5,
-          priority:4,until:game.time+10};
-        renderTacticalAlert();
-      }
+      tacticalFronts.ingest([{id:e.unitId,kind:'engineer',defId:'engineer',x:e.sectorX+0.5,y:e.sectorY+0.5,
+        priority:4}],game.time);
+      renderTacticalAlert();
       toast('HOSTILE ENGINEER SPOTTED · INTERCEPT OR REPAIR ABOVE 75%',true,6500);
       audio.play('alert');continue;
     }
@@ -7738,10 +7840,20 @@ $('#salvage-locator').addEventListener('click',()=>{
   }
   drawMinimap();
 });
-$('#tactical-alert').addEventListener('click',()=>{
-  if(!tacticalAlert||!game||game.time>=tacticalAlert.until||replayMode)return;
-  centerCamera(tacticalAlert.x,tacticalAlert.y);
-  drawMinimap();
+$('#tactical-alert').addEventListener('click',cycleTacticalFront);
+$('#tactical-front-toggle').addEventListener('click',()=>{
+  setTacticalFrontsOpen(!tacticalFrontsOpen,{focusFirst:true});
+  renderTacticalAlert();
+});
+$('#tactical-front-close').addEventListener('click',()=>setTacticalFrontsOpen(false,{restoreFocus:true}));
+$('#tactical-front-list').addEventListener('click',event=>{
+  const key=event.target.closest('[data-front-key]')?.dataset.frontKey;
+  if(!key)return;
+  focusTacticalFront(activeTacticalFronts().find(front=>front.key===key));
+  $('#tactical-alert').focus();
+});
+window.addEventListener('pointerdown',event=>{
+  if(tacticalFrontsOpen&&!event.target.closest('.tactical-feed'))setTacticalFrontsOpen(false);
 });
 $('#configure-game').addEventListener('click',openSetup);
 $('#campaign-menu').addEventListener('click',openCampaign);
@@ -8692,6 +8804,9 @@ window.addEventListener('keydown',e=>{
   if(e.key==='Escape'&&battlefieldPickerIsOpen()){
     e.preventDefault();setBattlefieldPickerOpen(false,{restoreFocus:true});return;
   }
+  if(e.key==='Escape'&&tacticalFrontsOpen){
+    e.preventDefault();setTacticalFrontsOpen(false,{restoreFocus:true});return;
+  }
   if(e.key==='Escape'&&blueprintInspect){e.preventDefault();closeBlueprintDetails(true);return;}
   if(e.code==='KeyO'&&playing&&!paused&&
     !e.target.closest?.('input,select,textarea,[contenteditable="true"]')){
@@ -8716,6 +8831,9 @@ window.addEventListener('keydown',e=>{
   }
   if(e.key==='Escape'){if(!$('#manual').classList.contains('hidden'))closeManual();else if(!$('#setup').classList.contains('hidden'))closeSetup();else if(!cancelActiveTargeting()&&playing)togglePause();return;}
   if(!playing||paused||e.target.closest?.('input,select,textarea,[contenteditable="true"]'))return;
+  if(e.code==='F3'&&!e.ctrlKey&&!e.metaKey&&!e.altKey){
+    e.preventDefault();if(!e.repeat)cycleTacticalFront();return;
+  }
   if(['KeyW','KeyA','KeyS','KeyD','KeyQ'].includes(e.code)&&
     !(e.shiftKey&&['KeyA','KeyS'].includes(e.code))){
     e.preventDefault();if(!e.repeat)nudgeCamera(cameraKeyDirections[e.code],.75);panKeys.add(e.code);return;

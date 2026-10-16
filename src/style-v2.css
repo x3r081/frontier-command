@@ -615,6 +615,64 @@ button:focus-visible { outline: 2px solid #e0ff9c; outline-offset: 3px; }
 .tactical-alert.active { border-color: rgba(255, 207, 118, .92); color: #ffd888; box-shadow: 0 0 0 1px rgba(255, 207, 118, .18), 0 0 24px rgba(255, 176, 83, .17); }
 .tactical-alert.lost { border-color: rgba(255, 120, 105, .94); color: #ff998d; box-shadow: 0 0 0 1px rgba(255, 120, 105, .2), 0 0 24px rgba(255, 91, 72, .19); }
 .tactical-alert.active:hover { background: #40301f; }
+.tactical-feed {
+  position: relative; z-index: 2; display: flex; flex: 0 1 min(315px, 40%); align-items: center; gap: 4px;
+  width: min(315px, 40%); min-width: 0; pointer-events: none;
+}
+.battlefield-bottom:has(.tactical-fronts:not(.hidden)) { z-index: 14; }
+.tactical-feed .tactical-alert {
+  flex: 1 1 auto; width: auto; max-width: none; min-width: 0; min-height: 36px; padding-inline: 9px;
+  border-color: rgba(156, 202, 144, .45); background: rgba(5, 17, 13, .92);
+}
+.tactical-front-toggle {
+  display: inline-flex; flex: 0 0 44px; align-items: center; justify-content: center; gap: 2px;
+  min-width: 44px; min-height: 44px; padding: 0 5px; border: 1px solid rgba(160, 211, 146, .46);
+  background: linear-gradient(180deg, rgba(23, 48, 33, .97), rgba(7, 21, 16, .97)); color: #d9efc8;
+  font: 800 12px/1 "Barlow Condensed", sans-serif; pointer-events: auto; transition: border-color .15s, color .15s, background .15s;
+}
+.tactical-front-toggle:hover:not(:disabled), .tactical-front-toggle[aria-expanded="true"] { border-color: #c9ff66; color: #efffd0; background: #1e3826; }
+.tactical-front-toggle:disabled { opacity: .55; cursor: default; }
+.tactical-front-chevron { color: #a9d88d; font-size: 14px; line-height: .8; }
+.tactical-front-toggle[aria-expanded="true"] .tactical-front-chevron { transform: rotate(180deg); }
+.tactical-fronts {
+  position: absolute; left: 0; bottom: calc(100% + 8px); display: flex; flex-direction: column;
+  width: min(340px, calc(100vw - 24px)); max-height: min(220px, var(--tactical-feed-space, 220px)); min-height: 72px;
+  overflow: hidden; border: 1px solid rgba(170, 219, 151, .56); border-top: 2px solid #a6cf72;
+  background: linear-gradient(155deg, rgba(13, 31, 22, .985), rgba(4, 15, 12, .985));
+  box-shadow: 0 14px 36px rgba(0, 0, 0, .58), inset 0 1px rgba(232, 255, 213, .06); backdrop-filter: blur(9px);
+  pointer-events: auto;
+}
+.tactical-fronts.hidden { display: none; }
+.tactical-fronts-header {
+  display: flex; flex: 0 0 35px; align-items: center; justify-content: space-between; gap: 10px;
+  padding: 0 7px 0 11px; border-bottom: 1px solid rgba(159, 205, 143, .24); color: #d8edc2;
+}
+.tactical-fronts-header strong { font: 800 11px/1 "Barlow Condensed", sans-serif; letter-spacing: .19em; }
+.tactical-fronts-header button {
+  display: grid; flex: 0 0 32px; width: 32px; height: 32px; place-items: center; padding: 0;
+  border: 1px solid transparent; background: transparent; color: #a9bea7; font-size: 22px; line-height: 1;
+}
+.tactical-fronts-header button:hover { border-color: rgba(201, 255, 102, .45); color: #eaffcf; }
+.tactical-front-list { display: flex; flex: 1 1 auto; flex-direction: column; gap: 3px; min-height: 0; margin: 0; padding: 5px; overflow-y: auto; list-style: none; overscroll-behavior: contain; scrollbar-color: #607e56 #0b1a12; }
+.tactical-front-list > li { flex: 0 0 auto; min-width: 0; margin: 0; padding: 0; }
+.tactical-front-row {
+  display: grid; grid-template-columns: 30px minmax(0, 1fr) auto; align-items: center; gap: 8px;
+  width: 100%; min-height: 44px; padding: 5px 8px; border: 1px solid rgba(143, 186, 128, .23);
+  background: rgba(18, 39, 26, .7); color: #d6e6d0; text-align: left; pointer-events: auto;
+  transition: border-color .15s, background .15s, color .15s;
+}
+.tactical-front-row:hover, .tactical-front-row:focus-visible { border-color: rgba(201, 255, 102, .68); background: rgba(38, 67, 39, .88); }
+.tactical-front-row.is-focused { box-shadow: inset 2px 0 #f3d28a; }
+.tactical-front-icon { display: grid; width: 28px; height: 28px; place-items: center; border: 1px solid rgba(255, 207, 118, .42); background: rgba(119, 81, 34, .19); color: #ffd581; font-size: 15px; }
+.tactical-front-copy { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.tactical-front-copy strong { overflow: hidden; color: #f0f3e6; font: 700 12px/1.05 "Barlow Condensed", sans-serif; letter-spacing: .045em; text-overflow: ellipsis; white-space: nowrap; }
+.tactical-front-copy small { overflow: hidden; color: #a8c1a9; font: 500 9px/1.1 Inter, Arial, sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.tactical-front-meta { color: #c5d3ba; font: 700 10px/1 "Barlow Condensed", sans-serif; letter-spacing: .04em; white-space: nowrap; }
+.tactical-front-row.engineer .tactical-front-icon { border-color: rgba(110, 220, 184, .55); background: rgba(26, 109, 82, .2); color: #89ebc9; }
+.tactical-front-row.engineer .tactical-front-copy strong { color: #c0f3dc; }
+.tactical-front-row.lost { border-color: rgba(235, 111, 97, .36); background: rgba(71, 28, 24, .55); }
+.tactical-front-row.lost .tactical-front-icon { border-color: rgba(255, 120, 105, .54); background: rgba(130, 43, 38, .24); color: #ff9b8d; }
+.tactical-front-row.lost .tactical-front-copy strong, .tactical-front-row.lost .tactical-front-meta { color: #ffaaa0; }
 .placement-hint { max-width: calc(100% - 24px); text-align: center; }
 .toast { border-radius: 1px; }
 
@@ -917,6 +975,12 @@ button:focus-visible { outline: 2px solid #e0ff9c; outline-offset: 3px; }
   .battlefield-wrap:has(#multiplayer-status:not(.hidden)) .battlefield-picker { top: 116px; }
   .coordinate-label, .signal-mark { font-size: 10px; padding: 7px 8px; }
   .tactical-alert { max-width: 40%; }
+  .battlefield-bottom .tactical-feed { flex: 0 1 40%; width: 40%; max-width: 315px; }
+  .battlefield-bottom .tactical-feed .tactical-alert { flex: 0 0 44px; width: 44px; min-width: 44px; min-height: 44px; justify-content: center; padding: 0; }
+  .battlefield-bottom .tactical-feed .tactical-alert span { display: none; }
+  .tactical-fronts { width: min(340px, calc(100vw - 20px)); }
+  .tactical-fronts-header { flex-basis: 44px; }
+  .tactical-fronts-header button { flex-basis: 44px; width: 44px; height: 44px; }
   .zoom-controls { gap: 2px; }
   .toast-container { left: 10px; bottom: 58px; }
   .topbar {

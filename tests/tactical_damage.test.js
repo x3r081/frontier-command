@@ -40,3 +40,28 @@ test('tactical damage monitor treats a restored earlier game time as a fresh bas
   game.time = 6; game.units[0].hp = 85;
   assert.equal(monitor.observe(game)?.id, 'h');
 });
+
+test('observeAll returns simultaneous own-force alerts and loss bypasses damage cooldown', () => {
+  const monitor = createTacticalDamageMonitor();
+  const game = { time: 0, units: [unit('h', 'harvester', 100), unit('t', 'lightTank', 100)],
+    buildings: [building('c', 'command', 100)] };
+  monitor.observeAll(game);
+  game.time = 1;
+  game.units[0].hp = 70;
+  game.units[1].hp = 70;
+  game.buildings[0].hp = 70;
+  assert.deepEqual(monitor.observeAll(game).map(({ id }) => id), ['c', 'h', 't']);
+  game.time = 2;
+  game.units = [];
+  assert.deepEqual(monitor.observeAll(game).map(({ id, kind }) => [id, kind]), [['h', 'lost']]);
+});
+
+test('embarked units do not create disappearance loss alerts', () => {
+  const monitor = createTacticalDamageMonitor();
+  const troop = unit('t', 'lightTank', 100);
+  const game = { time: 0, units: [troop], buildings: [] };
+  monitor.observeAll(game);
+  game.time = 1;
+  game.units = [{ ...troop, embarkedIn: 'transport-1' }];
+  assert.deepEqual(monitor.observeAll(game), []);
+});

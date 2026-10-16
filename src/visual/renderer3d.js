@@ -1232,6 +1232,51 @@ export class Renderer3D {
     this.armorFacingIndicator.position.y=0.17;
     this.armorFacingIndicator.renderOrder=5;
     this.scene.add(this.armorFacingIndicator);
+    // A single, reusable locator marks the explicit location from a tactical
+    // alert. Its two line draws stay attached to the terrain surface and never
+    // inspect visibility or entity state.
+    const focusReticlePositions=[];
+    const focusReticleRadius=0.75;
+    for(let arc=0;arc<8;arc++) {
+      const start=arc*Math.PI/4+0.09,end=(arc+1)*Math.PI/4-0.09;
+      const steps=4;
+      for(let step=0;step<steps;step++) {
+        const a=start+(end-start)*step/steps,b=start+(end-start)*(step+1)/steps;
+        focusReticlePositions.push(
+          Math.cos(a)*focusReticleRadius,0,Math.sin(a)*focusReticleRadius,
+          Math.cos(b)*focusReticleRadius,0,Math.sin(b)*focusReticleRadius,
+        );
+      }
+      // Short inward ticks make the broken circle read as a locator.
+      const angle=(start+end)/2;
+      focusReticlePositions.push(
+        Math.cos(angle)*0.60,0,Math.sin(angle)*0.60,
+        Math.cos(angle)*0.70,0,Math.sin(angle)*0.70,
+      );
+    }
+    const focusReticleGeometry=new THREE.BufferGeometry();
+    focusReticleGeometry.setAttribute('position',new THREE.Float32BufferAttribute(focusReticlePositions,3));
+    this.tacticalFocusGroup=new THREE.Group();
+    this.tacticalFocusGroup.name='Tactical alert locator';
+    this.tacticalFocusReticle=new THREE.LineSegments(focusReticleGeometry,new THREE.LineBasicMaterial({
+      color:0xffbf62,transparent:true,opacity:0.9,depthWrite:false,depthTest:true,fog:false,toneMapped:false,
+    }));
+    const focusRingPositions=[];
+    for(let i=0;i<48;i++) {
+      const a=i*Math.PI*2/48,b=(i+1)*Math.PI*2/48;
+      focusRingPositions.push(Math.cos(a),0,Math.sin(a),Math.cos(b),0,Math.sin(b));
+    }
+    const focusRingGeometry=new THREE.BufferGeometry();
+    focusRingGeometry.setAttribute('position',new THREE.Float32BufferAttribute(focusRingPositions,3));
+    this.tacticalFocusRingBasePositions=new Float32Array(focusRingPositions);
+    this.tacticalFocusRing=new THREE.LineSegments(focusRingGeometry,new THREE.LineBasicMaterial({
+      color:0xffbf62,transparent:true,opacity:0.36,depthWrite:false,depthTest:true,fog:false,toneMapped:false,
+    }));
+    this.tacticalFocusRing.scale.set(1,1,1);
+    this.tacticalFocusGroup.add(this.tacticalFocusRing,this.tacticalFocusReticle);
+    this.tacticalFocusGroup.visible=false;
+    this.tacticalFocusGroup.renderOrder=12;
+    this.scene.add(this.tacticalFocusGroup);
     // A lower raking key light puts longer, readable shadows across the
     // faceted ground and structures at tactical scale.
     this.sun = new THREE.DirectionalLight(0xffddb0, 3.25);
@@ -7802,7 +7847,50 @@ export class Renderer3D {
     }
   }
 
-  render(game,{centerX=this.centerX,centerY=this.centerY,zoom=this.zoom,time=0,placeId=null,pointerWorld=null,selectionRect=null}={}) {
+  syncTacticalFocus(focus,time,game) {
+    const valid=focus&&game&&Number.isFinite(focus.x)&&Number.isFinite(focus.y)
+      &&Number.isFinite(focus.startedAt)&&Number.isFinite(time)
+      &&focus.x>=0&&focus.y>=0&&focus.x<game.width&&focus.y<game.height;
+    const age=valid?time-focus.startedAt:NaN;
+    if(!valid||age<0||age>=2.6) {
+      this.tacticalFocusGroup.visible=false;
+      return;
+    }
+    const x=focus.x,z=focus.y;
+    const centerHeight=this.visualHeightAt(x,z);
+    const radius=Number.isFinite(focus.radius)&&focus.radius>0?clamp(focus.radius,0.5,3):1.25;
+    const horizontalScale=radius/0.75;
+    this.tacticalFocusGroup.position.set(x,centerHeight+0.07,z);
+    this.tacticalFocusGroup.scale.set(horizontalScale,1,horizontalScale);
+    const reducedMotion=this.reducedMotionQuery?.matches??false;
+    const fade=age>2.1?clamp((2.6-age)/0.5,0,1):1;
+    const lost=typeof focus.kind==='string'&&focus.kind.toLowerCase().includes('lost');
+    const engineer=typeof focus.kind==='string'&&focus.kind.toLowerCase().includes('engineer');
+    const color=lost?0xff8f83:engineer?0x79e2ce:0xffbf62;
+    this.tacticalFocusReticle.material.color.setHex(color);
+    this.tacticalFocusRing.material.color.setHex(engineer?0xffbf62:color);
+    this.tacticalFocusReticle.material.opacity=0.9*fade;
+    this.tacticalFocusRing.material.opacity=(reducedMotion?0.24:0.36)*fade;
+    const ringScale=reducedMotion?0.52:0.35+0.48*clamp(age/2.1,0,1);
+    const reticlePositions=this.tacticalFocusReticle.geometry.attributes.position;
+    for(let i=0;i<reticlePositions.count;i++) {
+      const px=reticlePositions.getX(i),pz=reticlePositions.getZ(i);
+      reticlePositions.setY(i,this.visualHeightAt(x+px*horizontalScale,z+pz*horizontalScale)-centerHeight);
+    }
+    reticlePositions.needsUpdate=true;
+    const ringPositions=this.tacticalFocusRing.geometry.attributes.position;
+    for(let i=0;i<ringPositions.count;i++) {
+      const px=this.tacticalFocusRingBasePositions[i*3]*ringScale;
+      const pz=this.tacticalFocusRingBasePositions[i*3+2]*ringScale;
+      ringPositions.setXYZ(i,px,
+        this.visualHeightAt(x+px*horizontalScale,z+pz*horizontalScale)-centerHeight,
+        pz);
+    }
+    ringPositions.needsUpdate=true;
+    this.tacticalFocusGroup.visible=true;
+  }
+
+  render(game,{centerX=this.centerX,centerY=this.centerY,zoom=this.zoom,time=0,placeId=null,pointerWorld=null,selectionRect=null,tacticalFocus=null}={}) {
     if(!game) return;
     this.fogTimeUniform.value=time;
     this._syncSandWind(time);
@@ -7812,6 +7900,7 @@ export class Renderer3D {
     if(this.terrain!==game.terrain) this._buildTerrain(game);
     else this._syncTerrainChanges(game);
     this._syncVisualHeightFootprints(game);
+    this.syncTacticalFocus(tacticalFocus,time,game);
     this._syncGroundFlatZones(game,centerX,centerY);
     this._syncCrashSite(game);
     this._syncFog(game);
@@ -7878,6 +7967,11 @@ export class Renderer3D {
     this.scene.remove(this.armorFacingIndicator);
     this.armorFacingIndicator.geometry.dispose();
     this.armorFacingIndicator.material.dispose();
+    this.scene.remove(this.tacticalFocusGroup);
+    this.tacticalFocusReticle.geometry.dispose();
+    this.tacticalFocusReticle.material.dispose();
+    this.tacticalFocusRing.geometry.dispose();
+    this.tacticalFocusRing.material.dispose();
     for(const visual of this.relays.values()) {this.scene.remove(visual);visual.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});}
     this.relays.clear();
     this._disposeSalvageDropVisual();
