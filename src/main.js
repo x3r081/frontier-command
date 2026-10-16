@@ -2335,7 +2335,7 @@ function projectedUnitPick(unit) {
   const def = game.unitDefs?.[unit.defId];
   if (!def) return null;
   const center = renderer3d.worldToScreen(unit.x, unit.y,
-    def.flying ? 1.1 : def.armor === 'infantry' ? 0.55 : 0.48);
+    def.flying ? 1.1 : def.armor === 'infantry' ? 0.55 : 0.48,{absoluteHeight:!!def.flying});
   return {
     x: center.x, y: center.y,
     rx: def.flying ? Math.max(22, 28 * camera.zoom)
@@ -2985,7 +2985,7 @@ function draw3dHealthOverlay(){
     const worldX=building?entity.x+entity.w/2:entity.x;
     const worldY=building?entity.y+entity.h/2:entity.y;
     const height=building?1.85:def?.flying?1.9:def?.armor==='infantry'?1.27:1.55;
-    const p=renderer3d.worldToScreen(worldX,worldY,height);
+    const p=renderer3d.worldToScreen(worldX,worldY,height,{absoluteHeight:!!def?.flying});
     if(p.x<-60||p.y<-12||p.x>visibleW+60||p.y>visibleH+12)continue;
     const w=Math.max(30,Math.min(68,(building?52:36)*camera.zoom));
     const x=Math.round(p.x-w/2),y=Math.round(p.y);
@@ -3114,15 +3114,56 @@ function missionUplinkTargets(){
   }
   return [];
 }
+function selectedOrderMinimapCues(selectedIds,cw,ch){
+  const cues=[];
+  let inspected=0;
+  for(const unit of game.units){
+    if(!selectedIds.has(unit.id))continue;
+    if(inspected++>=48||cues.length>=24)break;
+    if(unit.owner!=='player'||unit.hp<=0||unit.embarkedIn)continue;
+    const order=unit.order||{};
+    let target=null,color='#79e8df';
+    if((order.type==='move'||order.type==='forceMove'||order.type==='unload')&&
+       Number.isFinite(order.x)&&Number.isFinite(order.y)){
+      target={x:order.x,y:order.y};
+      if(order.reverse||order.attackMove)color='#ffd17b';
+    }else if(order.type==='patrol'){
+      const leg=order.leg===1;
+      const x=leg?order.bx:order.ax,y=leg?order.by:order.ay;
+      if(Number.isFinite(x)&&Number.isFinite(y))target={x,y};
+    }else if(order.type==='attack'){
+      const entity=game.getEntity?.(order.targetId);
+      if(entity&&entity.hp>0&&entity.owner==='enemy'&&game.isVisible(entity)){
+        target={x:entity.x+(entity.w||0)/2,y:entity.y+(entity.h||0)/2};
+        color='#ffd17b';
+      }
+    }else if(order.type==='follow'||order.type==='board'){
+      const entity=game.getEntity?.(order.type==='board'?order.carrierId:order.targetId);
+      if(entity&&entity.hp>0&&entity.owner==='player'&&!entity.embarkedIn)
+        target={x:entity.x+(entity.w||0)/2,y:entity.y+(entity.h||0)/2};
+    }else if(order.type==='harvest'&&Number.isFinite(order.x)&&Number.isFinite(order.y)){
+      target={x:order.x+.5,y:order.y+.5};
+    }
+    if(!target||target.x<0||target.y<0||target.x>game.width||target.y>game.height)continue;
+    cues.push({fromX:unit.x*cw,fromY:unit.y*ch,toX:target.x*cw,toY:target.y*ch,color});
+  }
+  return cues;
+}
 function drawMinimap() {
   if(!game)return;
   const w=minimap.width,h=minimap.height,cw=w/game.width,ch=h/game.height;
   const missionTargets=missionUplinkTargets();
   const lastSeenContacts=lastSeenHostileContacts();
+  const selectedIds=new Set(game.selection||[]);
+  const orderCues=game.radar?.player||missionTargets.length
+    ?selectedOrderMinimapCues(selectedIds,cw,ch):[];
+  const orderCueDescription=orderCues.length
+    ?' Cyan or gold dashed lines connect selected units to their current order destinations; enemy targets appear only while visible.'
+    :'';
   updateBattlefieldPickerIntelBadge(lastSeenContacts);
   minimap.setAttribute('aria-label', lastSeenContacts.length
-    ? 'Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unconfirmed last-seen hostile contacts are amber question marks.'
-    : 'Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unknown relays are circles.');
+    ? `Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unconfirmed last-seen hostile contacts are amber question marks.${orderCueDescription}`
+    : `Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unknown relays are circles.${orderCueDescription}`);
   mctx.clearRect(0,0,w,h);
   if(!game.radar?.player&&!missionTargets.length){
     minimap.style.cursor='default';
@@ -3145,7 +3186,23 @@ function drawMinimap() {
     else mctx.fillRect(bridge.x*cw,bridge.y*ch,Math.max(2,bridge.w*cw),Math.max(2,bridge.h*ch));
   }
   for(const b of game.buildings){if(b.owner==='enemy'&&!game.isVisible(b))continue;mctx.fillStyle=teamColor(b.owner);mctx.fillRect(b.x*cw,b.y*ch,Math.max(2,b.w*cw),Math.max(2,b.h*ch));}
-  const selectedIds=new Set(game.selection||[]);
+  if(orderCues.length){
+    mctx.save();mctx.globalAlpha=.58;mctx.lineWidth=1.2;mctx.setLineDash([2,3]);
+    for(const cue of orderCues){
+      mctx.strokeStyle=cue.color;
+      mctx.beginPath();mctx.moveTo(cue.fromX,cue.fromY);mctx.lineTo(cue.toX,cue.toY);mctx.stroke();
+    }
+    mctx.setLineDash([]);mctx.globalAlpha=.9;
+    const endpoints=[];
+    for(const cue of orderCues){
+      if(endpoints.some(point=>Math.hypot(point.x-cue.toX,point.y-cue.toY)<5))continue;
+      endpoints.push({x:cue.toX,y:cue.toY});
+      mctx.fillStyle='#071713';mctx.strokeStyle=cue.color;mctx.lineWidth=1.5;
+      mctx.beginPath();mctx.arc(cue.toX,cue.toY,3.6,0,Math.PI*2);mctx.fill();mctx.stroke();
+      mctx.fillStyle=cue.color;mctx.fillRect(cue.toX-1,cue.toY-1,2,2);
+    }
+    mctx.restore();
+  }
   for(const u of game.units){
     if(u.embarkedIn||u.owner==='enemy'&&!game.isVisible(u))continue;
     const px=u.x*cw,py=u.y*ch;

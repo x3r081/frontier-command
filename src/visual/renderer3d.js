@@ -23,6 +23,59 @@ const DOCTRINE_RING_COLORS = Object.freeze({rapid:0x72e8e9,reinforced:0xffd67d,p
 const BUILDING_RUIN_LIFETIME = 150;
 const BUILDING_COLLAPSE_DURATION = 0.92;
 const GROUND_FLAT_ZONE_CAPACITY = 16;
+// Four samples per tile keep the field small (48 KiB on a 64 × 48 map).
+// Linear filtering turns the step into a quarter-tile traversable shoulder.
+const VISUAL_HEIGHT_SAMPLES = 4;
+const VISUAL_PLATEAU_HEIGHT = 0.22;
+const VISUAL_HEIGHT_RANGE = 0.5;
+const BRIDGE_DECK_HEIGHT = 0.235;
+const VISUAL_HEIGHT_GLSL = `
+  uniform sampler2D uVisualHeight;
+  uniform vec2 uVisualHeightSize;
+  float visualHeight(vec2 p){
+    return texture2D(uVisualHeight,clamp(p/uVisualHeightSize,vec2(0.0),vec2(1.0))).r*${VISUAL_HEIGHT_RANGE.toFixed(3)};
+  }
+`;
+
+// Surface overlays use the same field without adding a mesh or draw. Applying
+// the world-up offset in local space also supports rotated, scaled instances.
+function followVisualSurface(material, uniforms, {relative=false, normal=false}={}) {
+  const compile=material.onBeforeCompile;
+  const programKey=material.customProgramCacheKey.bind(material);
+  material.customProgramCacheKey=()=>`${programKey()}:raised-surface:${relative}:${normal}:v1`;
+  material.onBeforeCompile=shader=>{
+    compile.call(material,shader);
+    Object.assign(shader.uniforms,uniforms);
+    shader.vertexShader=`${VISUAL_HEIGHT_GLSL}
+${normal?'varying vec2 vRaisedSurfaceXZ;':''}
+${shader.vertexShader}`.replace(
+      '#include <project_vertex>',
+      `#ifdef USE_INSTANCING
+       mat4 raisedWorldMatrix=modelMatrix*instanceMatrix;
+       #else
+       mat4 raisedWorldMatrix=modelMatrix;
+       #endif
+       vec3 raisedWorld=(raisedWorldMatrix*vec4(transformed,1.0)).xyz;
+       float raisedOffset=visualHeight(raisedWorld.xz)${relative?'-visualHeight((modelMatrix*vec4(0.0,0.0,0.0,1.0)).xz)':''};
+       transformed+=inverse(mat3(raisedWorldMatrix))*vec3(0.0,raisedOffset,0.0);
+       ${normal?'vRaisedSurfaceXZ=raisedWorld.xz;':''}
+       #include <project_vertex>`
+    );
+    if(normal)shader.fragmentShader=`${VISUAL_HEIGHT_GLSL}
+varying vec2 vRaisedSurfaceXZ;
+${shader.fragmentShader}`.replace(
+      '#include <normal_fragment_maps>',
+      `#include <normal_fragment_maps>
+       float raisedStep=0.125;
+       float raisedDx=(visualHeight(vRaisedSurfaceXZ+vec2(raisedStep,0.0))-visualHeight(vRaisedSurfaceXZ-vec2(raisedStep,0.0)))/(2.0*raisedStep);
+       float raisedDz=(visualHeight(vRaisedSurfaceXZ+vec2(0.0,raisedStep))-visualHeight(vRaisedSurfaceXZ-vec2(0.0,raisedStep)))/(2.0*raisedStep);
+       vec3 raisedNormal=normalize(vec3(-raisedDx,1.0,-raisedDz));
+       normal=normalize((viewMatrix*vec4(raisedNormal,0.0)).xyz);`
+    );
+  };
+  material.needsUpdate=true;
+  return material;
+}
 const HIDDEN_INSTANCE_MATRIX = new THREE.Matrix4().makeTranslation(0,-10000,0);
 const BUILDING_RUIN_FAMILIES = Object.freeze({
   command:'mast',radar:'mast',tech:'mast',
@@ -189,8 +242,9 @@ function collapsedWallGeometry() {
 }
 
 function tileColor(kind,x,z,detail=0,style=MAP_STYLES['shard-valley']) {
-  // Storm Basin water varies in its continuous world-space flow shader. Large
-  // per-tile tints make its shallow channels read as a checkerboard of slabs.
+  // River color stays continuous so flowing water reads clearly against the
+  // walkable banks. Its shader supplies moving current and reflected streaks.
+  if(kind==='water'&&style===MAP_STYLES['delta-crossing']) return new THREE.Color(0x23565a);
   if(kind==='water'&&style===MAP_STYLES['storm-basin']) return new THREE.Color(0x1c4d59);
   // Keep sand's discrete per-tile tint range narrow so its continuous
   // world-space shader carries the broad variation without a checker pattern.
@@ -203,89 +257,6 @@ function tileColor(kind,x,z,detail=0,style=MAP_STYLES['shard-valley']) {
   return c;
 }
 
-function addElevatedSectorContours(group, game, style, tmpObj) {
-  // Elevation is a tactical surface cue, not a change to entity coordinates.
-  // A shallow continuous rim gives vantage sectors a readable shelf profile
-  // while leaving their tiles, collision, and units on the normal ground plane.
-  const elevated=(x,z)=>game.terrain[z]?.[x]?.elevation===1;
-  const edges=[];
-  for(let z=0;z<game.height;z++)for(let x=0;x<game.width;x++) {
-    if(!elevated(x,z))continue;
-    if(!elevated(x,z-1))edges.push({x:x+0.5,z:z,axis:'x'});
-    if(!elevated(x+1,z))edges.push({x:x+1,z:z+0.5,axis:'z'});
-    if(!elevated(x,z+1))edges.push({x:x+0.5,z:z+1,axis:'x'});
-    if(!elevated(x-1,z))edges.push({x:x,z:z+0.5,axis:'z'});
-  }
-  if(!edges.length)return;
-  const makeBand=(height,width,topWidth,y,color,{emissive=0,eroded=false,name='elevated-sector-contour'}={})=>{
-    const material=new THREE.MeshStandardMaterial({color,emissive,emissiveIntensity:0.22,
-      roughness:0.86,metalness:0.08,flatShading:true});
-    if(height>0.1) {
-      material.customProgramCacheKey=()=> 'eroded-elevation-shelf-strata-v1';
-      material.onBeforeCompile=shader=>{
-        shader.vertexShader=`varying vec3 vShelfWorld; varying float vShelfSide;\n${shader.vertexShader}`.replace(
-          '#include <begin_vertex>',
-          `#include <begin_vertex>
-           #ifdef USE_INSTANCING
-           vShelfWorld=(modelMatrix*instanceMatrix*vec4(transformed,1.0)).xyz;
-           #else
-           vShelfWorld=(modelMatrix*vec4(transformed,1.0)).xyz;
-           #endif
-           vShelfSide=1.0-abs(normal.y);`
-        );
-        shader.fragmentShader=`varying vec3 vShelfWorld; varying float vShelfSide;
-          float shelfHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-          float shelfNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
-            return mix(mix(shelfHash(i),shelfHash(i+vec2(1.0,0.0)),f.x),
-              mix(shelfHash(i+vec2(0.0,1.0)),shelfHash(i+vec2(1.0,1.0)),f.x),f.y);}
-          ${shader.fragmentShader}`.replace(
-          '#include <color_fragment>',
-          `#include <color_fragment>
-           float strataPhase=vShelfWorld.y*145.0+shelfNoise(vShelfWorld.xz*2.3)*2.8;
-           float strata=1.0-smoothstep(0.12,0.64,abs(sin(strataPhase)));
-           float weathering=0.94+shelfNoise(vShelfWorld.xz*4.6)*0.10;
-           diffuseColor.rgb*=weathering*(1.0-vShelfSide*strata*0.17);`
-        );
-      };
-      material.needsUpdate=true;
-    }
-    const geometry=new THREE.BoxGeometry(1,height,width);
-    const positions=geometry.attributes.position;
-    const topScale=topWidth/width;
-    for(let vertex=0;vertex<positions.count;vertex++) {
-      const upper=clamp((positions.getY(vertex)+height/2)/height,0,1);
-      positions.setZ(vertex,positions.getZ(vertex)*(1-upper*(1-topScale)));
-    }
-    positions.needsUpdate=true;geometry.computeVertexNormals();
-    const mesh=new THREE.InstancedMesh(geometry,material,edges.length);
-    mesh.name=name;mesh.count=edges.length;
-    mesh.castShadow=false;mesh.receiveShadow=true;mesh.frustumCulled=false;mesh.raycast=()=>{};
-    edges.forEach((edge,index)=>{
-      tmpObj.position.set(edge.x,y,edge.z);
-      tmpObj.rotation.set(0,edge.axis==='z'?Math.PI/2:0,0);
-      const length=eroded?0.46+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),949)*0.34:1.005;
-      tmpObj.scale.set(length,1,1);
-      if(eroded)tmpObj.translateX((hash(Math.floor(edge.x*2),Math.floor(edge.z*2),951)-0.5)*0.22);
-      tmpObj.updateMatrix();mesh.setMatrixAt(index,tmpObj.matrix);
-      const variation=eroded
-        ?0.83+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),941)*0.20
-        :0.91+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),941)*0.17;
-      mesh.setColorAt(index,new THREE.Color(variation,variation,variation));
-    });
-    mesh.instanceMatrix.needsUpdate=true;
-    if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;
-    group.add(mesh);
-  };
-  // The tapered bank keeps the whole tactical boundary while reading as a
-  // low mineral shelf. Shorter, muted crest fragments suggest worn strata
-  // instead of a continuous constructed curb.
-  makeBand(0.18,0.17,0.08,0.045,
-    new THREE.Color(style.shelf).lerp(new THREE.Color(style.rock),0.24),
-    {name:'elevated-sector-contour-bank'});
-  makeBand(0.024,0.105,0.068,0.145,
-    new THREE.Color(style.patch).lerp(new THREE.Color(style.shelf),0.56),
-    {name:'elevated-sector-contour-crest',eroded:true});
-}
 
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.78, metalness: 0.13, flatShading: true, ...opts });
@@ -317,11 +288,11 @@ function addVegetationWind(material, timeUniform, motionUniform, sway, cacheKey)
   return material;
 }
 
-function sandMaterial(style, groundQualityUniform, sandWindTimeUniform) {
+function sandMaterial(style, groundQualityUniform, sandWindTimeUniform, visualHeightUniforms) {
   const material=mat(0xffffff,{roughness:0.98,metalness:0.01});
   // The shader embeds theater colors as source literals. Give each palette a
   // distinct program key so a later map cannot inherit the first map's GLSL.
-  material.customProgramCacheKey=()=>`ground:${style.silt.join(',')}:${style.ochre.join(',')}:${style.valley?.join(',')||''}:wind-v1`;
+  material.customProgramCacheKey=()=>`ground:${style.silt.join(',')}:${style.ochre.join(',')}:${style.valley?.join(',')||''}:wind-raised-v2`;
   const flatZoneVectors=Array.from({length:GROUND_FLAT_ZONE_CAPACITY},()=>new THREE.Vector4());
   const flatZoneCountUniform={value:0};
   material.userData.groundFlatZoneState={vectors:flatZoneVectors,countUniform:flatZoneCountUniform};
@@ -338,12 +309,14 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform) {
        diffuseColor.rgb=mix(diffuseColor.rgb,diffuseColor.rgb*vec3(0.45,0.67,0.67),rockShoulder*0.67);
        diffuseColor.rgb*=1.0+rockShoulder*0.055*sin(vGroundXZ.x*0.91+vGroundXZ.y*0.19+broad*2.0);`:'';
   material.onBeforeCompile=shader=>{
+    Object.assign(shader.uniforms,visualHeightUniforms);
     shader.uniforms.uGroundQuality=groundQualityUniform;
     shader.uniforms.uSandWindTime=sandWindTimeUniform;
     shader.uniforms.uSandDetail={value:getSandDetailTexture()};
     shader.uniforms.uGroundFlatZones={value:flatZoneVectors};
     shader.uniforms.uGroundFlatZoneCount=flatZoneCountUniform;
     const reliefCode=`
+      ${VISUAL_HEIGHT_GLSL}
       uniform vec4 uGroundFlatZones[${GROUND_FLAT_ZONE_CAPACITY}];
       uniform int uGroundFlatZoneCount;
       uniform float uGroundQuality;
@@ -374,6 +347,9 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform) {
         ${style.valley?`float basinAxis=${style.valley[0].toFixed(2)}+p.x*${style.valley[1].toFixed(2)}+sin(p.x*0.18)*${style.valley[2].toFixed(2)};
         float basinDist=abs(p.y-basinAxis+(broad-0.5)*2.7);
         mask*=smoothstep(1.35,2.65,basinDist);`:''}
+        // The shelf and its approaches stay solid as a unit crosses them.
+        // Buildings flatten both this relief and the shared shelf field.
+        mask*=1.0-smoothstep(0.0,0.18,visualHeight(p));
         return height*mask;
       }
     `;
@@ -390,11 +366,14 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform) {
        +`\n       vGroundXZ=groundWorldPosition.xz;
        vGroundTop=step(0.5,normal.y);
        float reliefFade=smoothstep(-0.5,0.5,transformed.y);
-       transformed.y+=groundRelief(vGroundXZ)*0.82*reliefFade/max(groundInstanceYScale,0.001);`
+       transformed.y+=(visualHeight(vGroundXZ)+groundRelief(vGroundXZ)*0.82*reliefFade)/max(groundInstanceYScale,0.001);`
     );
     shader.fragmentShader=`${reliefCode}\nvarying vec2 vGroundXZ; varying float vGroundTop; uniform sampler2D uSandDetail;\n${shader.fragmentShader}`.replace(
       '#include <color_fragment>',
       `#include <color_fragment>
+       float shelfHeight=visualHeight(vGroundXZ);
+       float shelfShoulder=4.0*(shelfHeight/${VISUAL_PLATEAU_HEIGHT.toFixed(3)})*(1.0-shelfHeight/${VISUAL_PLATEAU_HEIGHT.toFixed(3)});
+       diffuseColor.rgb*=1.0-clamp(shelfShoulder,0.0,1.0)*0.13;
        float broad = groundNoise(vGroundXZ/17.0);
        // A continuous cross-theater dune field adds soft, readable raking
        // light without tile decals or extra terrain meshes.
@@ -458,8 +437,9 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform) {
        // Apply the veins after the base palette so each theater keeps its own
        // mineral hue while the long seams stay visible at tactical zoom.
        vec3 seamTone = mix(coolSilt,ochreDust,0.64);
-       diffuseColor.rgb = mix(diffuseColor.rgb,diffuseColor.rgb*vec3(0.62,0.70,0.69),seamShoulder*0.38);
-       diffuseColor.rgb = mix(diffuseColor.rgb,diffuseColor.rgb*seamTone*1.55,seamCore*(0.66+grain*0.10));
+       float seamBreak=smoothstep(0.28,0.64,land)*(0.45+0.55*smoothstep(0.22,0.66,broad));
+       diffuseColor.rgb = mix(diffuseColor.rgb,diffuseColor.rgb*vec3(0.62,0.70,0.69),seamShoulder*seamBreak*0.22);
+       diffuseColor.rgb = mix(diffuseColor.rgb,diffuseColor.rgb*seamTone*1.55,seamCore*seamBreak*(0.25+grain*0.11));
        ${landform}`
     );
     // Match the displaced vertex silhouette with its continuous world-space
@@ -467,10 +447,10 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform) {
     shader.fragmentShader=shader.fragmentShader.replace(
       '#include <normal_fragment_maps>',
       `#include <normal_fragment_maps>
-       if(uGroundQuality>0.5&&vGroundTop>0.5){
-         float reliefStep=0.14;
-         float reliefX=(groundRelief(vGroundXZ+vec2(reliefStep,0.0))-groundRelief(vGroundXZ-vec2(reliefStep,0.0)))/(2.0*reliefStep);
-         float reliefZ=(groundRelief(vGroundXZ+vec2(0.0,reliefStep))-groundRelief(vGroundXZ-vec2(0.0,reliefStep)))/(2.0*reliefStep);
+       if(vGroundTop>0.5){
+         float reliefStep=0.125;
+         float reliefX=(visualHeight(vGroundXZ+vec2(reliefStep,0.0))-visualHeight(vGroundXZ-vec2(reliefStep,0.0))+0.82*(groundRelief(vGroundXZ+vec2(reliefStep,0.0))-groundRelief(vGroundXZ-vec2(reliefStep,0.0))))/(2.0*reliefStep);
+         float reliefZ=(visualHeight(vGroundXZ+vec2(0.0,reliefStep))-visualHeight(vGroundXZ-vec2(0.0,reliefStep))+0.82*(groundRelief(vGroundXZ+vec2(0.0,reliefStep))-groundRelief(vGroundXZ-vec2(0.0,reliefStep))))/(2.0*reliefStep);
          vec3 reliefNormal=normalize(vec3(-reliefX,1.0,-reliefZ));
          normal=normalize((viewMatrix*vec4(reliefNormal,0.0)).xyz);
        }`
@@ -1033,6 +1013,11 @@ export class Renderer3D {
     this.camera.up.set(0, 1, 0);
     this.cameraDirection = new THREE.Vector3(1, 1.24, 1).normalize();
     this.raycaster = new THREE.Raycaster();
+    this.visualHeightUniforms={
+      uVisualHeight:{value:null},uVisualHeightSize:{value:new THREE.Vector2(1,1)},
+    };
+    this.visualHeightField=null;
+    this.elevationCache=[];
     this.groundPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
     this.tmpVec = new THREE.Vector3();
     this.tmpObj = new THREE.Object3D();
@@ -1060,6 +1045,7 @@ export class Renderer3D {
       color:0xc9f88c,transparent:true,opacity:0.62,depthWrite:false,depthTest:true,
       fog:false,toneMapped:false,
     }));
+    followVisualSurface(this.rangeIndicator.material,this.visualHeightUniforms);
     this.rangeIndicator.visible=false;
     this.rangeIndicator.position.y=0.11;
     this.rangeIndicator.renderOrder=5;
@@ -1085,6 +1071,7 @@ export class Renderer3D {
       vertexColors:true,transparent:true,opacity:0.86,depthWrite:false,depthTest:true,side:THREE.DoubleSide,
       fog:false,toneMapped:false,
     }));
+    followVisualSurface(this.armorFacingIndicator.material,this.visualHeightUniforms);
     this.armorFacingIndicator.visible=false;
     this.armorFacingIndicator.position.y=0.17;
     this.armorFacingIndicator.renderOrder=5;
@@ -1286,7 +1273,7 @@ export class Renderer3D {
   }
 
   _makeVehicleTracks() {
-    const geometry=new THREE.PlaneGeometry(1,1);
+    const geometry=new THREE.PlaneGeometry(1,1,2,4);
     geometry.setAttribute('aTrackBirth',new THREE.InstancedBufferAttribute(new Float32Array(this.trackCapacity),1));
     const material=new THREE.MeshBasicMaterial({color:0x655d4d,map:this.trackTexture||(this.trackTexture=this._makeTrackTexture()),
       transparent:true,opacity:0.58,depthWrite:false,toneMapped:false,side:THREE.DoubleSide});
@@ -1299,6 +1286,7 @@ export class Renderer3D {
       shader.fragmentShader=`varying float vTrackAge; uniform float uTrackTime;\n${shader.fragmentShader}`
         .replace('#include <color_fragment>','#include <color_fragment>\n diffuseColor.a *= 1.0-smoothstep(18.0,34.0,vTrackAge);');
     };
+    followVisualSurface(material,this.visualHeightUniforms);
     const mesh=new THREE.InstancedMesh(geometry,material,this.trackCapacity);
     mesh.count=this.trackCapacity;mesh.frustumCulled=false;mesh.renderOrder=1;
     const birthAttribute=geometry.getAttribute('aTrackBirth');
@@ -1402,7 +1390,7 @@ export class Renderer3D {
         const yaw=hash(seed,3,55)*Math.PI*2;
         const valueScale=clamp(0.82+(Number(wreck.value)||0)/140,0.82,1.3);
         const [ox,oy,oz]=offsets[part];
-        this.tmpObj.position.set(wreck.x+Math.cos(yaw)*ox-Math.sin(yaw)*oz,
+        this._setGroundPosition(this.tmpObj,wreck.x+Math.cos(yaw)*ox-Math.sin(yaw)*oz,
           oy+(part===3?0.04*Math.sin(time*3.3+seed):0),wreck.y+Math.sin(yaw)*ox+Math.cos(yaw)*oz);
         this.tmpObj.rotation.set(part===4?-Math.PI/2:part===0?0.09:0, yaw+(part===1?0.36:0)+(part===0?0.18:0), part===0?-0.10:0);
         const s=valueScale*(0.9+hash(seed,4,57)*0.2);
@@ -1502,7 +1490,7 @@ export class Renderer3D {
           }
         });
         const group=new THREE.Group();
-        group.position.set(event.x,0.02,event.y);
+        this._setGroundPosition(group,event.x,0.02,event.y);
         group.add(model);
         group.traverse(part=>{if(part.isMesh)part.castShadow=false;});
         this.effectGroup.add(group);
@@ -1513,7 +1501,7 @@ export class Renderer3D {
       const progress=clamp((simTime-visual.born)/BUILDING_COLLAPSE_DURATION,0,1);
       const eased=progress*progress*(3-2*progress);
       visual.group.rotation.set(visual.direction*eased*0.15,0,visual.direction*eased*0.74);
-      visual.group.position.y=0.02+Math.sin(progress*Math.PI)*0.08-eased*0.08;
+      visual.group.position.y=this.visualHeightAt(event.x,event.y)+0.02+Math.sin(progress*Math.PI)*0.08-eased*0.08;
       visual.model.scale.y=1-eased*0.80;
       visual.model.position.y=0;
       const fade=1-smooth(clamp((progress-0.60)/0.40,0,1));
@@ -1556,7 +1544,7 @@ export class Renderer3D {
       const n=counts.foundation++;
       const seed=Number.parseInt(String(ruin.id).replace(/\D/g,''),10)||Math.floor(ruin.time*13)+1;
       const aegis=ruin.faction==='aegis';
-      this.tmpObj.position.set(ruin.x,0.014,ruin.z);
+      this._setGroundPosition(this.tmpObj,ruin.x,0.014,ruin.z);
       this.tmpObj.rotation.set(-Math.PI/2,hash(seed,1,71)*Math.PI*2,0);
       this.tmpObj.scale.set(ruin.w*1.04,ruin.h*0.94,1);this.tmpObj.updateMatrix();
       const foundation=this.ruinBatches.foundation;
@@ -1565,7 +1553,7 @@ export class Renderer3D {
       for(let piece=0;piece<this.ruinRubblePieces;piece++) {
         const i=counts.rubble++;
         const rx=(hash(seed,piece,72)-0.5)*ruin.w*0.78,rz=(hash(seed,piece,73)-0.5)*ruin.h*0.78;
-        this.tmpObj.position.set(ruin.x+rx,0.11+hash(seed,piece,74)*0.08,ruin.z+rz);
+        this._setGroundPosition(this.tmpObj,ruin.x+rx,0.11+hash(seed,piece,74)*0.08,ruin.z+rz);
         this.tmpObj.rotation.set(hash(seed,piece,75)*0.5,hash(seed,piece,76)*Math.PI*2,hash(seed,piece,77)*0.46);
         const size=0.58+hash(seed,piece,78)*0.58;
         this.tmpObj.scale.set(size*(0.82+ruin.w*0.08),size*0.66,size*(0.68+ruin.h*0.09));this.tmpObj.updateMatrix();
@@ -1581,7 +1569,7 @@ export class Renderer3D {
       else if(ruin.family==='mount') {offsetZ=-0.12;angle=0.42;}
       else {angle=0.10+(hash(seed,2,81)-0.5)*0.18;}
       const y=ruin.family==='mast'?0.012:ruin.family==='tank'?0.015:ruin.family==='slab'?0.012:0.12;
-      this.tmpObj.position.set(ruin.x+offsetX,y,ruin.z+offsetZ);
+      this._setGroundPosition(this.tmpObj,ruin.x+offsetX,y,ruin.z+offsetZ);
       this.tmpObj.rotation.set(ruin.family==='mount'?angle:0,hash(seed,3,82)*Math.PI*2,ruin.family==='mount'?0.18:angle);
       const width=ruin.family==='slab'?Math.min(ruin.w*0.90,1.20):ruin.family==='wall'?ruin.w*0.82:1;
       const depth=ruin.family==='slab'?Math.min(ruin.h*0.80,0.90):ruin.family==='wall'?0.26:1;
@@ -1733,16 +1721,113 @@ export class Renderer3D {
     this.sun.target.updateMatrixWorld();
   }
 
+  _sampleVisualHeight(data,x,z) {
+    const field=this.visualHeightField;
+    if(!field||!data)return 0;
+    // Texels represent sample centers, exactly matching linear DataTexture
+    // sampling at worldXZ / mapSize, including clamp-to-edge at the map rim.
+    const gx=clamp(x*VISUAL_HEIGHT_SAMPLES-0.5,0,field.width-1);
+    const gz=clamp(z*VISUAL_HEIGHT_SAMPLES-0.5,0,field.height-1);
+    const x0=Math.floor(gx),z0=Math.floor(gz);
+    const x1=Math.min(x0+1,field.width-1),z1=Math.min(z0+1,field.height-1);
+    const tx=gx-x0,tz=gz-z0;
+    const a=data[z0*field.width+x0]*(1-tx)+data[z0*field.width+x1]*tx;
+    const b=data[z1*field.width+x0]*(1-tx)+data[z1*field.width+x1]*tx;
+    return (a*(1-tz)+b*tz)*VISUAL_HEIGHT_RANGE/255;
+  }
+
+  visualHeightAt(x,z) {
+    return Number.isFinite(x)&&Number.isFinite(z)
+      ?this._sampleVisualHeight(this.visualHeightField?.data,x,z):0;
+  }
+
+  _setGroundPosition(object,x,y,z) {
+    object.position.set(x,y+this.visualHeightAt(x,z),z);
+  }
+
+  _buildVisualHeightField(game) {
+    this.visualHeightUniforms.uVisualHeight.value?.dispose();
+    const width=game.width*VISUAL_HEIGHT_SAMPLES,height=game.height*VISUAL_HEIGHT_SAMPLES;
+    const base=new Uint8Array(width*height),data=new Uint8Array(width*height);
+    const raised=Math.round(VISUAL_PLATEAU_HEIGHT/VISUAL_HEIGHT_RANGE*255);
+    for(let z=0;z<height;z++)for(let x=0;x<width;x++) {
+      const tile=game.terrain[Math.floor(z/VISUAL_HEIGHT_SAMPLES)]?.[Math.floor(x/VISUAL_HEIGHT_SAMPLES)];
+      base[z*width+x]=tile?.elevation===1&&tile.type!=='water'&&tile.type!=='bridge'?raised:0;
+    }
+    this.visualHeightField={width,height,base,data,signature:null};
+    const texture=new THREE.DataTexture(data,width,height,THREE.RedFormat,THREE.UnsignedByteType);
+    texture.minFilter=THREE.LinearFilter;texture.magFilter=THREE.LinearFilter;
+    texture.wrapS=THREE.ClampToEdgeWrapping;texture.wrapT=THREE.ClampToEdgeWrapping;
+    texture.generateMipmaps=false;texture.unpackAlignment=1;texture.needsUpdate=true;
+    this.visualHeightUniforms.uVisualHeight.value=texture;
+    this.visualHeightUniforms.uVisualHeightSize.value.set(game.width,game.height);
+    this._syncVisualHeightFootprints(game);
+  }
+
+  _syncVisualHeightFootprints(game) {
+    const field=this.visualHeightField;
+    if(!field)return;
+    const pads=(game.buildings||[]).filter(b=>b.hp>0).map(b=>({
+      x:b.x+b.w/2,z:b.y+b.h/2,hx:b.w/2+0.18,hz:b.h/2+0.18,
+    }));
+    for(const relay of game.relays||[])pads.push({x:relay.x,z:relay.y,hx:0.88,hz:0.88});
+    // Deck tops form part of the presentation surface too. Shore approaches
+    // blend into them, while the water and bridge rules remain simulation-owned.
+    for(const bridge of game.bridges||[])if(!bridge.destroyed) {
+      const x=bridge.x+bridge.w/2,z=bridge.y+bridge.h/2;
+      const shoreHeight=Math.max(
+        this._sampleVisualHeight(field.base,x,bridge.y-0.3),
+        this._sampleVisualHeight(field.base,x,bridge.y+bridge.h+0.3));
+      pads.push({x,z,hx:bridge.w/2,hz:bridge.h/2,height:BRIDGE_DECK_HEIGHT+shoreHeight});
+    }
+    const signature=pads.map(p=>`${p.x},${p.z},${p.hx},${p.hz},${p.height??''}`).join('|');
+    if(signature===field.signature)return;
+    field.signature=signature;
+    field.data.set(field.base);
+    for(const pad of pads) {
+      const target=Math.round((pad.height??this._sampleVisualHeight(field.base,pad.x,pad.z))/VISUAL_HEIGHT_RANGE*255);
+      const feather=0.30;
+      const x0=Math.max(0,Math.floor((pad.x-pad.hx-feather)*VISUAL_HEIGHT_SAMPLES));
+      const x1=Math.min(field.width,Math.ceil((pad.x+pad.hx+feather)*VISUAL_HEIGHT_SAMPLES));
+      const z0=Math.max(0,Math.floor((pad.z-pad.hz-feather)*VISUAL_HEIGHT_SAMPLES));
+      const z1=Math.min(field.height,Math.ceil((pad.z+pad.hz+feather)*VISUAL_HEIGHT_SAMPLES));
+      for(let z=z0;z<z1;z++)for(let x=x0;x<x1;x++) {
+        const px=(x+0.5)/VISUAL_HEIGHT_SAMPLES,pz=(z+0.5)/VISUAL_HEIGHT_SAMPLES;
+        const outside=Math.hypot(Math.max(0,Math.abs(px-pad.x)-pad.hx),Math.max(0,Math.abs(pz-pad.z)-pad.hz));
+        const blend=1-smooth(clamp(outside/feather,0,1));
+        const index=z*field.width+x;
+        field.data[index]=Math.round(field.data[index]*(1-blend)+target*blend);
+      }
+    }
+    this.visualHeightUniforms.uVisualHeight.value.needsUpdate=true;
+  }
+
   screenToWorld(px, py) {
     const p = new THREE.Vector2(px / this.width * 2 - 1, 1 - py / this.height * 2);
     this.raycaster.setFromCamera(p, this.camera);
-    const hit = this.raycaster.ray.intersectPlane(this.groundPlane, this.tmpVec);
-    return hit ? { x: hit.x, y: hit.z } : { x: this.centerX, y: this.centerY };
+    const ray=this.raycaster.ray;
+    const flat=ray.intersectPlane(this.groundPlane,this.tmpVec);
+    if(!flat)return {x:this.centerX,y:this.centerY};
+    // Bisection intersects the same bilinear surface used by the shader. A
+    // fixed-point plane correction can oscillate on the short shelf slopes.
+    const flatDistance=(flat.y-ray.origin.y)/ray.direction.y;
+    let near=Math.max(0,flatDistance-VISUAL_HEIGHT_RANGE/Math.abs(ray.direction.y)-0.01);
+    let far=flatDistance+0.01;
+    for(let i=0;i<14;i++) {
+      const distance=(near+far)*0.5;
+      ray.at(distance,this.tmpVec);
+      if(this.tmpVec.y>this.visualHeightAt(this.tmpVec.x,this.tmpVec.z))near=distance;
+      else far=distance;
+    }
+    ray.at((near+far)*0.5,this.tmpVec);
+    return {x:this.tmpVec.x,y:this.tmpVec.z};
   }
 
-  worldToScreen(x, y, height = 0) {
-    const p = new THREE.Vector3(x, height, y).project(this.camera);
-    return { x: (p.x + 1) * this.width / 2, y: (1 - p.y) * this.height / 2 };
+  // Height is relative to the shared ground. Aircraft can opt into an absolute
+  // altitude so raising the ground never changes their established flight path.
+  worldToScreen(x, y, height = 0, {absoluteHeight=false}={}) {
+    const p = new THREE.Vector3(x,height+(absoluteHeight?0:this.visualHeightAt(x,y)),y).project(this.camera);
+    return {x:(p.x+1)*this.width/2,y:(1-p.y)*this.height/2};
   }
 
   _disposeGroup(group) {
@@ -1764,6 +1849,7 @@ export class Renderer3D {
     this.fogTexture=null;
     this.terrain = game.terrain;
     this.terrainGame = game;
+    this._buildVisualHeightField(game);
     this.mapStyle = MAP_STYLES[game.mapId] || MAP_STYLES['shard-valley'];
     this.skyTexture?.dispose();
     this.skyTexture=this._makeSkyTexture(this.mapStyle);
@@ -1815,18 +1901,18 @@ export class Renderer3D {
     const geo = new THREE.BoxGeometry(1, 1, 1);
     // Shared subdivision lets the shader displace each tile from one world-space
     // field. Matching coordinates on neighboring boxes keep the relief seam-free.
-    const sandGeo = new THREE.BoxGeometry(1,1,1,4,1,4);
+    const sandGeo = new THREE.BoxGeometry(1,1,1,8,1,8);
     const rockGeo = new THREE.BoxGeometry(1,1,1,6,1,6);
     const kinds = ['sand', 'rock', 'water', 'crystal'];
     this.tileMeshes = {};
     this.groundReliefMaterials=[];
     for (const kind of kinds) {
-      const count = kind==='rock'?0:game.terrain.flat().filter(t => (t?.type || 'sand') === kind).length;
+      const count = kind==='rock'?0:game.terrain.flat().filter(t => (kinds.includes(t?.type)?t.type:'sand') === kind).length;
       // Crystal deposits share the same continuous ground surface as sand.
       // Their color comes from feathered decals below the mesh clusters;
       // tinting each resource tile creates a conspicuous checkerboard edge.
       const isSand=kind==='sand'||kind==='crystal';
-      const tileMat=isSand?sandMaterial(this.mapStyle,this.groundQualityUniform,this.sandWindTimeUniform):kind==='water'?waterMaterial(this.waterTimeUniform,game.mapId):rockMaterial();
+      const tileMat=isSand?sandMaterial(this.mapStyle,this.groundQualityUniform,this.sandWindTimeUniform,this.visualHeightUniforms):kind==='water'?waterMaterial(this.waterTimeUniform,game.mapId):rockMaterial();
       if(isSand)this.groundReliefMaterials.push(tileMat);
       const mesh = new THREE.InstancedMesh(kind==='rock'?rockGeo:kind==='sand'||kind==='crystal'?sandGeo.clone():geo, tileMat, Math.max(1, count));
       mesh.count = count;
@@ -1842,10 +1928,12 @@ export class Renderer3D {
     for (let z = 0; z < game.height; z++) for (let x = 0; x < game.width; x++) {
       const t = game.terrain[z][x] || { type: 'sand', resource: 0 };
       const kind = kinds.includes(t.type) ? t.type : 'sand';
-      const y = kind === 'rock' ? -0.20 : kind === 'water' ? -0.10 : (noise(x+0.5,z+0.5,10,37)-0.5)*0.045;
+      const y = t.type === 'bridge' ? -BRIDGE_DECK_HEIGHT : kind === 'rock' ? -0.20 : kind === 'water' ? -0.10 : 0;
       if(kind!=='rock') {
-        this.tmpObj.position.set(x + 0.5, -0.16 + y / 2, z + 0.5);
-        this.tmpObj.scale.set(1.002, 0.32 + y, 1.002);
+        // Keep the backing below the deepest Ultra dune trough. Its top
+        // remains at y; the extra depth overlaps the lowered map foundation.
+        this.tmpObj.position.set(x + 0.5, -0.24 + y / 2, z + 0.5);
+        this.tmpObj.scale.set(1.002, 0.48 + y, 1.002);
         this.tmpObj.rotation.set(0, 0, 0);
         this.tmpObj.updateMatrix();
         const mesh = this.tileMeshes[kind];
@@ -1863,18 +1951,18 @@ export class Renderer3D {
         mesh.setColorAt(idx,surfaceColor);
       }
       this.terrainCache[z * game.width + x] = kind;
+      this.elevationCache[z * game.width + x] = t.elevation===1?1:0;
       this.resourceCache[z * game.width + x] = t.resource || 0;
       // The crystal tile remains readable from above; sparse clusters keep
       // rich deposits from turning into an opaque wall of identical spikes.
       if (kind === 'crystal' && t.resource > 0 && hash(x,z,98) > 0.49 && hash(x,z,98) < 0.96) crystalCoords.push([x,z]);
       if (kind === 'rock' && hash(x,z,4) > 0.32) rockCoords.push([x,z]);
-      if (kind === 'sand' && hash(x,z,8) > 0.82 && noise(x,z,8,72)>0.34) brushCoords.push([x,z]);
+      if (t.type === 'sand' && hash(x,z,8) > 0.82 && noise(x,z,8,72)>0.34) brushCoords.push([x,z]);
     }
     for (const mesh of Object.values(this.tileMeshes)) {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
-    addElevatedSectorContours(this.terrainGroup,game,this.mapStyle,this.tmpObj);
     const rockField=rockFieldGeometry(game,this.mapStyle);
     const rockSurfaceMaterial=mat(0xffffff,{roughness:0.96,metalness:0.025,vertexColors:true,side:THREE.DoubleSide});
     rockSurfaceMaterial.customProgramCacheKey=()=> 'rock-field-strata-v1';
@@ -1914,6 +2002,7 @@ export class Renderer3D {
          }`
       );
     };
+    followVisualSurface(rockSurfaceMaterial,this.visualHeightUniforms);
     for(const [part,geometry] of Object.entries(rockField)) {
       if(!geometry.attributes.position?.count) { geometry.dispose();continue; }
       const surface=new THREE.Mesh(geometry,rockSurfaceMaterial);
@@ -1964,7 +2053,7 @@ export class Renderer3D {
     let n = 0;
     for (const [x,z] of crystalCoords) for (let i = 0; i < this.crystalStride; i++) {
       if(i===0) this.crystalTiles.set(z*game.width+x,n);
-      this.tmpObj.position.set(crystalPart?x+0.5:x + 0.25 + hash(x,z,22+i) * 0.5, crystalPart?0.01:0.23 + i * 0.06, crystalPart?z+0.5:z + 0.25 + hash(x,z,32+i) * 0.5);
+      this._setGroundPosition(this.tmpObj,crystalPart?x+0.5:x + 0.25 + hash(x,z,22+i) * 0.5, crystalPart?0.01:0.23 + i * 0.06, crystalPart?z+0.5:z + 0.25 + hash(x,z,32+i) * 0.5);
       this.tmpObj.rotation.set(crystalPart?0:(hash(x,z,42+i)-0.5)*0.54, hash(x,z,52+i)*6.28, crystalPart?0:(hash(x,z,62+i)-0.5)*0.42);
       const s = (crystalPart?0.74:0.72) + hash(x,z,72+i) * (crystalPart?0.31:0.93);
       // Fallback shards vary their height and cant so deposits read as a
@@ -1994,7 +2083,7 @@ export class Renderer3D {
         // the authored foundation can sit flush without competing silhouettes.
         if(game.mapId==='storm-basin'&&Math.hypot(px-(STORM_BASIN_ARRAY_TILE.x+0.5),
           pz-(STORM_BASIN_ARRAY_TILE.z+0.5))<1.55) continue;
-        this.tmpObj.position.set(px,dominant?0.22:0.15,pz);
+        this._setGroundPosition(this.tmpObj,px,dominant?0.22:0.15,pz);
         this.tmpObj.rotation.set((hash(x,z,26+shard)-0.5)*0.4,hash(x,z,36+shard)*6.28,(hash(x,z,46+shard)-0.5)*0.35);
         // Rock terrain is nonwalkable, so give its existing clusters enough
         // height and separation to read as a broken ridge at the default view.
@@ -2015,7 +2104,7 @@ export class Renderer3D {
     n=0;
     for (const [x,z] of brushCoords) {
       for(let blade=0;blade<2;blade++) {
-        this.tmpObj.position.set(x+0.28+hash(x,z,81+blade)*0.44,0.105+hash(x,z,85+blade)*0.025,z+0.28+hash(x,z,82+blade)*0.44);
+        this._setGroundPosition(this.tmpObj,x+0.28+hash(x,z,81+blade)*0.44,0.105+hash(x,z,85+blade)*0.025,z+0.28+hash(x,z,82+blade)*0.44);
         this.tmpObj.rotation.set((hash(x,z,86+blade)-0.5)*0.18,hash(x,z,83+blade)*6.28,(hash(x,z,87+blade)-0.5)*0.18);
         const size=0.62+hash(x,z,84+blade)*0.74;
         this.tmpObj.scale.set(size,size,size);
@@ -2060,7 +2149,7 @@ export class Renderer3D {
       saltbrush.name='saltbrush-tufts';saltbrush.frustumCulled=false;saltbrush.castShadow=false;saltbrush.receiveShadow=true;saltbrush.raycast=()=>{};
       for(let i=0;i<saltbrushes.length;i++) {
         const p=saltbrushes[i];
-        this.tmpObj.position.set(p.x,p.y,p.z);this.tmpObj.rotation.set(0,p.ry,0);this.tmpObj.scale.set(p.sx,p.sy,p.sz);this.tmpObj.updateMatrix();
+        this._setGroundPosition(this.tmpObj,p.x,p.y,p.z);this.tmpObj.rotation.set(0,p.ry,0);this.tmpObj.scale.set(p.sx,p.sy,p.sz);this.tmpObj.updateMatrix();
         saltbrush.setMatrixAt(i,this.tmpObj.matrix);
         const hue=game.mapId==='storm-basin'?0.56:game.mapId==='canyon-ring'?0.09:0.27;
         saltbrush.setColorAt(i,new THREE.Color().setHSL(hue,0.25,0.49).multiplyScalar(p.tint));
@@ -2172,8 +2261,8 @@ export class Renderer3D {
   }
 
   _addMapFoundation(game) {
-    // The terrain tiles stay level for selection and pathing. Only the shelf
-    // beyond their footprint has a chipped, irregular geological outline.
+    // The simulation keeps planar coordinates; rendered shelves and dunes
+    // rise above a continuous backing with a chipped geological outline.
     const rim=[];
     for(let x=0;x<=game.width;x++)rim.push([x,-0.50-hash(x,0,269)*0.62]);
     for(let z=0;z<=game.height;z++)rim.push([game.width+0.50+hash(z,1,269)*0.62,z]);
@@ -2188,7 +2277,9 @@ export class Renderer3D {
       mat(0x25383a,{roughness:0.98,metalness:0.01}),
     ]);
     foundation.rotation.x=Math.PI/2;
-    foundation.position.y=-0.22;
+    // Ultra dune troughs reach about -.28. A higher foundation cuts through
+    // them as broad dark ribbons, even though the sand itself is continuous.
+    foundation.position.y=-0.38;
     foundation.receiveShadow=true;
     foundation.castShadow=false;
     this.terrainGroup.add(foundation);
@@ -2436,6 +2527,7 @@ export class Renderer3D {
       }
       for(const side of [-1,1]) add(steel,0.16,0.12,0.82,cx+side*1.22,0.10,cz+(side*0.18),side*0.55);
     }
+    group.position.y=bridge.destroyed?0:this.visualHeightAt(cx,cz)-BRIDGE_DECK_HEIGHT;
     this.terrainGroup.add(group);
     return group;
   }
@@ -2569,7 +2661,7 @@ export class Renderer3D {
     if(!pick)return;
     const wreck=source.clone(true);
     wreck.name='crashed-dropship-landmark';
-    wreck.position.set(pick.x+0.5,0.035,pick.z+0.5);
+    this._setGroundPosition(wreck,pick.x+0.5,0.035,pick.z+0.5);
     wreck.rotation.y=hash(pick.x,pick.z,542)*Math.PI*2;
     wreck.scale.setScalar(1.0);
     wreck.traverse(part=>{
@@ -2675,7 +2767,7 @@ export class Renderer3D {
       for(let i=0;i<placements.length;i++) {
         const p=placements[i],seed=hash(p.x,p.z,mapSeed+seedOffset);
         const scale=minScale+seed*(maxScale-minScale);
-        transform.position.set(p.x+0.5+(hash(p.x,p.z,mapSeed+seedOffset+1)-0.5)*0.44,
+        this._setGroundPosition(transform,p.x+0.5+(hash(p.x,p.z,mapSeed+seedOffset+1)-0.5)*0.44,
           0.018+hash(p.x,p.z,mapSeed+seedOffset+2)*0.008,
           p.z+0.5+(hash(p.x,p.z,mapSeed+seedOffset+3)-0.5)*0.44);
         transform.rotation.set(0,hash(p.x,p.z,mapSeed+seedOffset+4)*Math.PI*2,0);
@@ -2695,9 +2787,12 @@ export class Renderer3D {
   _addGroundDetails(game,crystalCoords,rockCoords) {
     const world=new THREE.Object3D();
     const addInstances=(geometry,material,transforms)=>{
+      const surface=geometry.type==='PlaneGeometry'||geometry.type==='CircleGeometry';
+      if(surface)followVisualSurface(material,this.visualHeightUniforms);
       const mesh=new THREE.InstancedMesh(geometry,material,Math.max(1,transforms.length));
       transforms.forEach((t,i)=>{
-        world.position.set(t.x,t.y,t.z);
+        if(surface)world.position.set(t.x,t.y,t.z);
+        else this._setGroundPosition(world,t.x,t.y,t.z);
         world.rotation.set(t.rx||0,t.ry||0,t.rz||0);
         world.scale.set(t.sx??1,t.sy??1,t.sz??1);
         world.updateMatrix(); mesh.setMatrixAt(i,world.matrix);
@@ -2776,6 +2871,7 @@ export class Renderer3D {
            diffuseColor.rgb*=1.0-(leftRut+rightRut)*rutNoise*0.30+grain*0.045;`
         );
       };
+      followVisualSurface(roadMaterial,this.visualHeightUniforms);
       const roadMesh=new THREE.Mesh(roadGeometry,roadMaterial);
       roadMesh.frustumCulled=false;roadMesh.receiveShadow=true;this.terrainGroup.add(roadMesh);
     }
@@ -2797,8 +2893,8 @@ export class Renderer3D {
       target.push({x:x+hash(x,z,133)*2,y:0.024,z:z+hash(x,z,134)*2,rx:-Math.PI/2,
         ry:hash(x,z,135)*6.28,sx:3.2+hash(x,z,136)*4.8,sy:2.4+hash(x,z,137)*3.8,sz:1});
     }
-    addInstances(new THREE.PlaneGeometry(1,1),new THREE.MeshBasicMaterial({color:0x38503d,map:this.groundPatchTexture,transparent:true,opacity:0.42,depthWrite:false,side:THREE.DoubleSide}),darkPatches);
-    addInstances(new THREE.PlaneGeometry(1,1),new THREE.MeshBasicMaterial({color:this.mapStyle.patch,map:this.groundPatchTexture,transparent:true,opacity:0.40,depthWrite:false,side:THREE.DoubleSide}),warmPatches);
+    addInstances(new THREE.PlaneGeometry(1,1,8,8),new THREE.MeshBasicMaterial({color:0x38503d,map:this.groundPatchTexture,transparent:true,opacity:0.42,depthWrite:false,side:THREE.DoubleSide}),darkPatches);
+    addInstances(new THREE.PlaneGeometry(1,1,8,8),new THREE.MeshBasicMaterial({color:this.mapStyle.patch,map:this.groundPatchTexture,transparent:true,opacity:0.40,depthWrite:false,side:THREE.DoubleSide}),warmPatches);
     const strata=[];
     for(const [x,z] of rockCoords) for(let layer=0;layer<3;layer++) {
       const interior=Array.from({length:3},(_,dz)=>Array.from({length:3},(_,dx)=>game.terrain[z+dz-1]?.[x+dx-1]?.type==='rock').every(Boolean)).every(Boolean);
@@ -2899,7 +2995,7 @@ export class Renderer3D {
       mesh.raycast=()=>{};
       mesh.userData.sharedAssetGeometry=true;mesh.userData.sharedAssetMaterial=true;
       placements.forEach((placement,index)=>{
-        const position=new THREE.Vector3(placement.px,0.07,placement.pz);
+        const position=new THREE.Vector3(placement.px,0.07+this.visualHeightAt(placement.px,placement.pz),placement.pz);
         const rotation=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),
           hash(placement.x,placement.z,621)>0.5?Math.PI:0);
         const transform=new THREE.Matrix4().compose(position,rotation,new THREE.Vector3(scale,scale,scale));
@@ -3008,7 +3104,7 @@ export class Renderer3D {
           const placement=family[i];
           const x=placement.x+0.5,z=placement.z+0.5;
           const size=key==='mast'?0.87:key==='cargo'?0.82:key==='basalt'?0.78:key==='trackWreck'?0.57:0.62;
-          const position=new THREE.Vector3(x,0.04,z);
+          const position=new THREE.Vector3(x,0.04+this.visualHeightAt(x,z),z);
           const rotation=new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0,1,0),hash(placement.x,placement.z,192)*Math.PI*2);
           const scale=new THREE.Vector3().setScalar(size*(0.84+hash(placement.x,placement.z,193)*0.3));
           const matrix=new THREE.Matrix4().compose(position,rotation,scale).multiply(part.matrixWorld);
@@ -3046,7 +3142,7 @@ export class Renderer3D {
     if((game.buildings||[]).some(b=>px>=b.x-1.1&&px<=b.x+b.w+1.1&&pz>=b.y-1.1&&pz<=b.y+b.h+1.1)) return;
     const group=source.clone(true);
     group.name='storm-basin-fractured-weather-array';
-    group.position.set(px,0.085,pz);
+    this._setGroundPosition(group,px,0.085,pz);
     group.rotation.y=-0.24;
     group.scale.setScalar(0.92);
     group.traverse(object=>{
@@ -3137,7 +3233,7 @@ export class Renderer3D {
         const depth=primary?0.54+hash(anchor.x,anchor.z,618)*0.16:0.34+hash(anchor.x,anchor.z,619+piece)*0.12;
         const height=primary?0.15+hash(anchor.x,anchor.z,620)*0.045:0.095+hash(anchor.x,anchor.z,621+piece)*0.035;
         const px=x+Math.cos(angle)*offset,pz=z+Math.sin(angle)*offset;
-        this.tmpObj.position.set(px,height*(primary?0.36:0.25),pz);
+        this._setGroundPosition(this.tmpObj,px,height*(primary?0.36:0.25),pz);
         this.tmpObj.rotation.set((hash(anchor.x,anchor.z,622+piece)-0.5)*0.12,
           hash(anchor.x,anchor.z,625+piece)*Math.PI*2,(hash(anchor.x,anchor.z,628+piece)-0.5)*0.12);
         this.tmpObj.scale.set(width,height,depth);
@@ -3218,7 +3314,7 @@ export class Renderer3D {
     if(base===undefined||!this.crystalMesh) return;
     for(let j=0;j<this.crystalStride;j++) {
       const authored=this.crystalStride===1;
-      this.tmpObj.position.set(authored?x+0.5:x+0.25+hash(x,z,22+j)*0.5,authored?0.01:0.23+j*0.06,authored?z+0.5:z+0.25+hash(x,z,32+j)*0.5);
+      this._setGroundPosition(this.tmpObj,authored?x+0.5:x+0.25+hash(x,z,22+j)*0.5,authored?0.01:0.23+j*0.06,authored?z+0.5:z+0.25+hash(x,z,32+j)*0.5);
       this.tmpObj.rotation.set(authored?0:(hash(x,z,42+j)-0.5)*0.54,hash(x,z,52+j)*6.28,authored?0:(hash(x,z,62+j)-0.5)*0.42);
       const s=resource>0&&visibility>0?((authored?0.74:0.72)+hash(x,z,72+j)*(authored?0.31:0.93))*(visibility===1?0.52:1):0.001;
       const shardHeight=authored?1:(0.66+hash(x,z,202+j)*0.72);
@@ -3237,7 +3333,7 @@ export class Renderer3D {
       // Intact bridges render over the shared ground material. Normalize their
       // tiles to sand for cache purposes; a destroyed bridge becomes water and
       // triggers the one necessary terrain rebuild.
-      if(this.terrainCache[i] !== (kind==='bridge'?'sand':kind)) { this._buildTerrain(game); return; }
+      if(this.elevationCache[i] !== (game.terrain[z][x]?.elevation===1?1:0)||this.terrainCache[i] !== (kind==='bridge'?'sand':kind)) { this._buildTerrain(game); return; }
       const resource=game.terrain[z][x]?.resource||0;
       if(this.resourceCache[i]!==resource) {
         this.resourceCache[i]=resource;
@@ -3283,12 +3379,13 @@ export class Renderer3D {
       const stem=new THREE.Mesh(new THREE.CylinderGeometry(0.013,0.013,0.62,6),pale);
       stem.position.y=0.64;stem.renderOrder=7;marker.add(stem);
       marker.userData={outer,beacon,gold,pale};
+      for(const part of [outer,inner])followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
       this.orderGroup.add(marker);
       this.fieldOrderMarker=marker;
     }
     const marker=this.fieldOrderMarker;
     marker.visible=true;
-    marker.position.set(target.x,0,target.y);
+    this._setGroundPosition(marker,target.x,0,target.y);
     const pulse=0.5+0.5*Math.sin(time*3.2);
     marker.userData.outer.scale.setScalar(1+0.10*pulse);
     marker.userData.beacon.position.y=1.01+0.08*pulse;
@@ -3331,10 +3428,11 @@ export class Renderer3D {
       const ironCore=new THREE.Mesh(new THREE.OctahedronGeometry(0.13,0),amber);
       ironCore.position.y=0.35;ironCore.renderOrder=8;group.add(ironCore);
       group.userData={ghost:[ghostRing,ghostInner,ghostSignal,ghostRay],iron:[ironRing,ironCore],ghostRing,ghostInner,ghostSignal,ironRing,ironCore,cyan,violet,amber,white};
+      for(const part of [ghostRing,ghostInner,ironRing])followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
       this.orderGroup.add(group);this.campaignRouteMarker=group;
     }
     const marker=this.campaignRouteMarker,u=marker.userData;
-    marker.visible=true;marker.position.set(target.x,0,target.y);
+    marker.visible=true;this._setGroundPosition(marker,target.x,0,target.y);
     const pulse=0.5+0.5*Math.sin(time*(kind==='ghost'?4.1:3.0));
     const ghost=kind==='ghost';
     u.ghost.forEach(mesh=>mesh.visible=ghost);u.iron.forEach(mesh=>mesh.visible=!ghost);
@@ -3429,7 +3527,7 @@ export class Renderer3D {
       this.scene.add(this.placement);
     }
     this.placement.visible=true;
-    this.placement.position.set(x+def.w/2,0.02,z+def.h/2);
+    this._setGroundPosition(this.placement,x+def.w/2,0.02,z+def.h/2);
     const color=okay?0x9af6d9:0xff806f;
     this.placement.userData.hologramMaterial.color.setHex(color);
     this.placement.userData.hologramMaterial.opacity=0.28+0.05*Math.sin(time*3.8);
@@ -3481,6 +3579,7 @@ export class Renderer3D {
       ring.userData.facingChevron=chevron;
       ring.add(backing,chevron);
     }
+    for(const part of ring.children)followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
     return ring;
   }
 
@@ -3515,6 +3614,7 @@ export class Renderer3D {
     const ring = new THREE.Mesh(new THREE.RingGeometry(radius * 1.06, radius * 1.12, 40),
       new THREE.MeshBasicMaterial({ color: 0xffd878, transparent: true, opacity: 0.9, side: THREE.DoubleSide, depthWrite: false }));
     ring.rotation.x = -Math.PI / 2;
+    followVisualSurface(ring.material,this.visualHeightUniforms,{relative:true});
     ring.position.y = 0.085;
     ring.renderOrder = 4;
     return ring;
@@ -3780,6 +3880,8 @@ export class Renderer3D {
           color:0x9dd6ce,transparent:true,opacity:0.17,depthWrite:false,toneMapped:false}));
         ripple.rotation.x=-Math.PI/2;ripple.position.set(x,-.666,z);ripple.renderOrder=1;
         group.add(ripple);
+        followVisualSurface(wash.material,this.visualHeightUniforms,{relative:true});
+        followVisualSurface(ripple.material,this.visualHeightUniforms,{relative:true});
         animation.rotorWash.push({wash,ripple,phase:x<0?1.7:0});
       }
       animation.lights = emissiveParts(group, ['Navigation beacon','Navigation beacon.001']);
@@ -3981,6 +4083,11 @@ export class Renderer3D {
       if (a.frontFan) a.frontFan.rotation.y = time * 13.5;
       if (a.rearFan) a.rearFan.rotation.y = -time * 13.5;
       if(o.defId==='dropship') for(const {wash,ripple,phase:offset} of a.rotorWash||[]) {
+        state.group.updateMatrixWorld(true);
+        wash.getWorldPosition(this.tmpVec);
+        const ground=this.visualHeightAt(this.tmpVec.x,this.tmpVec.z);
+        wash.position.y=(ground+0.015-state.group.position.y)/state.group.scale.y;
+        ripple.position.y=(ground+0.025-state.group.position.y)/state.group.scale.y;
         const pulse=0.5+0.5*Math.sin(time*2.6+offset);
         wash.material.opacity=0.11+pulse*0.075;
         ripple.material.opacity=0.09+pulse*0.12;
@@ -4509,6 +4616,7 @@ export class Renderer3D {
         const targetRing=new THREE.Mesh(new THREE.RingGeometry(radius*1.17,radius*1.28,40),
           new THREE.MeshBasicMaterial({color:0xff785f,transparent:true,opacity:0.92,
             side:THREE.DoubleSide,depthWrite:false,toneMapped:false}));
+        followVisualSurface(targetRing.material,this.visualHeightUniforms,{relative:true});
         targetRing.rotation.x=-Math.PI/2;
         targetRing.position.y=0.095;
         targetRing.renderOrder=6;
@@ -4548,7 +4656,7 @@ export class Renderer3D {
         state.dust.material.color.setHex(o.owner==='player'&&game.mode==='campaign'&&game.campaignDoctrineId==='rapid'
           ?0x78cdd1:o.faction==='aegis'?0x9caaa6:0xb99c83);
         const fade=clamp(speed*24,0,1);
-        state.dust.position.set(o.x-dx*3,0.055,o.y-dz*3);
+        this._setGroundPosition(state.dust,o.x-dx*3,0.055,o.y-dz*3);
         state.dust.scale.set(1+fade*0.6,0.28+fade*0.13,1+fade*0.6);
         state.dust.material.opacity=Math.max(state.dust.material.opacity,fade*0.20);
       }
@@ -4557,7 +4665,9 @@ export class Renderer3D {
         state.dust.rotation.y=time*0.7+(Number.parseInt(String(o.id).replace(/\D/g,''),10)||0);
         state.dust.visible=state.dust.material.opacity>0.005;
       }
-      state.group.position.set(building?o.x+o.w/2:o.x, flying?0.85+Math.sin(time*3+Number(o.id.slice(1)))*0.06:0.02, building?o.y+o.h/2:o.y);
+      const anchorX=building?o.x+o.w/2:o.x,anchorZ=building?o.y+o.h/2:o.y;
+      state.group.position.set(anchorX,flying?0.85+Math.sin(time*3+Number(o.id.slice(1)))*0.06:
+        this.visualHeightAt(anchorX,anchorZ)+0.02,anchorZ);
       const hp=clamp(o.hp/(o.maxHp||1),0,1);
       this._syncDamageAppearance(state,o,hp,time);
       if(!building) state.group.rotation.y=-(o.facing || 0)-Math.PI/2;
@@ -4992,6 +5102,19 @@ export class Renderer3D {
       const ring=addMesh(g,new THREE.RingGeometry(0.45,0.52,32),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.8,side:THREE.DoubleSide,depthWrite:false}),0,0.11,0,false);
       ring.rotation.x=-Math.PI/2; ring.userData.ring=true;
     }
+    if(fx.type!=='projectile'&&fx.type!=='muzzle') {
+      const surfaceMaterials=new Set();
+      g.traverse(part=>{
+        const floorMesh=part.isMesh&&Math.abs(Math.abs(part.rotation.x)-Math.PI/2)<0.01&&part.position.y<=0.26;
+        const floorLine=part.isLine&&(part.userData.breachPart==='ticks'||part.userData.interdictPart==='spokes'||part.userData.stormcallCorona);
+        if(!floorMesh&&!floorLine)return;
+        for(const material of (Array.isArray(part.material)?part.material:[part.material])) {
+          if(surfaceMaterials.has(material))continue;
+          surfaceMaterials.add(material);
+          followVisualSurface(material,this.visualHeightUniforms,{relative:true});
+        }
+      });
+    }
     this.effectGroup.add(g);
     return g;
   }
@@ -5058,7 +5181,7 @@ export class Renderer3D {
         }
       }
       g.userData.weaponSourceId=sourceId||null;
-      g.position.set(fx.x||0,0,fx.y||0);
+      this._setGroundPosition(g,fx.x||0,0,fx.y||0);
       const inSight=typeof game.isVisible==='function'?game.isVisible(fx):true;
       g.visible=fx.owner==='player'||inSight;
       if(fx.type==='salvage') {
@@ -5082,7 +5205,7 @@ export class Renderer3D {
           g.userData.visualProjectileOrigin={
             offsetX:muzzle?muzzle.x-start.x:0,
             offsetZ:muzzle?muzzle.z-start.z:0,
-            sourceHeight:muzzle?muzzle.y:(source?(source.building?0.5:source.group.position.y+0.12):0.42),
+            sourceHeight:muzzle?muzzle.y:source?source.group.position.y+(source.building?0.5:0.12):this.visualHeightAt(start.x,start.z)+0.42,
           };
         }
         const {offsetX,offsetZ,sourceHeight}=g.userData.visualProjectileOrigin;
@@ -5092,7 +5215,7 @@ export class Renderer3D {
         g.position.z=visualZ;
         g.rotation.y=projectileYaw(visualX,visualZ,fx.tx,fx.ty);
         const target=fx.targetId?this.entities.get(fx.targetId):null;
-        const targetHeight=target?(target.building?0.32:target.group.position.y+0.08):0.12;
+        const targetHeight=target?target.group.position.y+(target.building?0.32:0.08):this.visualHeightAt(fx.tx,fx.ty)+0.12;
         const arc=Math.sin(progress*Math.PI)*g.userData.projectileArc;
         // Meshes sit 0.3 units above the effect origin, so offset the group to
         // place the projectile center on this shallow ballistic path.
@@ -5338,6 +5461,7 @@ export class Renderer3D {
       color:/^(ion|nuke)$/.test(fx.type)?0x25413e:0x211d1a,transparent:true,opacity:0.34,
       depthWrite:false,side:THREE.DoubleSide,toneMapped:false}));
     mesh.rotation.x=-Math.PI/2; mesh.position.set(fx.x||0,0.018,fx.y||0); mesh.renderOrder=1;
+    followVisualSurface(mesh.material,this.visualHeightUniforms);
     this.effectGroup.add(mesh); this.scorches.set(id,{mesh,born:time,opacity:0.34});
     if(this.scorches.size>this.maxScorches) {
       const oldest=this.scorches.entries().next().value;
@@ -5364,7 +5488,7 @@ export class Renderer3D {
       type==='forceMove'?0xffd28d:type==='guard'?0xa7e9a7:type==='patrol'?0x8be9ff:0x8df4df;
     const group=new THREE.Group();
     const lineGeometry=new THREE.BufferGeometry();
-    lineGeometry.setAttribute('position',new THREE.Float32BufferAttribute([0,0,0,0,0,0],3));
+    lineGeometry.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(33*3),3));
     const line=new THREE.Line(lineGeometry,new THREE.LineDashedMaterial({color,transparent:true,opacity:0.68,dashSize:0.18,gapSize:0.12,depthTest:false,depthWrite:false}));
     line.renderOrder=12;
     group.add(line);
@@ -5404,12 +5528,15 @@ export class Renderer3D {
         this.orderMarkers.set(unit.id,marker);
       }
       const p=marker.line.geometry.attributes.position;
-      p.setXYZ(0,unit.x,0.15,unit.y);
-      p.setXYZ(1,endpoint.x,0.15,endpoint.y);
+      for(let i=0;i<p.count;i++) {
+        const along=i/(p.count-1);
+        const x=unit.x+(endpoint.x-unit.x)*along,z=unit.y+(endpoint.y-unit.y)*along;
+        p.setXYZ(i,x,this.visualHeightAt(x,z)+0.15,z);
+      }
       p.needsUpdate=true;
       marker.line.computeLineDistances();
-      marker.ring.position.set(endpoint.x,0.57,endpoint.y);
-      marker.core.position.set(endpoint.x,0.58,endpoint.y);
+      this._setGroundPosition(marker.ring,endpoint.x,0.15,endpoint.y);
+      this._setGroundPosition(marker.core,endpoint.x,0.16,endpoint.y);
       const pulse=1+0.12*Math.sin(time*4+endpoint.x);
       marker.ring.scale.setScalar(pulse);
     }
@@ -5545,6 +5672,8 @@ export class Renderer3D {
     ring.rotation.x=0.28;
     const beacon=new THREE.PointLight(0xffd889,1.35,4.4);
     beacon.position.y=1.72;g.add(beacon);
+    for(const part of [capture,recovery,overdriveField,...progressSegments])
+      followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
     g.userData={energy,neutral,ring,halo,haloUpper,capture,progressSegments,shelter,recovery,beacon,capstone,capstoneMat,signalMaterials,overdrive,overdriveRing,overdriveCore,overdriveMat,overdriveField};
     this.scene.add(g);
     return g;
@@ -5562,7 +5691,7 @@ export class Renderer3D {
       // changed enemy ownership, protocol, progress, or storm response.
       const liveState=playerOwned||f===2;
       visual.visible=f>0||playerOwned;
-      visual.position.set(relay.x,0,relay.y);
+      this._setGroundPosition(visual,relay.x,0,relay.y);
       const owned=liveState&&(relay.owner==='player'||relay.owner==='enemy');
       const contested=liveState&&Boolean(relay.contested);
       const faction=owned?(relay.owner==='player'?game.faction:game.enemyFaction):null;
@@ -5725,6 +5854,8 @@ export class Renderer3D {
     beaconCore.renderOrder=14;
     const light=this.quality==='eco'?null:new THREE.PointLight(0xffb65a,this.quality==='ultra'?1.25:.72,4.2);
     if(light){light.position.set(0,1.4,0);root.add(light);}
+    for(const part of [ring,contestRing,progress])
+      followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
     root.userData={pod,ring,contestRing,progress,marker,beacon,beaconCore,light,modelVersion:this.assetVersions?.get('salvageDrop')||0};
     this.scene.add(root);
     return root;
@@ -5756,7 +5887,7 @@ export class Renderer3D {
     const incoming=drop.phase==='incoming';
     const expired=drop.phase==='expired';
     visual.visible=true;
-    visual.position.set(drop.x,0,drop.y);
+    this._setGroundPosition(visual,drop.x,0,drop.y);
     const remaining=Number.isFinite(drop.landsAt)?Math.max(0,drop.landsAt-simTime):0;
     pod.visible=!terminal;
     pod.position.y=incoming ? .12+clamp(remaining/8,0,1)*2.6 : .10;
@@ -5830,6 +5961,8 @@ export class Renderer3D {
       arcs.push(arc);
     }
     const light=new THREE.PointLight(0xb98cff,2.5,16);light.position.y=2;g.add(light);
+    for(const part of [boundary,front,innerFront,field])
+      followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
     g.userData={boundary,front,innerFront,field,cloud,cloudPuffs,arcs,light};
     this.scene.add(g);this.stormVisual=g;
   }
@@ -5861,7 +5994,7 @@ export class Renderer3D {
     const g=this.stormVisual;
     if(!storm||storm.phase==='calm') {g.visible=false;return;}
     g.visible=true;
-    g.position.set(storm.x,0,storm.y);
+    this._setGroundPosition(g,storm.x,0,storm.y);
     const surge=storm.phase==='surge', warning=storm.phase==='warning';
     const radius=storm.radius||5.5;
     const {boundary,front,innerFront,field,cloud,cloudPuffs,arcs,light}=g.userData;
@@ -5927,6 +6060,7 @@ export class Renderer3D {
     }));
     stem.position.y=2.20;g.add(stem);
     const light=new THREE.PointLight(0x73efff,1.6,6.0);light.position.y=3.25;g.add(light);
+    for(const part of [field,base])followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
     g.userData={field,base,halo,beacon,stem,light};
     g.visible=false;this.scene.add(g);this.stormLureVisual=g;
     return g;
@@ -5949,7 +6083,7 @@ export class Renderer3D {
     // hidden enemy activity through the fog.
     const known=lure.owner==='player'?fog>0:fog===2;
     if(!known) {g.visible=false;return;}
-    g.visible=true;g.position.set(lure.x,0,lure.y);
+    g.visible=true;this._setGroundPosition(g,lure.x,0,lure.y);
     const {field,base,halo,beacon,stem,light}=g.userData;
     const remaining=clamp(lure.until-game.time,0,12);
     const fade=clamp(remaining/1.4,0,1);
@@ -6002,6 +6136,7 @@ export class Renderer3D {
     const light = new THREE.PointLight(0x8bdeff, 0.8, 5);
     light.position.y = 2;
     group.add(light);
+    for(const part of [field,rim])followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
     group.userData = { field, rim, beacon, stem, light };
     group.visible = false;
     this.scene.add(group);
@@ -6019,7 +6154,7 @@ export class Renderer3D {
       return;
     }
     group.visible = true;
-    group.position.set(bloom.x, 0, bloom.y);
+    this._setGroundPosition(group,bloom.x,0,bloom.y);
     const { field, rim, beacon, stem, light } = group.userData;
     const radius = Math.max(1, Math.min(6, bloom.radius));
     const fade = clamp((bloom.until - game.time) / 5, 0, 1);
@@ -6068,6 +6203,7 @@ export class Renderer3D {
     this.setView(centerX,centerY,zoom);
     if(this.terrain!==game.terrain) this._buildTerrain(game);
     else this._syncTerrainChanges(game);
+    this._syncVisualHeightFootprints(game);
     this._syncGroundFlatZones(game,centerX,centerY);
     this._syncCrashSite(game);
     this._syncFog(game);
@@ -6115,6 +6251,8 @@ export class Renderer3D {
     this._disposeGroup(this.terrainGroup);
     this.fogTexture?.dispose();
     this.fogTexture=null;
+    this.visualHeightUniforms.uVisualHeight.value?.dispose();
+    this.visualHeightField=null;
     this._disposeGroup(this.entityGroup);
     this._disposeGroup(this.orderGroup);
     this._disposeGroup(this.effectGroup);
