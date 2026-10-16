@@ -890,6 +890,11 @@ function makeUnit(defId, faction) {
     box(g, m.recess, 0.59, 0.19, 0.46, 0, 0.48, 0.06);
     for (const x of [-0.17, 0, 0.17]) cone(g, m.glass, 0.09, 0.29, 5, x, 0.65, 0.1);
     box(g, m.light, 0.64, 0.07, 0.12, 0, 0.33, -0.5);
+  } else if (defId === 'apc') {
+    box(g, m.armor, 0.68, 0.35, 0.68, 0, 0.52, 0.05);
+    box(g, m.glass, 0.49, 0.13, 0.045, 0, 0.58, -0.31);
+    box(g, m.accent, 0.48, 0.045, 0.07, 0, 0.72, 0.17);
+    for(const x of [-0.16,0.16]) box(g,m.dark,0.27,0.27,0.035,x,0.49,0.407);
   } else if (defId === 'mcv') {
     box(g, m.light, 0.42, 0.26, 0.44, 0, 0.55, 0.06);
     cylinder(g, m.accent, 0.10, 0.10, 0.55, 8, 0, 0.86, 0.12);
@@ -1202,7 +1207,7 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='stealthTank'?'?rev=2':key==='artillery'||key==='orca'?'?rev=1':'';
+      const revision=key==='stealthTank'?'?rev=2':['artillery','orca','apc'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         compactAuthoredModel(gltf.scene,key);
@@ -3754,6 +3759,21 @@ export class Renderer3D {
       // economy. Rotating that combined mesh would orbit every wheel around
       // one origin; only independent wheel nodes may spin.
       if (authored && animation.wheels.length < 2) animation.wheels.length = 0;
+      if(authored && o.defId==='apc') {
+        const wheels=['L1','L2','L3','R1','R2','R3']
+          .map(name=>authoredPart(visual,`APC wheel ${name}`)).filter(Boolean);
+        if(wheels.length===6) animation.wheels=wheels.map(part=>({part,
+          rotation:part.quaternion.clone(),axis:new THREE.Vector3(1,0,0),radius:0.155,angle:0}));
+        animation.carrierParts=[['APC door L',new THREE.Vector3(0,1,0),-1.42],
+          ['APC door R',new THREE.Vector3(0,1,0),1.42],
+          ['APC loading ramp',new THREE.Vector3(1,0,0),2.25]].flatMap(([name,axis,angle])=>{
+          const part=authoredPart(visual,name);
+          return part?[{part,axis,angle,rotation:part.quaternion.clone(),ramp:name==='APC loading ramp'}]:[];
+        });
+        animation.carrierPassengerCount=o.passengerIds?.length||0;
+        animation.carrierOpenUntil=-Infinity;
+        animation.carrierAperture=0;
+      }
       animation.infantry = /^(scout|rifle|rocket|engineer|medic|flamer)$/.test(o.defId);
       if (animation.infantry) {
         // The authored rifle/rocket/engineer GLBs expose separate arm shells
@@ -4022,6 +4042,7 @@ export class Renderer3D {
     const powered = !state.building || o.powered !== false;
     const phase = time * 2.5 + a.phase;
     let lightLevel = 1;
+    if(a.carrierParts?.length) this._animateCarrierLoading(state,o,game,time);
     if (a.infantry && a.arms?.length) {
       let shot = null;
       for (let i = (game.effects?.length || 0) - 1; i >= 0; i--) {
@@ -4200,6 +4221,41 @@ export class Renderer3D {
     for (const { material, intensity } of a.lights || []) material.emissiveIntensity = intensity * lightLevel;
   }
 
+  _animateCarrierLoading(state,o,game,time) {
+    const a=state.animation;
+    const count=o.passengerIds?.length||0;
+    const elapsed=time-a.carrierLastTime;
+    if(Number.isFinite(elapsed)&&elapsed===0) return;
+    if(!Number.isFinite(elapsed)||elapsed<0||elapsed>0.5) {
+      a.carrierPassengerCount=count;
+      a.carrierOpenUntil=-Infinity;
+      a.carrierAperture=0;
+    } else {
+      const boarding=(game.units||[]).some(unit=>unit.hp>0&&!unit.embarkedIn&&
+        unit.order?.type==='board'&&unit.order.carrierId===o.id&&
+        Math.hypot(unit.x-o.x,unit.y-o.y)<1.8&&
+        (unit.owner==='player'||typeof game.isVisible==='function'&&game.isVisible(unit)));
+      const unloading=count>0&&o.order?.type==='unload'&&
+        Math.hypot(o.order.x-o.x,o.order.y-o.y)<1.5;
+      if(boarding||unloading||count!==a.carrierPassengerCount) a.carrierOpenUntil=time+1.5;
+      // Close the equipment for travel; a transfer remains readable briefly
+      // after the passengers have entered or left the simulation carrier.
+      const moving=Math.hypot(o.x-a.carrierLastX,o.y-a.carrierLastY)/elapsed>0.3;
+      const target=!moving&&time<a.carrierOpenUntil?1:0;
+      a.carrierAperture+=(target-a.carrierAperture)*(1-Math.exp(-Math.min(elapsed,0.1)*9));
+      a.carrierPassengerCount=count;
+    }
+    a.carrierLastTime=time;
+    a.carrierLastX=o.x;
+    a.carrierLastY=o.y;
+    const rotation=this.tmpWheelQuat;
+    for(const item of a.carrierParts) {
+      const amount=item.ramp?clamp(a.carrierAperture*1.4,0,1):clamp((a.carrierAperture-0.3)/0.7,0,1);
+      rotation.setFromAxisAngle(item.axis,item.angle*amount);
+      item.part.quaternion.copy(item.rotation).multiply(rotation);
+    }
+  }
+
   _animateMotion(state, speed, dx=0, dz=0, time=0) {
     const a=state.animation;
     if (!a || a.motion === undefined) return;
@@ -4277,7 +4333,15 @@ export class Renderer3D {
         this.tmpWheelQuat.setFromAxisAngle(this.wheelAxis,a.wheelAngle);
         for(let i=0;i<a.wheels.length;i++) {
           const wheel=a.wheels[i];
-          wheel.part.quaternion.copy(wheel.rotation).multiply(this.tmpWheelQuat);
+          if(wheel.axis) {
+            const yaw=state.group.rotation.y;
+            const signedDistance=-Math.sin(yaw)*dx-Math.cos(yaw)*dz;
+            wheel.angle=(wheel.angle-signedDistance/wheel.radius)%(Math.PI*2);
+            this.tmpWheelQuat.setFromAxisAngle(wheel.axis,wheel.angle);
+            wheel.part.quaternion.copy(wheel.rotation).multiply(this.tmpWheelQuat);
+            // The legacy wheels below use the shared local-Y roll.
+            this.tmpWheelQuat.setFromAxisAngle(this.wheelAxis,a.wheelAngle);
+          } else wheel.part.quaternion.copy(wheel.rotation).multiply(this.tmpWheelQuat);
         }
       }
     }

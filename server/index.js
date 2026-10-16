@@ -6,6 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
+  REINFORCEMENT_ASSEMBLY_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -28,7 +29,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 53;
+const RANKED_SEASON = 68;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -57,13 +58,13 @@ const RANKED_SEASON = 53;
 // Version 64 extends bounded defense to operational support infrastructure at
 // every skirmish difficulty. Campaign rules and multiplayer season are unchanged.
 // Version 65 coordinates normal/hard ground assaults on observed fortifications.
-// Easy retains the v64 infrastructure-defense floor.
+// Version 68 changes reinforcement assembly for newly produced units in both
+// solo modes, so all campaign and skirmish boards start at v68.
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
-  (score.mode === 'skirmish' ? score.scoreVersion >= (score.difficulty === 'easy' ? 64 : 65) &&
+  (score.mode === 'skirmish' ? score.scoreVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
-    : score.mode === 'campaign' && score.scoreVersion >=
-        (score.scenarioId === 'dawn-of-the-free' ? 60 : 57) &&
+    : score.mode === 'campaign' && score.scoreVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION &&
         score.scoreVersion <= SCORE_VERSION);
 const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;

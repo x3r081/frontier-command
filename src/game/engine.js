@@ -57,6 +57,7 @@ export const AI_ASSAULT_COORDINATION_RULES_VERSION = 65;
 export const AIR_SERVICE_RULES_VERSION = 66;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const PRODUCTION_SITE_RULES_VERSION = 67;
+export const REINFORCEMENT_ASSEMBLY_RULES_VERSION = 68;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
@@ -369,6 +370,7 @@ export class Game {
     this.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     this.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     this.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
+    this.reinforcementAssemblyRulesVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
     this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     this._aiCommandRecovery = null;
     this.salvageDrop = null;
@@ -3842,6 +3844,68 @@ export class Game {
     return candidates[0] || null;
   }
 
+  _productionAssemblyPoint(building, unit) {
+    const rally = building.rally;
+    if (!rally) return null;
+    const flying = !!UNIT_DEFS[unit.defId].flying;
+    const margin = 0.18;
+    const sameLayer = this.units.filter(other => other !== unit && other.owner === unit.owner &&
+      other.hp > 0 && !other.embarkedIn && !!UNIT_DEFS[other.defId].flying === flying);
+    const goals = other => {
+      const order = other.order;
+      if (!order || !['move', 'forceMove', 'guard', 'patrol'].includes(order.type)) return [];
+      if (order.type === 'patrol') {
+        const leg = order.leg === 1;
+        return [{ x: leg ? order.bx : order.ax, y: leg ? order.by : order.ay }];
+      }
+      return [{ x: order.x, y: order.y }];
+    };
+    const reserved = sameLayer.flatMap(other => [
+      ...(Number.isFinite(other.x) && Number.isFinite(other.y)
+        ? [{ x: other.x, y: other.y, radius: UNIT_DEFS[other.defId].radius }] : []),
+      ...goals(other).filter(point => Number.isFinite(point.x) && Number.isFinite(point.y))
+        .map(point => ({ ...point, radius: UNIT_DEFS[other.defId].radius })),
+    ]);
+    const clearAt = point => reserved.every(other =>
+      dist(point.x, point.y, other.x, other.y) >= UNIT_DEFS[unit.defId].radius + other.radius + margin);
+    let groundComponents = null;
+    const reachable = point => {
+      if (flying) return true;
+      const sx = Math.floor(unit.x), sy = Math.floor(unit.y);
+      const tx = Math.floor(point.x), ty = Math.floor(point.y);
+      if (!this._isPassable(tx, ty)) return false;
+      groundComponents ||= this._groundComponents();
+      const start = sy * this.width + sx, target = ty * this.width + tx;
+      return groundComponents[start] >= 0 && groundComponents[start] === groundComponents[target];
+    };
+
+    // Preserve the precise player rally coordinate whenever it is available.
+    if (clearAt(rally) && reachable(rally)) return { x: rally.x, y: rally.y };
+
+    const maxRadius = 5;
+    const candidates = [];
+    const minX = Math.max(0, Math.floor(rally.x - maxRadius - 1));
+    const maxX = Math.min(this.width - 1, Math.ceil(rally.x + maxRadius + 1));
+    const minY = Math.max(0, Math.floor(rally.y - maxRadius - 1));
+    const maxY = Math.min(this.height - 1, Math.ceil(rally.y + maxRadius + 1));
+    for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+      const point = { x: x + 0.5, y: y + 0.5 };
+      const distance = dist(point.x, point.y, rally.x, rally.y);
+      if (distance > maxRadius || !flying && !this._isPassable(x, y)) continue;
+      if (!reachable(point)) continue;
+      candidates.push({ ...point, distance, xTile: x, yTile: y });
+    }
+    candidates.sort((a, b) => a.distance - b.distance || a.yTile - b.yTile || a.xTile - b.xTile);
+    const clear = candidates.find(clearAt);
+    if (clear) return { x: clear.x, y: clear.y };
+
+    // Crowded bases still get the closest reachable bounded slot, even when it
+    // cannot meet the preferred clearance. If the radius has no reachable tile,
+    // retain the original rally point so the normal pathfinder can recover.
+    if (candidates.length) return { x: candidates[0].x, y: candidates[0].y };
+    return { x: rally.x, y: rally.y };
+  }
+
   _onBuildingComplete(b) {
     this._refreshPower();
     this._event('constructionComplete', { id: b.id, owner: b.owner, defId: b.defId, x: b.x, y: b.y });
@@ -3897,8 +3961,12 @@ export class Game {
       b.queue.shift();
       const u = this._createUnit(b.owner, q.defId, spawn.x, spawn.y);
       if (u.defId === 'harvester') u.order = { type: 'harvest' };
-      else if (b.rally && dist(u.x, u.y, b.rally.x, b.rally.y) > 1)
-        u.order = { type: 'move', x: b.rally.x, y: b.rally.y, attackMove: false };
+      else if (b.rally && dist(u.x, u.y, b.rally.x, b.rally.y) > 1) {
+        const assembly = this.replayVersion == null ||
+          this.replayVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION
+          ? this._productionAssemblyPoint(b, u) : b.rally;
+        u.order = { type: 'move', x: assembly.x, y: assembly.y, attackMove: false };
+      }
       this._event('unitReady', { id: u.id, owner: u.owner, defId: u.defId, buildingId: b.id });
     }
   }
@@ -6875,6 +6943,11 @@ export class Game {
     // recorded control rules, while current saves preserve the null sentinel.
     if (game.replayVersion == null && data.airServiceRulesVersion !== AIR_SERVICE_RULES_VERSION)
       game.replayVersion = AIR_SERVICE_RULES_VERSION - 1;
+    // Null-version saves without the assembly marker predate reinforcement
+    // spacing. Keep those production orders on their recorded v67 behavior.
+    if (game.replayVersion == null &&
+        data.reinforcementAssemblyRulesVersion !== REINFORCEMENT_ASSEMBLY_RULES_VERSION)
+      game.replayVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6898,6 +6971,7 @@ export class Game {
     game.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     game.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     game.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
+    game.reinforcementAssemblyRulesVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
     game.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     const savedRecovery = game._aiCommandRecovery;
     game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)

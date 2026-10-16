@@ -382,49 +382,95 @@ def tank():
 
 
 def apc():
-    """Broad, unarmed six-wheel troop carrier with a clearly readable rear ramp."""
+    """Broad troop carrier with independently pivoted wheels, doors, and ramp."""
     clean(); m = palette()
-    # A low, broad hull gives the carrier a different silhouette from the narrow
-    # tracked striker while staying within the same tactical footprint.
+    # Keep the established low, broad hull and unarmed roof silhouette.
     cube("Carrier armored belly", (0, 0, .29), (.88, .94, .26), m["dark"], .09)
     cube("Broad personnel hull", (0, -.015, .55), (.96, .91, .43), m["armor"], .12)
     cube("Sloped forward cab", (0, .40, .66), (.88, .39, .38), m["edge"], .10)
     cube("Wide armored windshield", (0, .603, .70), (.63, .035, .19), m["glass"], .025)
     for x in [-.23, 0, .23]:
         cube("Windshield divider", (x, .626, .70), (.025, .014, .20), m["steel"], .006)
-    # Raised, slab-sided troop compartment; the roof is deliberately bare of a cannon.
     cube("Troop compartment roof", (0, -.12, .825), (.84, .56, .10), m["steel"], .065)
     cube("Roof escape hatch", (0, -.04, .89), (.31, .27, .045), m["edge"], .035)
     for x in [-.34, .34]:
+        side = -1 if x < 0 else 1
         cube("Side armor belt", (x, -.10, .57), (.16, .59, .36), m["steel"], .045)
-        cube("Side team stripe", (x + (.083 if x > 0 else -.083), -.07, .68), (.018, .37, .055), m["accent"], .008)
-        # Small protected observation windows identify the passenger bay.
+        cube("Side team stripe", (x + side*.083, -.07, .68), (.018, .37, .055), m["accent"], .008)
         for y in [-.29, -.04, .21]:
-            cube("Troop vision block", (x + (.087 if x > 0 else -.087), y, .59),
-                 (.018, .13, .085), m["glass"], .012)
+            cube("Troop vision block", (x + side*.087, y, .59), (.018, .13, .085), m["glass"], .012)
         cube("Wheel arch guard", (x*1.10, 0, .34), (.12, .79, .17), m["armor"], .06)
-        for y in [-.32, 0, .32]:
-            cylinder("All-terrain tire", (x*1.20, y, .245), .155, .105, m["rubber"], 12, (0, math.pi/2, 0))
-            cylinder("Machined wheel hub", (x*1.20 + (.056 if x > 0 else -.056), y, .245),
-                     .082, .018, m["edge"], 10, (0, math.pi/2, 0))
-            cylinder("Hub inset", (x*1.20 + (.067 if x > 0 else -.067), y, .245),
-                     .035, .020, m["steel"], 8, (0, math.pi/2, 0))
-    # Double rear doors and lowered loading ramp are the defining transport cues.
+
+    # Each named wheel is one mesh assembly centered on its axle. The renderer
+    # spins the node around exported local +X; baking component rotations before
+    # joining keeps that axis and the identity rest quaternion intact.
+    wheel_groups = []
+    for side_name, side in (("L", -1), ("R", 1)):
+        x = side * .408
+        for index, y in enumerate((.32, 0, -.32), 1):
+            wheel_name = f"APC wheel {side_name}{index}"
+            pivot = (x, y, .245)
+            parts = [
+                cylinder("All-terrain tire", pivot, .155, .105, m["rubber"], 12, (0, math.pi/2, 0)),
+                cylinder("Wheel hub", (x + side*.056, y, .245), .082, .018, m["edge"], 10, (0, math.pi/2, 0)),
+                cylinder("Wheel hub.001", (x + side*.070, y, .245), .035, .012, m["edge"], 8, (0, math.pi/2, 0)),
+            ]
+            wheel_groups.append((wheel_name, parts, pivot))
+
     cube("Rear door surround", (0, -.478, .54), (.70, .07, .48), m["dark"], .025)
-    for x in [-.17, .17]:
-        door_name = "Left troop door" if x < 0 else "Right troop door"
-        cube(door_name, (x, -.523, .56), (.32, .035, .39), m["armor"], .025)
-        cube("Door reinforcing rib", (x, -.545, .56), (.025, .014, .30), m["edge"], .006)
-        cube("Door latch", (x + (.11 if x < 0 else -.11), -.55, .56), (.025, .018, .11), m["steel"], .006)
-    ramp = cube("Fold-down loading ramp", (0, -.66, .255), (.63, .34, .09), m["steel"], .025)
+    cube("Recessed loading threshold", (0, -.493, .345), (.67, .065, .105), m["recess"])
+
+    # Closed leaves pivot at their outer rear corners; the opposite local Z
+    # signs swing both doors clear of the centered loading aperture.
+    door_groups = []
+    for side_name, side in (("L", -1), ("R", 1)):
+        pivot = (side*.32, -.50, .56)
+        center_x = side*.16
+        parts = [
+            cube("Armored rear door", (center_x, -.523, .56), (.32, .035, .39), m["armor"], .025),
+            cube("Door reinforcing rib", (center_x, -.545, .56), (.025, .014, .30), m["edge"]),
+            cube("Door latch", (side*.055, -.55, .56), (.025, .018, .11), m["steel"]),
+            cube("Door hinge armor", (side*.305, -.51, .56), (.055, .055, .34), m["dark"]),
+        ]
+        door_groups.append((f"APC door {side_name}", parts, pivot))
+
+    # The armored tailgate is stowed upright over the closed doors. Its rear
+    # hinge sits level with the loading threshold; a positive local X rotation
+    # lowers the panel back toward the ground as a sloped loading bridge.
+    ramp_pivot = (0, -.54, .34)
+    ramp_parts = [
+        cube("Armored loading ramp", (0, -.58, .555), (.63, .075, .43), m["steel"], .025),
+        cube("Ramp hinge bracket L", (-.32, -.54, .34), (.09, .09, .085), m["dark"]),
+        cube("Ramp hinge bracket R", (.32, -.54, .34), (.09, .09, .085), m["dark"]),
+        cylinder("Ramp hinge pin", (0, -.54, .34), .045, .67, m["edge"], 10, (0, math.pi/2, 0)),
+    ]
     for x in [-.21, -.07, .07, .21]:
-        cube("Ramp grip rib", (x, -.67, .303), (.025, .24, .018), m["edge"], .006)
+        ramp_parts.append(cube("Ramp grip rib", (x, -.5335, .555), (.018, .018, .35), m["edge"]))
+    for x in [-.285, .285]:
+        ramp_parts.append(cube("Ramp safety guide", (x, -.5335, .555), (.028, .018, .37), m["warning"]))
+    # Compact actuator housings remain fixed to the hull beside the ramp hinge;
+    # the rotating assembly carries only its hinge brackets and pin.
+    for x in [-.285, .285]:
+        cube("Ramp actuator mount", (x, -.50, .30), (.075, .08, .12), m["dark"])
+        cylinder("Ramp actuator housing", (x, -.515, .30), .024, .15,
+                 m["dark"], 8, (2.62, 0, 0))
+        cylinder("Ramp actuator rod", (x, -.56, .33), .012, .07,
+                 m["edge"], 8, (2.62, 0, 0))
     cube("Rear running light bar", (0, -.555, .81), (.48, .025, .045), m["accent"], .01)
     for x in [-.34, .34]:
         cube("Forward marker lamp", (x, .605, .49), (.105, .045, .055), m["accent"], .012)
         cube("Front bumper block", (x, .59, .34), (.20, .12, .12), m["dark"], .025)
     cube("Nose armor ridge", (0, .57, .89), (.17, .11, .06), m["edge"], .018)
-    consolidate_static_meshes(("Left troop door", "Right troop door", ramp.name))
+
+    moving_groups = [*wheel_groups, *door_groups, ("APC loading ramp", ramp_parts, ramp_pivot)]
+    # Bake primitive rotations so the pivot nodes export at identity rest pose.
+    for _, members, _ in moving_groups:
+        for obj in members:
+            bpy.ops.object.select_all(action="DESELECT")
+            obj.select_set(True)
+            bpy.context.view_layer.objects.active = obj
+            bpy.ops.object.transform_apply(location=False, rotation=True, scale=True)
+    consolidate_static_meshes(join_groups=tuple(moving_groups))
     export("apc")
 
 
