@@ -87,11 +87,11 @@ test('projectile wake grows from launch point and fades with the shot',()=>{
     'the wake appears after the enemy firing position is actually visible');
 });
 
-async function authoredAnimation(defId,file,building=false,faction='aegis',compact=false) {
+async function authoredAnimation(defId,file,building=false,faction='aegis',compact=false,modelKey=defId) {
   const bytes=await readFile(new URL(`../public/assets/models/${file}`,import.meta.url));
   const payload=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
   const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(payload,'',resolve,reject));
-  if(compact)compactAuthoredModel(gltf.scene,defId);
+  if(compact)compactAuthoredModel(gltf.scene,modelKey);
   const group=new THREE.Group();
   group.userData.authoredVisual=gltf.scene;
   group.add(gltf.scene);
@@ -236,6 +236,39 @@ test('compacted Siege Crawler keeps its complete moving cannon and attached muzz
   let visibleMeshes=0;
   group.traverse(node=>{if(node.isMesh&&node.visible)visibleMeshes++;});
   assert.ok(visibleMeshes<=11,'the moving gun keeps a bounded material-submission budget');
+});
+
+test('Vesper Siege Crawler uses its faction model and retains the moving cannon through compaction',async()=>{
+  const {renderer,group,entity,animation}=await authoredAnimation(
+    'artillery','vesper-siege-crawler.glb',false,'vesper',true,'vesperArtillery');
+  const assembly=animation.pivot?.children.find(node=>node.name==='Artillery_cannon_assembly');
+  const cannonMeshes=[];
+  assembly?.traverse(node=>{if(node.isMesh)cannonMeshes.push(node);});
+  assert.ok(cannonMeshes.length>0,'the authored Vesper gun assembly is present');
+  assert.ok(cannonMeshes.every(mesh=>mesh.visible&&!mesh.userData.rendererBatchSource),
+    'all moving Vesper cannon meshes stay out of static batches');
+
+  const source=group.userData.authoredVisual;
+  source.userData.factionAsset='vesper';
+  const aegisSource=source.clone(true);
+  aegisSource.userData.factionAsset='aegis';
+  renderer.assetModels=new Map([['artillery',aegisSource],['vesperArtillery',source]]);
+  const selected=renderer._authoredModel({defId:'artillery',faction:'vesper'});
+  assert.equal(selected.userData.authoredVisual.userData.factionAsset,'vesper',
+    'the Vesper faction lookup selects the authored Vesper GLB');
+
+  group.updateMatrixWorld(true);
+  const hullY=group.position.y;
+  const muzzle=animation.muzzleSocket.getWorldPosition(new THREE.Vector3());
+  assert.ok(muzzle.distanceTo(new THREE.Vector3(0,1.17,-2.115))<1e-6,
+    'the Vesper socket starts at the exposed barrel face');
+  const shot={id:'vesper-shell',type:'projectile',sourceId:entity.id,maxTtl:1,ttl:1};
+  renderer._animateEntity({group,animation,building:false},entity,
+    {effects:[shot],getEntity:()=>{throw new Error('recoil must not inspect targets');}},20);
+  group.updateMatrixWorld(true);
+  assert.ok(animation.muzzleSocket.getWorldPosition(new THREE.Vector3()).distanceTo(muzzle)>.08,
+    'the standard artillery animation recoils the Vesper barrel');
+  assert.equal(group.position.y,hullY,'recoil does not move the Vesper hull');
 });
 
 test('Siege Crawler recoil follows projectile age and settles without moving its hull',async()=>{

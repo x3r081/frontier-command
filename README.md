@@ -216,3 +216,7 @@ Pass `--` and one or more generator names to rebuild selected models, for exampl
 After rebuilding models, regenerate the tactical portraits with `-b --python scripts/render_asset_portraits.py -- --all` using the same Blender executable.
 
 This path is specific to the script author's macOS Blender install; adjust it for other machines. The browser loads the GLBs through Three.js's `GLTFLoader` and falls back to procedural geometry if WebGL or an individual model is unavailable. The original Web Audio soundscape uses calm, combat, and storm motifs with blended intensity, a distinct Stormcall cue, and no external music files.
+
+### Latest visual pass
+
+Vesper Siege Crawlers now have a distinct locally authored Blender chassis and portrait: layered salvage armor, exposed track wheels, violet optics, and an extended animated cannon. The [renderer comparison](docs/screenshots/vesper-siege-crawler-comparison-v89-2026-10-16.jpg) shows both faction models. [Model details and reproducible commands](docs/VESPER_SIEGE_CRAWLER_ART.md) describe the asset and its recoil hierarchy.

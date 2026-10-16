@@ -46,13 +46,14 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='medic'?'?rev=86':['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='artillery-vesper'?'?rev=89':id==='medic'?'?rev=86':['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'mcv' ? 'mcv-vesper'
     : id === 'bunker' ? 'bunker-vesper'
     : id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
       : id === 'buggy' ? 'buggy-vesper'
+        : id === 'artillery' ? 'artillery-vesper'
         : ['command','power','refinery','barracks','factory','radar','tech'].includes(id) ? `${id}-vesper` : id
   : id;
 const assetCache = new Map();

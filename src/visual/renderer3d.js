@@ -268,13 +268,14 @@ function compactStaticModel(root, preserve=()=>false) {
 }
 
 const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rocket','engineer','medic','flamer']);
+const ARTILLERY_MODEL_KEYS = new Set(['artillery','vesperArtillery']);
 function preserveMovingModelPart(key,object) {
   const name=object.name.replace(/_/g,' ').replace(/(\d{3})$/,'.$1');
   if(key==='medic') for(let part=object;part;part=part.parent)
     if(/^Medic leg [LR]$/.test(part.name.replace(/_/g,' ')))return true;
   if(COMPACT_INFANTRY.has(key)) return /^Arm\.?[LR] (?:upper|forearm)$/.test(name);
   if(key==='mcv') return /^(?:Run-flat wheel|Wheel hub)(?:\.\d+)?$/.test(name);
-  if(key==='artillery') {
+  if(ARTILLERY_MODEL_KEYS.has(key)) {
     // A multi-material glTF node is a Group with generically named meshes.
     // Preserve its descendants together so static batches cannot steal the gun.
     for(let part=object;part;part=part.parent)
@@ -284,7 +285,7 @@ function preserveMovingModelPart(key,object) {
 }
 
 export function compactAuthoredModel(root,key) {
-  if(key!=='artillery'&&key!=='mcv'&&!COMPACT_INFANTRY.has(key)) return false;
+  if(!ARTILLERY_MODEL_KEYS.has(key)&&key!=='mcv'&&!COMPACT_INFANTRY.has(key)) return false;
   compactStaticModel(root,object=>preserveMovingModelPart(key,object));
   return true;
 }
@@ -1338,10 +1339,10 @@ export class Renderer3D {
       scout:'scout.glb', scoutVesper:'vesper-scout.glb', rifle:'rifle-infantry.glb', rocket:'rocket-infantry.glb',
       engineer:'engineer.glb', medic:'medic.glb', flamer:'flamer.glb',
       mcv:'mcv.glb', vesperMcv:'vesper-mcv.glb', stealthTank:'stealth-tank.glb', buggy:'recon-buggy.glb', vesperBuggy:'vesper-recon-buggy.glb',
-      artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
+      artillery:'siege-crawler.glb', vesperArtillery:'vesper-siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=key==='vesperArtillery'?'?rev=89':key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         if(['rifle','rocket'].includes(key)) gltf.scene.traverse(object=>{
@@ -3959,6 +3960,7 @@ export class Renderer3D {
     const modelKey=o.defId==='guardian'&&o.faction!=='aegis'?'none':
       o.defId==='scout'&&o.faction==='vesper'?'scoutVesper':
       o.defId==='buggy'&&o.faction==='vesper'?'vesperBuggy':
+      o.defId==='artillery'&&o.faction==='vesper'?'vesperArtillery':
       o.defId==='mcv'&&o.faction==='vesper'?'vesperMcv':
       o.defId==='harvester'&&o.faction==='vesper'?'vesperHarvester':(vesperStructure||o.defId);
     const source=this.assetModels.get(modelKey);
@@ -4304,10 +4306,15 @@ export class Renderer3D {
       animation.pivot.add(muzzleSocket);
       animation.muzzleSocket = muzzleSocket;
     } else if (o.defId === 'artillery') {
-      // Exported muzzle face is at (0, 1.08, -1.647) in Three coordinates;
-      // attaching in pivot-local space makes the socket follow barrel recoil.
+      // Both faction sockets attach in pivot-local space so they follow recoil.
       if(animation.pivot){
-        muzzleSocket.position.set(0,0,-1.167);
+        if(o.faction==='vesper') {
+          // The extended Vesper barrel face is at (0, 1.17, -2.115).
+          muzzleSocket.position.set(0,0.09,-1.635);
+        } else {
+          // Aegis barrel face is at (0, 1.08, -1.647).
+          muzzleSocket.position.set(0,0,-1.167);
+        }
         animation.pivot.add(muzzleSocket);
       }else{
         muzzleSocket.position.set(0,1.08,-1.647);
@@ -5384,7 +5391,7 @@ export class Renderer3D {
       const building='w' in o;
       live.add(o.id);
       let state=this.entities.get(o.id);
-      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',mcv:'vesperMcv',
+      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',artillery:'vesperArtillery',mcv:'vesperMcv',
         refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
         radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
       const assetVersion=this.assetVersions.get(assetKey||o.defId)||0;

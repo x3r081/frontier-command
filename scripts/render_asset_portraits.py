@@ -48,7 +48,8 @@ ASSETS = {
     "mcv": ("mcv", "aegis"), "mcv-vesper": ("vesper-mcv", "vesper"),
     "apc": ("apc", "all"),
     "buggy": ("recon-buggy", "all"), "buggy-vesper": ("vesper-recon-buggy", "vesper"), "lightTank": ("striker-tank", "all"),
-    "artillery": ("siege-crawler", "all"), "guardian": ("aegis-heavy-tank-game", "aegis"),
+    "artillery": ("siege-crawler", "all"), "artillery-vesper": ("vesper-siege-crawler", "vesper"),
+    "guardian": ("aegis-heavy-tank-game", "aegis"),
     "medic": ("medic", "aegis"), "orca": ("gunship", "aegis"),
     "flamer": ("flamer", "vesper"), "stealthTank": ("stealth-tank", "vesper"),
     "apache": ("apache", "vesper"),
@@ -125,7 +126,7 @@ def setup_render(meshes, faction, asset_id=None):
     extent = max((high - low).length, 0.01)
 
     # These vehicles carry their defining equipment at the front of the hull.
-    front_view = asset_id in {"apache", "harvester", "guardian", "stealthTank", "serviceBay",
+    front_view = asset_id in {"apache", "harvester", "guardian", "stealthTank", "serviceBay", "artillery-vesper",
                               "lightTank", "rifle", "rocket", "engineer", "power", "scout-vesper", "harvester-vesper",
                               "radar-vesper", "tech-vesper", "buggy-vesper", "factory", "mcv", "mcv-vesper"}
     if asset_id in {"barracks", "barracks-vesper", "bunker", "bunker-vesper"}:

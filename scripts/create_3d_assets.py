@@ -2253,6 +2253,106 @@ def siege_crawler():
     export("siege-crawler")
 
 
+def vesper_siege_crawler():
+    """Reclaimed Vesper siege chassis with an independently recoiling long gun."""
+    global LOW_POLY_BEVEL
+    previous_bevel = LOW_POLY_BEVEL
+    LOW_POLY_BEVEL = True
+    clean()
+    m = vesper_palette()
+    m["armor"] = material("Vesper crawler basalt armor", (.20,.17,.25), .48,.55)
+    m["edge"] = material("Vesper crawler salvaged warm alloy", (.63,.43,.36), .62,.39)
+    m["steel"] = material("Vesper crawler violet steel", (.31,.24,.42), .58,.43)
+    m["dark"] = material("Vesper crawler carbon frame", (.035,.027,.049), .42,.68)
+    m["accent"] = material("Vesper crawler violet optics", (.54,.20,.91), .28,.23,(.36,.07,.68),1.8)
+    m["glass"] = material("Vesper crawler ion glass", (.30,.16,.48), .42,.19,(.21,.04,.54),1.15)
+    m["recess"] = material("Vesper crawler bore and vents", (.012,.009,.022), .34,.78)
+
+    # Broad, separate tread pods keep the chassis planted under the heavy gun.
+    # Six exposed road wheels and short grousers read clearly without a dense
+    # individually modeled track chain.
+    for side in (-1, 1):
+        x = side * .70
+        cube("Vesper armored track pod", (x,-.015,.285), (.34,1.82,.49), m["dark"],.075)
+        for y in (-.66,-.40,-.14,.12,.38,.64):
+            cylinder("Vesper road wheel", (side*.855,y,.255), .142,.06,m["steel"],10,(0,math.pi/2,0))
+            cylinder("Vesper wheel hub", (side*.895,y,.255), .060,.025,m["edge"],8,(0,math.pi/2,0))
+        for y in (-.69,-.46,-.23,0,.23,.46,.69):
+            cube("Vesper tread grouser", (side*.868,y,.515), (.10,.125,.045), m["steel"],.012)
+        # Large offset salvage shields, rather than tiny bolts, establish the
+        # faction silhouette above the wheel train.
+        for y,turn in ((-.43,-4),(.15,5),(.55,-3)):
+            plate=cube("Vesper segmented track shield", (side*.91,y,.36), (.13,.43,.22), m["armor"],.035)
+            plate.rotation_euler[2]=side*math.radians(turn)
+        cube("Vesper lower track return", (side*.81,0,.075), (.09,1.35,.055), m["edge"],.015)
+
+    # Layered hull with a broad wedge and visible rear cooling bank.
+    cube("Vesper crawler belly", (0,-.025,.465), (1.28,1.82,.39), m["dark"],.085)
+    cube("Vesper armored hull", (0,-.035,.665), (1.22,1.48,.39), m["armor"],.10)
+    prow=cube("Vesper forward glacis", (0,.615,.665), (1.16,.52,.34), m["edge"],.075)
+    prow.rotation_euler[0]=math.radians(-8)
+    cube("Vesper prow impact rail", (0,.88,.49), (1.13,.10,.12), m["steel"],.025)
+    for side in (-1,1):
+        x=side*.49
+        plate=cube("Vesper hull flank armor", (x,-.02,.72), (.12,.78,.30), m["steel"],.035)
+        plate.rotation_euler[2]=side*math.radians(3)
+        cube("Vesper flank violet marker", (side*.557,.22,.73), (.018,.26,.105),m["accent"],.008)
+    cube("Vesper rear engine deck", (0,-.57,.875), (.94,.50,.19), m["steel"],.055)
+    cube("Vesper engine access plate", (0,-.56,.984), (.68,.42,.04), m["edge"],.018)
+    # A single broad louver bank makes the rear function legible at RTS scale.
+    for x in (-.25,-.125,0,.125,.25):
+        cube("Vesper engine cooling louver", (x,-.58,1.012), (.055,.32,.025), m["recess"],.008)
+    for side in (-1,1):
+        cylinder("Vesper exhaust drum", (side*.39,-.79,.82), .085,.22,m["dark"],8,(math.pi/2,0,0))
+        cylinder("Vesper exhaust rim", (side*.39,-.91,.82), .092,.035,m["edge"],8,(math.pi/2,0,0))
+
+    # Heavy traverse race and a wide, irregular salvage shield frame the barrel.
+    cylinder("Vesper turret race", (0,-.06,.88), .48,.12,m["dark"],12)
+    cylinder("Vesper bearing rim", (0,-.06,.95), .405,.04,m["edge"],12)
+    cube("Vesper low siege casemate", (0,-.05,1.055), (.92,.83,.31), m["armor"],.085)
+    cube("Vesper rear counterweight", (0,-.38,1.15), (1.00,.28,.27),m["dark"],.06)
+    # Two broad plates make a tall, asymmetrical shield. The opening between
+    # them leaves clear space for the barrel root and gives the model a new
+    # silhouette rather than a recolored copy of the neutral crawler.
+    left=cube("Vesper salvage gunshield left", (-.385,.43,1.235), (.58,.19,.61),m["steel"],.055)
+    left.rotation_euler[0]=math.radians(-7)
+    left.rotation_euler[1]=math.radians(-4)
+    right=cube("Vesper salvage gunshield right", (.385,.44,1.205), (.58,.19,.55),m["armor"],.055)
+    right.rotation_euler[0]=math.radians(5)
+    right.rotation_euler[1]=math.radians(5)
+    cube("Vesper shield salvage patch", (-.42,.535,1.35), (.26,.026,.14),m["edge"],.022)
+    cube("Vesper shield ion optic", (.43,.545,1.17), (.22,.022,.105),m["accent"],.018)
+    # A low broad roof plate and violet sensor block stay below the gun crown.
+    cube("Vesper turret roof salvage plate", (-.12,-.055,1.265), (.82,.62,.075),m["edge"],.035)
+    cube("Vesper range sensor housing", (.30,-.17,1.35), (.29,.22,.12),m["dark"],.03)
+    cube("Vesper range sensor lens", (.30,-.045,1.35), (.18,.018,.065),m["accent"],.012)
+
+    # Preserve this exact node and pivot contract: renderer3d.js translates
+    # Artillery cannon assembly along its recoil axis after each real shot.
+    cannon_parts=[]
+    for side in (-1,1):
+        cylinder("Vesper recoil cylinder housing", (side*.205,.70,1.17), .060,.48,m["dark"],10,(math.pi/2,0,0))
+        cannon_parts.append(cylinder("Vesper polished recoil ram", (side*.205,.88,1.17), .028,.39,m["edge"],8,(math.pi/2,0,0)))
+        cylinder("Vesper ram clevis", (side*.205,.51,1.17), .080,.10,m["dark"],8,(math.pi/2,0,0))
+    cannon_parts.append(cylinder("Vesper barrel root sleeve", (0,.69,1.17), .145,.40,m["dark"],12,(math.pi/2,0,0)))
+    # Keep the recoil breech fixed while giving the forward tube a full
+    # additional 0.40 units of reach over the original crawler's barrel.
+    cannon_parts.append(cylinder("Vesper long artillery tube", (0,1.34,1.17), .112,1.06,m["steel"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Vesper barrel cooling jacket", (0,1.50,1.17), .136,.40,m["dark"],12,(math.pi/2,0,0)))
+    for y,radius in ((.89,.15),(1.62,.135),(1.83,.135)):
+        cannon_parts.append(cylinder("Vesper barrel reinforcement collar", (0,y,1.17),radius,.055,m["edge"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Vesper flared muzzle brake", (0,1.98,1.17), .178,.20,m["dark"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Vesper muzzle crown", (0,2.085,1.17), .184,.042,m["edge"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Vesper bore recess", (0,2.109,1.17), .116,.012,m["recess"],12,(math.pi/2,0,0)))
+    for z in (1.10,1.24):
+        cannon_parts.append(cube("Vesper muzzle brake port", (0,1.99,z), (.16,.055,.028),m["recess"],.006))
+    consolidate_static_meshes(
+        join_groups=(("Artillery cannon assembly",cannon_parts,(0,.48,1.08)),),
+    )
+    export("vesper-siege-crawler")
+    LOW_POLY_BEVEL=previous_bevel
+
+
 def gunship():
     global LOW_POLY_BEVEL
     previous_bevel = LOW_POLY_BEVEL
@@ -3153,6 +3253,7 @@ GENERATORS = {
     "recon-buggy": recon_buggy,
     "vesper-recon-buggy": vesper_recon_buggy,
     "siege-crawler": siege_crawler,
+    "vesper-siege-crawler": vesper_siege_crawler,
     "gunship": gunship,
     "dropship": dropship,
     "apache": apache,
