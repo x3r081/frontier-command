@@ -2,11 +2,11 @@ import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, C
   DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, UNIT_PROMOTION_DEFS, UNIT_PROMOTION_RULES_VERSION,
   PRODUCTION_SITE_RULES_VERSION, POWER_STANDBY_RULES_VERSION, WRECK_RECOMMISSION_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
-import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, createCampaignGame, updateCampaign } from './campaign.js';
+import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 72;
+export const SOLO_REPLAY_VERSION = 73;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -94,6 +94,8 @@ export function validateSoloEnvelope(envelope, replayVersion = SOLO_REPLAY_VERSI
   const scenarios = envelope.mode === 'campaign' ? CAMPAIGN_MISSIONS : SKIRMISH_MAPS;
   const scenarioIndex = scenarios.findIndex(item => item.id === envelope.scenarioId);
   if (scenarioIndex < 0) throw new TypeError('Unknown solo run scenario.');
+  if (envelope.mode === 'campaign' && envelope.scenarioId === 'iron-reclaimed' && replayVersion < IRON_RECLAIMED_RULES_VERSION)
+    throw new TypeError(`Iron Reclaimed requires replay version ${IRON_RECLAIMED_RULES_VERSION}.`);
   if (envelope.mode === 'campaign' && envelope.faction !== scenarios[scenarioIndex].faction)
     throw new TypeError('Campaign faction does not match its mission.');
   if (envelope.mode === 'campaign') {

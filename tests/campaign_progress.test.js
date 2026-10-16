@@ -273,4 +273,16 @@ test('route module exposes catalog-independent display order and branch choices 
   assert.deepEqual(campaignNextChoices('ghost-channel'), ['red-ledger']);
   assert.deepEqual(campaignNextChoices('iron-current'), ['red-ledger']);
   assert.deepEqual(campaignNextChoices('unknown'), []);
+  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-1), 'iron-reclaimed');
+  assert.deepEqual(campaignNextChoices('after-the-dawn'), ['iron-reclaimed']);
+  assert.deepEqual(campaignNextChoices('iron-reclaimed'), []);
+});
+
+test('Iron Reclaimed unlock requires the same-difficulty After the Dawn record', () => {
+  const local = storage({ 'frontier-command-campaign-v1': '99' });
+  assert.equal(campaignMissionUnlocked(local, 'normal', 15), false,
+    'a legacy global counter does not unlock a new bonus operation');
+  saveCampaignResult(local, 'normal', 12, 'after-the-dawn', { mission: 'after-the-dawn', stars: 1 });
+  assert.equal(campaignMissionUnlocked(local, 'normal', 15), true);
+  assert.equal(campaignMissionUnlocked(local, 'hard', 15), false);
 });

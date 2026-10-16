@@ -1061,6 +1061,86 @@ test('ranked campaign tickets enforce verified progression and require a chosen 
     'the first verified branch remains the selected route payoff');
 });
 
+test('Iron Reclaimed tickets follow the verified After the Dawn rescue at the same difficulty', async () => {
+  const profile = await createProfile('Recovery Route');
+  const other = await createProfile('Recovery Other');
+  const start = (difficulty = 'normal') => api('/api/scores/runs', profile.token, {
+    method: 'POST', body: json({ mode: 'campaign', difficulty, faction: 'aegis',
+      scenarioId: 'iron-reclaimed', carryoverId: 'signal' }),
+  });
+  const record = { profileId: profile.profile.id, mode: 'campaign', faction: 'aegis',
+    difficulty: 'normal', scoreVersion: 72, verified: true, result: 'victory', completedAt: 100,
+    fieldOrderStatus: 'completed' };
+  store.scores.push({ ...record, scenarioId: 'iron-current', fieldOrderId: CAMPAIGN_FIELD_ORDERS[14][1].id });
+  assert.equal((await start()).status, 403, 'the preceding catalog index is not the rescue route');
+  store.scores.push({ ...record, profileId: other.profile.id, scenarioId: 'after-the-dawn',
+    fieldOrderId: CAMPAIGN_FIELD_ORDERS[12][1].id });
+  assert.equal((await start()).status, 403, 'another profile cannot authorize the mission');
+  store.scores.push({ ...record, scenarioId: 'after-the-dawn',
+    fieldOrderId: CAMPAIGN_FIELD_ORDERS[12][1].id });
+  assert.equal((await start('hard')).status, 403, 'progress remains scoped to the played difficulty');
+  const ticket = await start();
+  assert.equal(ticket.status, 201);
+  const issued = await ticket.json();
+  assert.equal(issued.rulesVersion, 73);
+  assert.equal(store.runs.find(run => run.id === issued.runId).carryoverId, 'signal',
+    'the earned rescue Field Order supplies the new bonus operation');
+  const progress = await (await api('/api/campaign/progress', profile.token)).json();
+  assert.ok(progress.difficulties.normal.unlockedMissionIds.includes('iron-reclaimed'));
+  assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('iron-reclaimed'));
+});
+
+test('v73 new mission keeps v72 boards and multiplayer season comparable', async () => {
+  const profile = await createProfile('Recovery Ranking');
+  const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+    faction: 'aegis', fieldOrderId: 'none', fieldOrderStatus: 'none', carryoverId: 'none',
+    supplyId: 'none', doctrineId: 'standard', seconds: 140, kills: 5, completedAt: 99,
+    verified: true, result: 'victory' };
+  store.scores.push(
+    { ...base, id: 'recovery-v72-invalid', scenarioId: 'iron-reclaimed', scoreVersion: 72 },
+    { ...base, id: 'recovery-v73', scenarioId: 'iron-reclaimed', scoreVersion: 73 },
+    { ...base, id: 'rescue-still-v72', scenarioId: 'after-the-dawn', scoreVersion: 72 },
+    { ...base, id: 'rescue-now-v73', scenarioId: 'after-the-dawn', scoreVersion: 73 });
+  const rows = async scenario => (await (await api(
+    `/api/leaderboard?mode=campaign&scenarioId=${scenario}`, profile.token)).json()).entries.map(row => row.id);
+  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v73']);
+  assert.ok((await rows('after-the-dawn')).includes('rescue-still-v72'));
+  assert.ok((await rows('after-the-dawn')).includes('rescue-now-v73'));
+  assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 72);
+});
+
+test('Iron Reclaimed records a server-verified public-command victory on its own board', async () => {
+  const { runIronReclaimedPlaytest } = await import('../scripts/iron-reclaimed-public-playtest.js');
+  const profile = await createProfile('Recovery Verification');
+  store.scores.push({ profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+    faction: 'aegis', scenarioId: 'after-the-dawn', scoreVersion: 72,
+    verified: true, result: 'victory', completedAt: 100 });
+  const started = await api('/api/scores/runs', profile.token, { method: 'POST', body: json({
+    mode: 'campaign', difficulty: 'normal', faction: 'aegis', scenarioId: 'iron-reclaimed',
+  }) });
+  assert.equal(started.status, 201);
+  const ticket = await started.json();
+  const played = runIronReclaimedPlaytest({ seed: ticket.seed, route: 'south' });
+  // Advance only the isolated test ticket's wall clock. Gameplay, the random
+  // issued seed, and the submitted command recording are unchanged.
+  store.runs.find(run => run.id === ticket.runId).startedAt -= played.game.time * 1000;
+  const finished = await api(`/api/scores/runs/${ticket.runId}/finish`, profile.token, {
+    method: 'POST', body: json({ commands: played.commands, completedTicks: played.completedTicks }),
+  });
+  assert.equal(finished.status, 200, finished.status === 200 ? undefined : await finished.text());
+  const result = await finished.json();
+  assert.equal(result.accepted, true);
+  assert.equal(result.result, 'victory');
+  assert.equal(result.entry.verified, true);
+  assert.equal(result.entry.scenarioId, 'iron-reclaimed');
+  assert.equal(result.entry.scoreVersion, 73);
+  assert.equal(result.entry.kills, played.game.kills.player);
+  assert.equal(result.entry.seconds, Math.ceil(played.game.time));
+  assert.equal(result.entry.campaignStars, played.game.campaignResult.stars);
+  const board = await (await api('/api/leaderboard?mode=campaign&scenarioId=iron-reclaimed', profile.token)).json();
+  assert.ok(board.entries.some(entry => entry.id === result.entry.id));
+});
+
 test('archived Black Shard victory unlocks branches while a later victory proves legacy Red Ledger access', async () => {
   const profile = await createProfile('Legacy Campaign Progress');
   const prior = { profileId: profile.profile.id, mode: 'campaign', scenarioId: 'black-shard',

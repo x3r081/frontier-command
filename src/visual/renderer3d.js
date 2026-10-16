@@ -37,16 +37,52 @@ const VISUAL_HEIGHT_GLSL = `
   }
 `;
 
+const GROUND_SUBDIVISIONS = 8;
+
+// Build the walkable sand and crystal-bed tops on one shared grid. Every
+// neighboring tile references the same world-space vertices, so vertex
+// displacement and material shading cannot reveal the old box boundaries.
+export function buildSandSurfaceGeometry(game) {
+  const columns=game.width*GROUND_SUBDIVISIONS+1;
+  const rows=game.height*GROUND_SUBDIVISIONS+1;
+  const positions=new Float32Array(columns*rows*3);
+  for(let z=0;z<rows;z++)for(let x=0;x<columns;x++) {
+    const index=(z*columns+x)*3;
+    positions[index]=x/GROUND_SUBDIVISIONS;
+    positions[index+1]=0;
+    positions[index+2]=z/GROUND_SUBDIVISIONS;
+  }
+  const indices=[];
+  for(let z=0;z<game.height;z++)for(let x=0;x<game.width;x++) {
+    const type=game.terrain[z]?.[x]?.type;
+    // Unknown ground types retain the old renderer's sand fallback. Water and
+    // rock have their own surfaces, while bridge decking covers its cells.
+    if(type==='water'||type==='rock'||type==='bridge')continue;
+    for(let dz=0;dz<GROUND_SUBDIVISIONS;dz++)for(let dx=0;dx<GROUND_SUBDIVISIONS;dx++) {
+      const a=(z*GROUND_SUBDIVISIONS+dz)*columns+x*GROUND_SUBDIVISIONS+dx;
+      const b=a+1,c=a+columns,d=c+1;
+      // Counter-clockwise when viewed from above (positive world Y).
+      indices.push(a,c,b,b,c,d);
+    }
+  }
+  const geometry=new THREE.BufferGeometry();
+  geometry.setAttribute('position',new THREE.BufferAttribute(positions,3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+
 // Surface overlays use the same field without adding a mesh or draw. Applying
 // the world-up offset in local space also supports rotated, scaled instances.
-function followVisualSurface(material, uniforms, {relative=false, normal=false}={}) {
+function followVisualSurface(material, uniforms, {relative=false, normal=false, displacement=null}={}) {
   const compile=material.onBeforeCompile;
   const programKey=material.customProgramCacheKey.bind(material);
-  material.customProgramCacheKey=()=>`${programKey()}:raised-surface:${relative}:${normal}:v1`;
+  material.customProgramCacheKey=()=>`${programKey()}:raised-surface:${relative}:${normal}:${displacement?.key||'flat'}:v1`;
   material.onBeforeCompile=shader=>{
     compile.call(material,shader);
     Object.assign(shader.uniforms,uniforms);
-    shader.vertexShader=`${VISUAL_HEIGHT_GLSL}
+    if(displacement)Object.assign(shader.uniforms,displacement.uniforms);
+    shader.vertexShader=`${VISUAL_HEIGHT_GLSL}${displacement?.code||''}
 ${normal?'varying vec2 vRaisedSurfaceXZ;':''}
 ${shader.vertexShader}`.replace(
       '#include <project_vertex>',
@@ -56,7 +92,7 @@ ${shader.vertexShader}`.replace(
        mat4 raisedWorldMatrix=modelMatrix;
        #endif
        vec3 raisedWorld=(raisedWorldMatrix*vec4(transformed,1.0)).xyz;
-       float raisedOffset=visualHeight(raisedWorld.xz)${relative?'-visualHeight((modelMatrix*vec4(0.0,0.0,0.0,1.0)).xz)':''};
+       float raisedOffset=visualHeight(raisedWorld.xz)${displacement?`+${displacement.expression}`:''}${relative?'-visualHeight((modelMatrix*vec4(0.0,0.0,0.0,1.0)).xz)':''};
        transformed+=inverse(mat3(raisedWorldMatrix))*vec3(0.0,raisedOffset,0.0);
        ${normal?'vRaisedSurfaceXZ=raisedWorld.xz;':''}
        #include <project_vertex>`
@@ -294,11 +330,49 @@ function addVegetationWind(material, timeUniform, motionUniform, sway, cacheKey)
   return material;
 }
 
+function groundReliefFunction(style) {
+  return `
+      float groundHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+      float groundNoise(vec2 p){
+        vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
+        return mix(mix(groundHash(i),groundHash(i+vec2(1.0,0.0)),f.x),
+                   mix(groundHash(i+vec2(0.0,1.0)),groundHash(i+vec2(1.0,1.0)),f.x),f.y);
+      }
+      float groundRelief(vec2 p){
+        float broad=groundNoise(p/22.0);
+        float erosion=groundNoise(p/8.5);
+        float grit=groundNoise(p/3.7);
+        // Break the wind ridges at several scales so the ground rolls around
+        // rock and silt deposits instead of reading as repeated straight ramps.
+        float dunePhase=dot(p,vec2(0.12,0.055))*6.28318+(broad-0.5)*3.8
+          +(erosion-0.5)*4.5+(grit-0.5)*1.2;
+        float height=0.10*sin(dunePhase)+(broad-0.5)*0.08;
+        if(uGroundQuality>0.5) height=0.15*sin(dunePhase)
+          +(erosion-0.5)*0.14+0.028*sin(dunePhase*1.65+grit*2.1);
+        if(uGroundQuality>1.5) height+=0.012*sin(dot(p,vec2(2.55,1.08))+grit*3.0);
+        float mask=1.0;
+        for(int i=0;i<${GROUND_FLAT_ZONE_CAPACITY};i++){
+          if(i>=uGroundFlatZoneCount) break;
+          vec4 zone=uGroundFlatZones[i];
+          vec2 outside=max(abs(p-zone.xy)-zone.zw,vec2(0.0));
+          mask*=smoothstep(0.0,1.35,length(outside));
+        }
+        ${style.valley?`float basinAxis=${style.valley[0].toFixed(2)}+p.x*${style.valley[1].toFixed(2)}+sin(p.x*0.18)*${style.valley[2].toFixed(2)};
+        float basinDist=abs(p.y-basinAxis+(broad-0.5)*2.7);
+        mask*=smoothstep(1.35,2.65,basinDist);`:''}
+        mask*=1.0-smoothstep(0.0,0.18,visualHeight(p));
+        return height*mask;
+      }
+  `;
+}
+
 function sandMaterial(style, groundQualityUniform, sandWindTimeUniform, visualHeightUniforms) {
-  const material=mat(0xffffff,{roughness:0.98,metalness:0.01});
+  // Keep the old tile-average sand tint while the shared shader supplies
+  // continuous world-space color variation.
+  const material=mat(0x8e8870,{roughness:0.98,metalness:0.01});
   // The shader embeds theater colors as source literals. Give each palette a
   // distinct program key so a later map cannot inherit the first map's GLSL.
-  material.customProgramCacheKey=()=>`ground:${style.silt.join(',')}:${style.ochre.join(',')}:${style.valley?.join(',')||''}:wind-raised-v2`;
+  material.customProgramCacheKey=()=>`ground:${style.silt.join(',')}:${style.ochre.join(',')}:${style.valley?.join(',')||''}:wind-raised-v3`;
   const flatZoneVectors=Array.from({length:GROUND_FLAT_ZONE_CAPACITY},()=>new THREE.Vector4());
   const flatZoneCountUniform={value:0};
   material.userData.groundFlatZoneState={vectors:flatZoneVectors,countUniform:flatZoneCountUniform};
@@ -327,37 +401,7 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform, visualHe
       uniform int uGroundFlatZoneCount;
       uniform float uGroundQuality;
       uniform float uSandWindTime;
-      float groundHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
-      float groundNoise(vec2 p){
-        vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
-        return mix(mix(groundHash(i),groundHash(i+vec2(1.0,0.0)),f.x),
-                   mix(groundHash(i+vec2(0.0,1.0)),groundHash(i+vec2(1.0,1.0)),f.x),f.y);
-      }
-      float groundRelief(vec2 p){
-        float broad=groundNoise(p/22.0);
-        float dunePhase=dot(p,vec2(0.12,0.055))*6.28318+(broad-0.5)*3.8;
-        float height=0.18*sin(dunePhase);
-        // Broad, noise-warped crests give raking light a real surface to catch
-        // at command zoom. A restrained secondary fold breaks the long ridges;
-        // the shared world-space phase keeps neighboring tiles seamless.
-        if(uGroundQuality>0.5) height=0.29*sin(dunePhase)
-          +0.035*sin(dunePhase*1.85+broad*1.6);
-        if(uGroundQuality>1.5) height+=0.018*sin(dot(p,vec2(2.55,1.08))+groundNoise(p/5.5)*2.4);
-        float mask=1.0;
-        for(int i=0;i<${GROUND_FLAT_ZONE_CAPACITY};i++){
-          if(i>=uGroundFlatZoneCount) break;
-          vec4 zone=uGroundFlatZones[i];
-          vec2 outside=max(abs(p-zone.xy)-zone.zw,vec2(0.0));
-          mask*=smoothstep(0.0,1.35,length(outside));
-        }
-        ${style.valley?`float basinAxis=${style.valley[0].toFixed(2)}+p.x*${style.valley[1].toFixed(2)}+sin(p.x*0.18)*${style.valley[2].toFixed(2)};
-        float basinDist=abs(p.y-basinAxis+(broad-0.5)*2.7);
-        mask*=smoothstep(1.35,2.65,basinDist);`:''}
-        // The shelf and its approaches stay solid as a unit crosses them.
-        // Buildings flatten both this relief and the shared shelf field.
-        mask*=1.0-smoothstep(0.0,0.18,visualHeight(p));
-        return height*mask;
-      }
+      ${groundReliefFunction(style)}
     `;
     shader.vertexShader=`${reliefCode}\nvarying vec2 vGroundXZ; varying float vGroundTop;\n${shader.vertexShader}`.replace(
       '#include <begin_vertex>',
@@ -371,8 +415,7 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform, visualHe
        #endif`
        +`\n       vGroundXZ=groundWorldPosition.xz;
        vGroundTop=step(0.5,normal.y);
-       float reliefFade=smoothstep(-0.5,0.5,transformed.y);
-       transformed.y+=(visualHeight(vGroundXZ)+groundRelief(vGroundXZ)*0.82*reliefFade)/max(groundInstanceYScale,0.001);`
+       transformed.y+=(visualHeight(vGroundXZ)+groundRelief(vGroundXZ)*0.82)/max(groundInstanceYScale,0.001);`
     );
     shader.fragmentShader=`${reliefCode}\nvarying vec2 vGroundXZ; varying float vGroundTop; uniform sampler2D uSandDetail;\n${shader.fragmentShader}`.replace(
       '#include <color_fragment>',
@@ -381,10 +424,12 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform, visualHe
        float shelfShoulder=4.0*(shelfHeight/${VISUAL_PLATEAU_HEIGHT.toFixed(3)})*(1.0-shelfHeight/${VISUAL_PLATEAU_HEIGHT.toFixed(3)});
        diffuseColor.rgb*=1.0-clamp(shelfShoulder,0.0,1.0)*0.13;
        float broad = groundNoise(vGroundXZ/17.0);
-       // A continuous cross-theater dune field adds soft, readable raking
-       // light without tile decals or extra terrain meshes.
+       float duneWarp=groundNoise(vGroundXZ/8.5);
+       float duneGrit=groundNoise(vGroundXZ/3.7);
+       // Share the geometry's warped wind field and keep its albedo contrast
+       // gentle, so raking light describes terrain instead of striping it.
        float dunePhase=dot(vGroundXZ,vec2(0.12,0.055))*6.28318
-         +(groundNoise(vGroundXZ/22.0)-0.5)*3.8;
+         +(groundNoise(vGroundXZ/22.0)-0.5)*3.8+(duneWarp-0.5)*4.5+(duneGrit-0.5)*1.2;
        float duneLight=0.5+0.5*sin(dunePhase);
        // Slow gusts move across the mineral field as soft, narrow bands. The
        // low contrast keeps units and orders clear while making the ground
@@ -392,7 +437,7 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform, visualHe
        float windGust=0.0;
        if(uGroundQuality>0.5){
          float gustPhase=dot(vGroundXZ,vec2(0.12,0.055))*6.28318
-           +(broad-0.5)*2.1-uSandWindTime*0.12;
+           +(broad-0.5)*2.1+(duneWarp-0.5)*2.4-uSandWindTime*0.12;
          windGust=pow(max(0.0,sin(gustPhase)),5.0);
        }
        float land = groundNoise(vGroundXZ/6.8)*0.48 + groundNoise(vGroundXZ/2.7)*0.34 + groundNoise(vGroundXZ*1.35)*0.18;
@@ -432,7 +477,7 @@ function sandMaterial(style, groundQualityUniform, sandWindTimeUniform, visualHe
          windRipples = sin(vGroundXZ.x*5.3 + vGroundXZ.y*2.1 + groundNoise(vGroundXZ/3.0)*3.0);
        }
        diffuseColor.rgb *= mix(coolSilt,ochreDust,smoothstep(0.24,0.75,land));
-       diffuseColor.rgb *= 0.91+duneLight*0.18;
+       diffuseColor.rgb *= 0.96+duneLight*0.08;
        diffuseColor.rgb *= mix(1.0,0.985+windGust*0.035,smoothstep(0.5,1.5,uGroundQuality));
        diffuseColor.rgb = mix(diffuseColor.rgb,diffuseColor.rgb*paleMineral,mineral*0.22);
        diffuseColor.rgb *= 0.86 + broad*0.27 + (grain-0.5)*0.18;
@@ -1995,31 +2040,29 @@ export class Renderer3D {
     this.sun.shadow.camera.updateProjectionMatrix();
     this._addMapFoundation(game);
     this._addSkylineLandmarks(game);
-    // One draw call per material family. Per-instance colors carry tile variation.
+    // The continuous sand and crystal bed shares one indexed world grid; water
+    // remains instanced because its separate animated surface has per-tile depth.
     const geo = new THREE.BoxGeometry(1, 1, 1);
-    // Shared subdivision lets the shader displace each tile from one world-space
-    // field. Matching coordinates on neighboring boxes keep the relief seam-free.
-    const sandGeo = new THREE.BoxGeometry(1,1,1,8,1,8);
-    const rockGeo = new THREE.BoxGeometry(1,1,1,6,1,6);
     const kinds = ['sand', 'rock', 'water', 'crystal'];
     this.tileMeshes = {};
     this.groundReliefMaterials=[];
-    for (const kind of kinds) {
-      const count = kind==='rock'?0:game.terrain.flat().filter(t => (kinds.includes(t?.type)?t.type:'sand') === kind).length;
-      // Crystal deposits share the same continuous ground surface as sand.
-      // Their color comes from feathered decals below the mesh clusters;
-      // tinting each resource tile creates a conspicuous checkerboard edge.
-      const isSand=kind==='sand'||kind==='crystal';
-      const tileMat=isSand?sandMaterial(this.mapStyle,this.groundQualityUniform,this.sandWindTimeUniform,this.visualHeightUniforms):kind==='water'?waterMaterial(this.waterTimeUniform,game.mapId):rockMaterial();
-      if(isSand)this.groundReliefMaterials.push(tileMat);
-      const mesh = new THREE.InstancedMesh(kind==='rock'?rockGeo:kind==='sand'||kind==='crystal'?sandGeo.clone():geo, tileMat, Math.max(1, count));
-      mesh.count = count;
-      mesh.receiveShadow = true;
-      mesh.frustumCulled = false;
-      this.tileMeshes[kind] = mesh;
-      this.terrainGroup.add(mesh);
-    }
-    const indices = Object.fromEntries(kinds.map(k => [k, 0]));
+    const groundMaterial=sandMaterial(this.mapStyle,this.groundQualityUniform,this.sandWindTimeUniform,this.visualHeightUniforms);
+    this.groundReliefMaterials.push(groundMaterial);
+    const groundMesh=new THREE.Mesh(buildSandSurfaceGeometry(game),groundMaterial);
+    groundMesh.receiveShadow=true;
+    groundMesh.frustumCulled=false;
+    groundMesh.name='continuous-sand-surface';
+    this.tileMeshes.sand=groundMesh;
+    this.tileMeshes.crystal=groundMesh;
+    this.terrainGroup.add(groundMesh);
+    const waterCount=game.terrain.flat().filter(t=>t?.type==='water').length;
+    const waterMesh=new THREE.InstancedMesh(geo,waterMaterial(this.waterTimeUniform,game.mapId),Math.max(1,waterCount));
+    waterMesh.count=waterCount;
+    waterMesh.receiveShadow=true;
+    waterMesh.frustumCulled=false;
+    this.tileMeshes.water=waterMesh;
+    this.terrainGroup.add(waterMesh);
+    const indices={water:0};
     const crystalCoords = [];
     const rockCoords = [];
     const brushCoords = [];
@@ -2027,26 +2070,12 @@ export class Renderer3D {
       const t = game.terrain[z][x] || { type: 'sand', resource: 0 };
       const kind = kinds.includes(t.type) ? t.type : 'sand';
       const y = t.type === 'bridge' ? -BRIDGE_DECK_HEIGHT : kind === 'rock' ? -0.20 : kind === 'water' ? -0.10 : 0;
-      if(kind!=='rock') {
-        // Keep the backing below the deepest Ultra dune trough. Its top
-        // remains at y; the extra depth overlaps the lowered map foundation.
-        this.tmpObj.position.set(x + 0.5, -0.24 + y / 2, z + 0.5);
-        this.tmpObj.scale.set(1.002, 0.48 + y, 1.002);
+      if(kind==='water') {
+        this.tmpObj.position.set(x + 0.5, -0.29, z + 0.5);
+        this.tmpObj.scale.set(1.002, 0.38, 1.002);
         this.tmpObj.rotation.set(0, 0, 0);
         this.tmpObj.updateMatrix();
-        const mesh = this.tileMeshes[kind];
-        const idx = indices[kind]++;
-        mesh.setMatrixAt(idx, this.tmpObj.matrix);
-        const surfaceColor=tileColor(kind==='crystal'?'sand':kind,x,z,t.detail||0,this.mapStyle);
-        if(t.elevation===1) {
-          const patina=noise(x+0.5,z+0.5,7,905);
-          // Keep elevation legible across a whole sector: a restrained warm
-          // mineral patina gives its top a distinct palette without fighting
-          // crystal clusters or changing the underlying sand shader.
-          surfaceColor.lerp(new THREE.Color(this.mapStyle.patch),0.25+patina*0.08);
-          surfaceColor.multiplyScalar(0.98+patina*0.045);
-        }
-        mesh.setColorAt(idx,surfaceColor);
+        waterMesh.setMatrixAt(indices.water++,this.tmpObj.matrix);
       }
       this.terrainCache[z * game.width + x] = kind;
       this.elevationCache[z * game.width + x] = t.elevation===1?1:0;
@@ -2057,10 +2086,7 @@ export class Renderer3D {
       if (kind === 'rock' && hash(x,z,4) > 0.32) rockCoords.push([x,z]);
       if (t.type === 'sand' && hash(x,z,8) > 0.82 && noise(x,z,8,72)>0.34) brushCoords.push([x,z]);
     }
-    for (const mesh of Object.values(this.tileMeshes)) {
-      mesh.instanceMatrix.needsUpdate = true;
-      if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
-    }
+    waterMesh.instanceMatrix.needsUpdate = true;
     const rockField=rockFieldGeometry(game,this.mapStyle);
     const rockSurfaceMaterial=mat(0xffffff,{roughness:0.96,metalness:0.025,vertexColors:true,side:THREE.DoubleSide});
     rockSurfaceMaterial.customProgramCacheKey=()=> 'rock-field-strata-v1';
@@ -2948,7 +2974,7 @@ export class Renderer3D {
       roadGeometry.setIndex(roadIndices);
       roadGeometry.computeVertexNormals();
       const roadMaterial=new THREE.MeshBasicMaterial({vertexColors:true,transparent:true,opacity:0.58,depthWrite:false,side:THREE.DoubleSide});
-      roadMaterial.customProgramCacheKey=()=> 'shard-service-road-ruts-v1';
+      roadMaterial.customProgramCacheKey=()=> 'shard-service-road-ruts-v2';
       roadMaterial.onBeforeCompile=shader=>{
         shader.vertexShader=`attribute vec2 aServiceRoadUv; varying vec2 vServiceRoadUv;\n${shader.vertexShader}`.replace(
           '#include <begin_vertex>',
@@ -2969,7 +2995,18 @@ export class Renderer3D {
            diffuseColor.rgb*=1.0-(leftRut+rightRut)*rutNoise*0.30+grain*0.045;`
         );
       };
-      followVisualSurface(roadMaterial,this.visualHeightUniforms);
+      const groundState=this.groundReliefMaterials[0].userData.groundFlatZoneState;
+      followVisualSurface(roadMaterial,this.visualHeightUniforms,{
+        displacement:{
+          key:'terrain-relief-v1',
+          code:`uniform vec4 uGroundFlatZones[${GROUND_FLAT_ZONE_CAPACITY}];
+            uniform int uGroundFlatZoneCount; uniform float uGroundQuality;
+            ${groundReliefFunction(this.mapStyle)}`,
+          uniforms:{uGroundFlatZones:{value:groundState.vectors},
+            uGroundFlatZoneCount:groundState.countUniform,uGroundQuality:this.groundQualityUniform},
+          expression:'groundRelief(raisedWorld.xz)*0.82',
+        },
+      });
       const roadMesh=new THREE.Mesh(roadGeometry,roadMaterial);
       roadMesh.frustumCulled=false;roadMesh.receiveShadow=true;this.terrainGroup.add(roadMesh);
     }

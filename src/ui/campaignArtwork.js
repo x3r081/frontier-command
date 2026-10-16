@@ -19,6 +19,11 @@ const SCENES = Object.freeze({
     alt: 'An analyst and armed escorts pass a burning aircraft wreck toward an uplink as patrols close in.',
     position: '50% 51%', mobilePosition: '50% 61%',
   }),
+  recovery: Object.freeze({
+    src: '/assets/campaign-extraction-cinematic.webp', label: 'THE RECOVERY ROUTE',
+    alt: 'A marked wreck lies along a hazardous valley route as an escort moves toward extraction.',
+    position: '50% 51%', mobilePosition: '50% 61%',
+  }),
   airlift: Object.freeze({
     src: '/assets/campaign-airlift-cinematic.webp', label: 'THE LAST AIRLIFT',
     alt: 'A rescue dropship hovers above a flooded canyon while an engineer and escort prepare to board.',
@@ -33,6 +38,7 @@ const MISSION_SCENES = Object.freeze({
   'three-points-of-light': 'relay', 'dawn-of-the-free': 'relay', 'last-ember': 'relay',
   'ashes-in-transit': 'extraction',
   'last-light': 'airlift', 'after-the-dawn': 'airlift',
+  'iron-reclaimed': 'recovery',
 });
 
 export function campaignArtworkForMission(missionId) {

@@ -2445,6 +2445,7 @@ button:focus-visible { outline: 2px solid #e0ff9c; outline-offset: 3px; }
 .campaign-guidance-head { color: #8ce1d4; }
 .campaign-guidance > strong { color: #f1f8e9; }
 .campaign-guidance > p { color: #d1ddd1; }
+
 .manual-panel .manual-columns section { border-color: rgba(102,233,219,.2); background: linear-gradient(145deg, rgba(18,39,32,.72), rgba(6,18,16,.64)); }
 .manual-panel .manual-columns h3 { color: #dff89f; }
 .manual-panel .manual-columns p { color: #c7d7cb; }
@@ -3883,4 +3884,32 @@ body:has(#end-modal:not(.hidden)),
   .power-grid-state { align-self: center; }
   .power-grid-toggle { min-width: 85px; min-height: 34px; padding: 0 7px; font-size: 9px; }
   .command-panel .selection-card.has-power-control { flex: 0 0 88px; height: 88px; min-height: 88px; overflow: auto; }
+}
+
+/* Iron Reclaimed's phone guide takes the tracker slot while it is visible. */
+@media (max-width: 670px) {
+  .battlefield-wrap:has(.campaign-guidance-iron-reclaimed:not(.hidden)) .campaign-tracker,
+  .battlefield-wrap:has(.campaign-guidance-iron-reclaimed:not(.hidden)) .relay-locator,
+  .battlefield-wrap:has(.campaign-guidance-iron-reclaimed:not(.hidden)) .objective-pill,
+  .battlefield-wrap:has(.campaign-guidance-iron-reclaimed:not(.hidden)) .mobile-squads {
+    display: none !important;
+  }
+  .campaign-guidance-iron-reclaimed {
+    top: 54px; left: 8px; right: 8px; width: auto; padding: 8px 10px 9px;
+  }
+  .campaign-guidance-iron-reclaimed .campaign-guidance-head { font-size: 8px; }
+  .campaign-guidance-iron-reclaimed .campaign-guidance-head button { width: 28px; height: 28px; }
+  .campaign-guidance-iron-reclaimed > strong { font-size: 16px; line-height: 1.08; }
+  .campaign-guidance-iron-reclaimed > p { font-size: 11px; line-height: 1.35; }
+  .battlefield-wrap:has(.campaign-guidance-iron-reclaimed:not(.hidden)) .toast-container {
+    top: auto; right: 10px; bottom: 88px; left: 10px; width: auto; max-height: 44px;
+    overflow: hidden; gap: 0;
+  }
+  .battlefield-wrap:has(.campaign-guidance-iron-reclaimed:not(.hidden)) .toast-container .toast:not(:last-child) {
+    display: none;
+  }
+  .battlefield-wrap:has(.campaign-guidance-iron-reclaimed:not(.hidden)) .toast-container .toast {
+    display: -webkit-box; min-width: 0; max-height: 42px; overflow: hidden; padding: 6px 8px;
+    font-size: 11px; line-height: 1.25; -webkit-box-orient: vertical; -webkit-line-clamp: 2;
+  }
 }

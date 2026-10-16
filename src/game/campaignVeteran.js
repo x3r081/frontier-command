@@ -4,7 +4,7 @@ const MISSION_IDS = Object.freeze([
   'first-harvest', 'silent-switch', 'last-light', 'black-shard', 'red-ledger',
   'ashes-in-transit', 'dawnfall', 'eye-of-the-storm', 'three-points-of-light',
   'quiet-knife', 'last-ember', 'dawn-of-the-free', 'after-the-dawn',
-  'ghost-channel', 'iron-current',
+  'ghost-channel', 'iron-current', 'iron-reclaimed',
 ]);
 const FACTIONS = new Set(['aegis', 'vesper']);
 const EXCLUDED_ROLES = new Set(['mcv', 'harvester', 'transport', 'medic', 'engineer']);
@@ -57,6 +57,7 @@ export function deriveCampaignVeteran(game) {
 export function campaignVeteranSourceIds(missionIndex) {
   if (!Number.isInteger(missionIndex) || missionIndex < 0 || missionIndex >= MISSION_IDS.length || missionIndex === 0)
     return [];
+  if (missionIndex === 15) return ['after-the-dawn'];
   if (missionIndex === 4) return ['ghost-channel', 'iron-current', 'black-shard'];
   if (missionIndex === 13 || missionIndex === 14) return ['black-shard'];
   return [MISSION_IDS[missionIndex - 1]];

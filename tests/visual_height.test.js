@@ -1,7 +1,26 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import * as THREE from 'three';
-import {Renderer3D} from '../src/visual/renderer3d.js';
+import {buildSandSurfaceGeometry,Renderer3D} from '../src/visual/renderer3d.js';
+
+test('sand and crystal bed tops share one indexed world grid',()=>{
+  const game={width:3,height:1,terrain:[[
+    {type:'sand'},{type:'crystal'},{type:'water'},
+  ]]};
+  const geometry=buildSandSurfaceGeometry(game);
+  assert.equal(geometry.index.count,2*8*8*6,
+    'only sand and crystal tiles contribute surface triangles');
+  const columns=game.width*8+1;
+  const sharedEdgeVertex=4*columns+8;
+  let sharedEdgeReferences=0;
+  for(const index of geometry.index.array)if(index===sharedEdgeVertex)sharedEdgeReferences++;
+  assert.ok(sharedEdgeReferences>0,
+    'adjacent sand and crystal tiles reference the same boundary vertices');
+  const position=geometry.getAttribute('position');
+  assert.equal(position.getX(sharedEdgeVertex),1);
+  assert.equal(position.getZ(sharedEdgeVertex),0.5);
+  geometry.dispose();
+});
 
 function scene() {
   const game={width:32,height:24,buildings:[],bridges:[],terrain:[]};

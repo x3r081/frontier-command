@@ -12,7 +12,7 @@ function clearFirstHarvestRaid(game) {
   for (const id of game.campaignState.firstHarvestRaidUnitIds) game.getEntity(id).hp = 0;
 }
 
-test('all 30 authored orders are frozen, distinct, and inactive at mission start', () => {
+test('all authored orders are frozen, distinct, and inactive at mission start', () => {
   assert.equal(CAMPAIGN_FIELD_ORDERS.length, CAMPAIGN_MISSIONS.length);
   assert.ok(Object.isFrozen(CAMPAIGN_FIELD_ORDERS));
   const ids = new Set();
@@ -38,7 +38,7 @@ test('all 30 authored orders are frozen, distinct, and inactive at mission start
       assert.equal(game.campaignState.fieldOrderStatus, 'active');
     }
   }
-  assert.equal(ids.size, 30);
+  assert.equal(ids.size, CAMPAIGN_MISSIONS.length * 2);
 });
 
 test('orders are validated against their own mission and none is supported', () => {

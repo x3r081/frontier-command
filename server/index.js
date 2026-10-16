@@ -9,7 +9,7 @@ import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   WRECK_RECOMMISSION_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
-  CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
+  CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
 import { validateCampaignVeteran, campaignVeteranSourceIds } from '../src/game/campaignVeteran.js';
 import { validateSoloEnvelope, validateSoloReplay, MAX_SOLO_TICKS, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
@@ -65,7 +65,8 @@ const RANKED_SEASON = 72;
 // changes default ownership capture across solo modes, so all boards now share
 // the v71 comparison floor. Version 72 adds field vehicle recommissioning and
 // bounded skirmish AI use; all solo boards and ranked multiplayer advance for
-// this new strategic recovery option.
+// this new strategic recovery option. Version 73 adds the separate Iron
+// Reclaimed campaign operation; existing boards and multiplayer remain on v72.
 const CAMPAIGN_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
 const SKIRMISH_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
@@ -74,7 +75,8 @@ const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
-    : score.mode === 'campaign' && score.scoreVersion >= CAMPAIGN_SCORE_FLOOR &&
+    : score.mode === 'campaign' && score.scoreVersion >=
+        (score.scenarioId === 'iron-reclaimed' ? IRON_RECLAIMED_RULES_VERSION : CAMPAIGN_SCORE_FLOOR) &&
         score.scoreVersion <= SCORE_VERSION);
 const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;
@@ -135,6 +137,8 @@ function campaignProgressForProfile(profileId, difficulty) {
 }
 function campaignMissionUnlockedFromLedger(completed, legacyMax, missionIndex) {
   if (missionIndex === 0) return true;
+  if (CAMPAIGN_MISSIONS[missionIndex]?.id === 'iron-reclaimed')
+    return completed.has('after-the-dawn');
   // A verified archived victory at or beyond a mission proves that the profile
   // had reached it. A Black Shard score alone does not prove a pre-fork route:
   // versions before 30 also include the two branch missions.
@@ -166,6 +170,7 @@ function completedPreviousFieldOrders(profileId, difficulty, missionIndex) {
   const branchIds = new Set(['ghost-channel', 'iron-current']);
   const hasVerifiedBranch = verifiedMissionScores.some(score => branchIds.has(score.scenarioId));
   const priorMissionIds = missionIndex === 13 || missionIndex === 14 ? ['black-shard']
+    : CAMPAIGN_MISSIONS[missionIndex]?.id === 'iron-reclaimed' ? ['after-the-dawn']
     : missionIndex === 4 ? hasVerifiedBranch ? [...branchIds] : ['black-shard']
       : [CAMPAIGN_MISSIONS[missionIndex - 1]?.id];
   if (!priorMissionIds.some(Boolean)) return [];

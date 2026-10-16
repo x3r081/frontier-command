@@ -6,6 +6,7 @@ const ASHES_ROUTE_RULES_VERSION = 51;
 const FIRST_HARVEST_RAID_RULES_VERSION = 54;
 const IRON_CURRENT_RELAY_ASSAULT_RULES_VERSION = 55;
 const DAWN_FREE_SHIELD_REFORM_RULES_VERSION = 60;
+export const IRON_RECLAIMED_RULES_VERSION = 73;
 const DAWN_FREE_RELAY_COUNTERATTACK_DELAY = 9;
 const DAWN_FREE_SHIELD_WARNING_DURATION = 7;
 
@@ -117,6 +118,12 @@ export const CAMPAIGN_MISSIONS = Object.freeze([
     objective: 'Commit 3,000 credits and hold the freight relay for 22 seconds. Stop the Vesper tank assault at the relay, then keep the crossing secure for 12 more seconds. The command yard must survive.',
     mechanic: 'SUPPLY LINE DEFENSE',
   }),
+  Object.freeze({
+    id: 'iron-reclaimed', title: 'Iron Reclaimed', faction: 'aegis',
+    briefing: 'A damaged Aegis Guardian was abandoned beside the Field Workshop. Recommission it with the signal Engineer, then send the armed patrol ahead with the Guardian to choose the northern or southern pass. Keep the Engineer behind until the route is secure; bring the same Engineer and Guardian to the eastern recovery marker and extract them together. The marked hull costs 520 credits.',
+    objective: 'Recommission the marked Guardian with the Engineer. Choose a pass with the Guardian, reach the east recovery marker with both, then extract them at the Workshop before 300 seconds.',
+    mechanic: 'FIELD RECOVERY',
+  }),
 ]);
 
 // The public catalog deliberately contains only display and identity fields.
@@ -137,6 +144,7 @@ const FIELD_ORDER_RULES = Object.freeze([
   [{ type: 'raid', target: 'buggy' }, { type: 'waypoint', x: 53.5, y: 37.5, radius: 2.5 }],
   [{ type: 'raid', target: 'buggy' }, { type: 'relay', relay: 1 }],
   [{ type: 'raid', target: 'lightTank' }, { type: 'relay', relay: 1 }],
+  [{ type: 'raid', target: 'buggy' }, { type: 'raid', target: 'rocket' }],
 ]);
 
 const FIELD_ORDER_TITLES = Object.freeze([
@@ -155,10 +163,11 @@ const FIELD_ORDER_TITLES = Object.freeze([
   ['Neutralize the Landing Buggy', 'Scout the Southeast Waypoint'],
   ['Silence the Vault Escort', 'Secure the Midpass Signal'],
   ['Break the Forward Tank', 'Secure the Midpass Signal'],
+  ['Clear the Route Patrol', 'Silence the Pass Rocket Team'],
 ]);
 
 const FIELD_TARGET_NAMES = Object.freeze({ buggy: 'enemy buggy', harvester: 'enemy harvester',
-  lightTank: 'enemy tank' });
+  lightTank: 'enemy tank', rocket: 'enemy rocket team' });
 
 export const CAMPAIGN_FIELD_ORDERS = Object.freeze(CAMPAIGN_MISSIONS.map((mission, index) =>
   Object.freeze(FIELD_ORDER_RULES[index].map((rule, choice) => Object.freeze({
@@ -173,7 +182,7 @@ export const CAMPAIGN_FIELD_ORDERS = Object.freeze(CAMPAIGN_MISSIONS.map((missio
         : rule.type === 'relaySweep'
           ? 'Capture and hold all three Resonance Relays for 10 seconds.'
           : `Capture Resonance Relay ${rule.relay + 1}.`,
-    rewardText: index === 5 || index === 12 || index === 13
+    rewardText: index === 5 || index === 12 || index === 13 || index === 15
       ? 'Field refit: +25% maximum health and restore 35% health to surviving units.'
       : 'Supply cache: gain 650 credits.',
   })))));
@@ -190,7 +199,8 @@ export function getCampaignCarryoverUnlocks(index, completedOrderIds = []) {
   const unlocked = ['none'];
   if (!Number.isInteger(index) || index < 1 || index >= CAMPAIGN_MISSIONS.length) return unlocked;
   const completed = new Set(completedOrderIds);
-  const sourceIndexes = index === 13 || index === 14 ? [3]
+  const sourceIndexes = index === 15 ? [12]
+    : index === 13 || index === 14 ? [3]
     : index === 4 ? [13, 14, 3] // Black Shard remains valid for pre-fork saves.
       : [index - 1];
   if (sourceIndexes.some(source => completed.has(CAMPAIGN_FIELD_ORDERS[source]?.[0]?.id))) unlocked.push('assault');
@@ -253,6 +263,38 @@ export function getCampaignFieldOrderView(game) {
   const target = Number.isFinite(entity?.x) && Number.isFinite(entity?.y)
     ? { x: entity.x, y: entity.y } : null;
   return { ...selected.spec, status, progressText, target };
+}
+
+/** Dynamic objective, phase, and marker data for Iron Reclaimed's HUD. */
+export function getIronReclaimedView(game) {
+  if (game?.mode !== 'campaign' || game.campaignMission !== 15) return null;
+  const state = game.campaignState || {};
+  const engineer = game.getEntity(state.engineerId);
+  const wreck = game.wrecks?.find(item => item.id === state.wreckId);
+  const vehicle = game.getEntity(state.recommissionedVehicleId);
+  const phases = {
+    'recommission-wreck': 'Recommission the marked Guardian',
+    'escort-to-relay': 'Escort the Engineer and Guardian east',
+    'extract-team': 'Extract the Engineer and Guardian at the Workshop',
+  };
+  const progress = Math.max(0, Number(engineer?._wreckRecommissionProgress) || 0);
+  const warning = state.routeWarningActive && !state.routeAmbushFired
+    ? `Vesper ${state.routeChoice} pass patrol arrives in ${Math.max(0, 5 - (state.routeWarningElapsed || 0)).toFixed(1)} seconds.`
+    : null;
+  return {
+    id: 'iron-reclaimed', phase: phases[state.phase] ? state.phase : 'recommission-wreck',
+    phaseLabel: phases[state.phase] || phases['recommission-wreck'], routeChoice: state.routeChoice || null,
+    routeLabel: state.routeChoice ? `${state.routeChoice[0].toUpperCase()}${state.routeChoice.slice(1)} pass` : 'Choose a pass',
+    warning, recommissionProgress: Math.min(12, progress), recommissionDuration: 12,
+    engineerAlive: live(engineer), vehicleAlive: live(vehicle),
+    markers: {
+      wreck: wreck && !wreck.restoreUsed ? { x: wreck.x, y: wreck.y } : null,
+      rendezvous: state.phase === 'escort-to-relay' ? { ...state.rendezvous } : null,
+      extraction: state.phase === 'extract-team' ? { ...state.extraction } : null,
+      northPass: { x: 31.5, y: 18.5, radius: 4 }, southPass: { x: 31.5, y: 35.5, radius: 4 },
+      vehicle: live(vehicle) ? { x: vehicle.x, y: vehicle.y } : null,
+    },
+  };
 }
 
 const live = entity => !!entity && entity.hp > 0;
@@ -439,18 +481,34 @@ const SCENARIOS = [
       units: [['harvester', 56.5, 39.5, 'harvest'], ['lightTank', 41.5, 23.5],
         ['buggy', 39.5, 27.5], ['rifle', 45.5, 29.5], ['rocket', 45.5, 22.5]] },
   },
+  {
+    // The recovered Guardian must cross one of two defended passes, reach the
+    // eastern marker, then return with the same Engineer to the powered shop.
+    walls: [['rock', 28, 0, 30, 47, [[15, 22], [32, 39]]],
+      ['water', 34, 11, 39, 13], ['water', 34, 39, 40, 41]],
+    fields: [[17, 25, 3], [42, 18, 3], [43, 34, 3]],
+    player: { buildings: [['power', 4, 34], ['serviceBay', 8, 34]], units: [
+      ['engineer', 12.5, 34.5], ['rifle', 13.5, 31.5], ['rifle', 14.5, 37.5], ['scout', 17.5, 33.5],
+    ] },
+    enemy: { buildings: [], units: [
+      ['rifle', 39.5, 25.5], ['rocket', 42.5, 24.5], ['buggy', 46.5, 29.5],
+    ] },
+  },
 ];
 
 // A completed operation always earns its campaign star. The second recognizes
 // a surviving command yard; the third rewards finishing inside the operation's
 // par time. Keeping the result on Game makes it travel with ordinary saves.
-const MEDAL_PAR_SECONDS = Object.freeze([300, 360, 300, 330, 300, 300, 420, 110, 170, 210, 150, 360, 160, 145, 190]);
+const MEDAL_PAR_SECONDS = Object.freeze([300, 360, 300, 330, 300, 300, 420, 110, 170, 210, 150, 360, 160, 145, 190, 240]);
 
 export function getCampaignResult(game, index = game?.campaignMission) {
   if (!game || !Number.isInteger(index) || index < 0 || index >= CAMPAIGN_MISSIONS.length ||
       game.status !== 'victory' || !game.campaignComplete) return null;
   const keyAssetSurvived = index === 12 || index === 13
     ? live(game.getEntity(game.campaignState?.engineerId))
+    : index === 15
+      ? live(game.getEntity(game.campaignState?.engineerId)) &&
+        live(game.getEntity(game.campaignState?.recommissionedVehicleId))
     : index === 5
     ? live(game.getEntity(game.campaignState?.escortId))
     : index === 10
@@ -797,6 +855,32 @@ function prepareMission(game, index, replayVersion = null) {
     return;
   }
 
+  if (index === 15) {
+    const engineer = livingUnits(game, 'player', 'engineer')[0];
+    const wreck = { id: 'wreck1', x: 14.5, y: 34.5, value: 195, faction: 'aegis',
+      expiresAt: game.time + 3600, restoreDefId: 'guardian', restoreUsed: false,
+      campaignIronReclaimed: true };
+    game.wrecks.push(wreck);
+    game._nextWreckId = Math.max(game._nextWreckId || 1, 2);
+    state.engineerId = engineer?.id ?? null;
+    state.wreckId = wreck.id;
+    state.recommissionedVehicleId = null;
+    state.phase = 'recommission-wreck';
+    state.routeChoice = null;
+    state.routeWarningElapsed = 0;
+    state.routeWarningActive = false;
+    state.routeAmbushFired = false;
+    state.routeAmbushUnitIds = [];
+    state.rendezvous = { x: 48.5, y: 24.5, radius: 3.2 };
+    state.extraction = { x: 11.5, y: 36.5, radius: 4 };
+    state.deadline = 300;
+    state.ironReclaimedRulesVersion = IRON_RECLAIMED_RULES_VERSION;
+    game.credits.player = 600;
+    game.credits.enemy = 0;
+    game._refreshPower(); game._updateFog();
+    return;
+  }
+
   game.credits.player = 5200;
   state.targetId = livingBuildings(game, 'enemy', 'command')[0]?.id ?? null;
   game._updateFog();
@@ -851,6 +935,9 @@ export function createCampaignGame(index = 0, difficulty = 'normal', seed = 8021
   campaignVeteran = null, replayVersion = null) {
   if (!Number.isInteger(index) || index < 0 || index >= CAMPAIGN_MISSIONS.length) {
     throw new RangeError(`Unknown campaign mission index: ${index}`);
+  }
+  if (index === 15 && replayVersion !== null && replayVersion < IRON_RECLAIMED_RULES_VERSION) {
+    throw new RangeError(`Iron Reclaimed requires replay rules version ${IRON_RECLAIMED_RULES_VERSION}.`);
   }
   if (!CAMPAIGN_DOCTRINES.some(doctrine => doctrine.id === doctrineId)) {
     throw new RangeError(`Unknown campaign doctrine: ${doctrineId}`);
@@ -995,7 +1082,7 @@ function updateFieldOrder(game, index, dt) {
   }
   if (!achieved) return;
   state.fieldOrderStatus = 'completed';
-  if (index === 5 || index === 12 || index === 13) {
+  if (index === 5 || index === 12 || index === 13 || index === 15) {
     for (const unit of game.units) {
       if (unit.owner !== 'player' || !live(unit)) continue;
       const originalMax = unit.maxHp;
@@ -1006,7 +1093,7 @@ function updateFieldOrder(game, index, dt) {
     game.credits.player += 650;
   }
   game._event('campaignIntel', { message: `${spec.title} complete. ${spec.rewardText}`,
-    fieldOrderId: spec.id, reward: index === 5 || index === 12 || index === 13 ? 'refit' : 650 });
+    fieldOrderId: spec.id, reward: index === 5 || index === 12 || index === 13 || index === 15 ? 'refit' : 650 });
 }
 
 function ironCurrentRelayAssaultRulesActive(state, replayVersion) {
@@ -1311,6 +1398,10 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
   // Saves made before the campaign expansion may not have a scenario state.
   // Reconstruct harmless defaults while keeping the saved mission's stable index.
   const state = game.campaignState || (game.campaignState = { elapsed: 0 });
+  const ironReclaimedRulesActive = index === 15 && (replayVersion === null
+    ? state.ironReclaimedRulesVersion === IRON_RECLAIMED_RULES_VERSION
+    : replayVersion >= IRON_RECLAIMED_RULES_VERSION);
+  if (index === 15 && !ironReclaimedRulesActive) return false;
   if (index === 5 && replayVersion === null && Array.isArray(state.transmissionUplinks) &&
       !Number.isInteger(state.ashesUplinkRulesVersion)) state.ashesUplinkRulesVersion = 47;
   const ashesRouteRules = index === 5 && (replayVersion === null
@@ -1768,6 +1859,90 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
       complete = state.holdElapsed + 1e-9 >= (state.holdDuration || 22) &&
         state.postAssaultHoldElapsed + 1e-9 >= (state.postAssaultHoldDuration || 12);
     }
+  } else if (index === 15) {
+    const engineer = game.getEntity(state.engineerId);
+    if (!live(engineer)) return failMission(game, 'The signal Engineer was lost; the Guardian cannot be recovered and extracted.');
+    const workshop = livingBuildings(game, 'player', 'serviceBay')[0];
+    if (state.phase === 'recommission-wreck' && !workshop)
+      return failMission(game, 'The Field Workshop was destroyed before the Guardian could be recommissioned.');
+    if (state.phase === 'recommission-wreck' && game.events.some(event =>
+      event.type === 'wreckRecovered' && event.id === state.wreckId && event.owner === 'player'))
+      return failMission(game, 'The marked Guardian was salvaged; this operation requires recommissioning it.');
+
+    // The recovery event is emitted only by the engine after its normal
+    // powered-workshop channel, 520-credit charge, and spawn checks succeed.
+    if (state.phase === 'recommission-wreck') {
+      const restored = game.events.find(event => event.type === 'wreckRecommissioned' &&
+        event.id === state.wreckId && event.owner === 'player' && event.unitId === engineer.id &&
+        event.defId === 'guardian' && typeof event.vehicleId === 'string');
+      if (restored) {
+        const vehicle = game.getEntity(restored.vehicleId);
+        if (live(vehicle) && vehicle.owner === 'player' && vehicle.defId === 'guardian' && vehicle._recommissioned) {
+          state.recommissionedVehicleId = vehicle.id;
+          state.phase = 'escort-to-relay';
+          game._event('campaignIntel', { message: 'Guardian recommissioned for 520 credits. Send the armed patrol ahead with the tank; keep the Engineer behind until the route is secure.' });
+        }
+      }
+    }
+
+    const vehicle = state.recommissionedVehicleId ? game.getEntity(state.recommissionedVehicleId) : null;
+    if (state.phase !== 'recommission-wreck' && !live(vehicle))
+      return failMission(game, 'The recommissioned Guardian was destroyed before extraction.');
+    if (state.phase === 'escort-to-relay' && !state.routeChoice) {
+      const gates = [
+        { id: 'north', x: 31.5, y: 18.5, radius: 4.5 },
+        { id: 'south', x: 31.5, y: 35.5, radius: 4.5 },
+      ];
+      const gate = gates.find(item => !vehicle.embarkedIn &&
+        Math.hypot(vehicle.x - item.x, vehicle.y - item.y) <= item.radius);
+      if (gate) {
+        state.routeChoice = gate.id;
+        state.rendezvous = gate.id === 'north'
+          ? { x: 48.5, y: 24.5, radius: 3.2 }
+          : { x: 48.5, y: 37.5, radius: 3.2 };
+        state.routeWarningElapsed = 0;
+        state.routeWarningActive = true;
+        const marker = { x: 37.5, y: gate.id === 'north' ? 18.5 : 35.5 };
+        game.scans.push({ owner: 'player', ...marker, radius: 7, until: game.time + 16 });
+        game._updateFog();
+        game._event('campaignThreatWarning', { message: `Vesper patrol sighted on the ${gate.id} pass. Interceptors will reach the crossing in five seconds; keep the Guardian with the armed patrol.`, marker, route: gate.id });
+      }
+    }
+    if (state.routeWarningActive && !state.routeAmbushFired) {
+      state.routeWarningElapsed = (state.routeWarningElapsed || 0) +
+        (Number.isFinite(dt) && dt > 0 ? Math.min(dt, 10) : 0);
+      if (state.routeWarningElapsed + 1e-9 >= 5) {
+        const north = state.routeChoice === 'north';
+        const point = north ? { x: 38.5, y: 18.5 } : { x: 38.5, y: 35.5 };
+        const attackMove = { type: 'move', x: north ? 31.5 : 31.5, y: north ? 18.5 : 35.5, attackMove: true };
+        const enemies = north
+          ? [['buggy', point.x, point.y], ['rocket', point.x + 1, point.y + 1]]
+          : [['buggy', point.x, point.y], ['rifle', point.x + 1, point.y + 1]];
+        state.routeAmbushUnitIds = enemies.map(([defId, x, y]) =>
+          game._createUnit('enemy', defId, x, y, attackMove).id);
+        state.routeAmbushFired = true;
+        state.routeWarningActive = false;
+        game._event('campaignReinforcement', { message: `Vesper interceptors have reached the ${state.routeChoice} pass.`, marker: point, route: state.routeChoice });
+      }
+    }
+    if (state.phase === 'escort-to-relay') {
+      const point = state.rendezvous || { x: 48.5, y: 24.5, radius: 3.2 };
+      const pairAtRendezvous = !!state.routeChoice && !engineer.embarkedIn && !vehicle.embarkedIn &&
+        Math.hypot(engineer.x - point.x, engineer.y - point.y) <= point.radius &&
+        Math.hypot(vehicle.x - point.x, vehicle.y - point.y) <= point.radius;
+      if (pairAtRendezvous) {
+        state.phase = 'extract-team';
+        game._event('campaignIntel', { message: 'Eastern recovery marker reached. Return the same Guardian and Engineer to the Field Workshop.' });
+      }
+    }
+    if (state.phase === 'extract-team') {
+      const point = state.extraction || { x: 11.5, y: 36.5, radius: 4 };
+      complete = !engineer.embarkedIn && !vehicle.embarkedIn &&
+        Math.hypot(engineer.x - point.x, engineer.y - point.y) <= point.radius &&
+        Math.hypot(vehicle.x - point.x, vehicle.y - point.y) <= point.radius;
+    }
+    if (!complete && state.elapsed + 1e-9 >= (state.deadline || 260))
+      return failMission(game, 'The Guardian recovery window closed before both survivors reached the Workshop.');
   }
 
   // Campaign objectives differ from total elimination. Suppress the engine's

@@ -11,6 +11,7 @@ export const CAMPAIGN_DIFFICULTY_PROGRESS_KEY = 'frontier-command-campaign-diffi
 const DIFFICULTIES = new Set(['easy', 'normal', 'hard']);
 const LEGACY_CAMPAIGN_KEY = 'frontier-command-campaign-v1';
 const BRANCH_IDS = new Set(['ghost-channel', 'iron-current']);
+const BONUS_IDS = new Set(['iron-reclaimed']);
 
 function legacyProgress(storage) {
   const value = Number(storage.getItem(LEGACY_CAMPAIGN_KEY));
@@ -46,7 +47,7 @@ function readDifficultyProgress(storage) {
   const migrated = Object.fromEntries([...DIFFICULTIES].map(difficulty => {
     const completedIndexes = CAMPAIGN_MISSIONS
       .map((mission, index) => ({ mission, index }))
-      .filter(({ mission, index }) => mission.id !== 'ghost-channel' && mission.id !== 'iron-current' &&
+      .filter(({ mission, index }) => !BRANCH_IDS.has(mission.id) && !BONUS_IDS.has(mission.id) &&
         Number(records[difficulty]?.[mission.id]) > 0)
       .map(({ index }) => index + 1);
     return [difficulty, Math.max(legacy, ...completedIndexes, 0)];
@@ -69,7 +70,8 @@ function advanceDifficultyProgress(storage, difficulty, nextIndex) {
 /** A victory in an older save may lack medal metadata but still advances its route. */
 export function advanceCampaignLegacyCompletion(storage, difficulty, missionIndex) {
   if (!DIFFICULTIES.has(difficulty) || !Number.isInteger(missionIndex) || missionIndex < 0 ||
-      missionIndex >= CAMPAIGN_MISSIONS.length || BRANCH_IDS.has(CAMPAIGN_MISSIONS[missionIndex].id)) return false;
+      missionIndex >= CAMPAIGN_MISSIONS.length || BRANCH_IDS.has(CAMPAIGN_MISSIONS[missionIndex].id) ||
+      BONUS_IDS.has(CAMPAIGN_MISSIONS[missionIndex].id)) return false;
   readDifficultyProgress(storage);
   try {
     storage.setItem(LEGACY_CAMPAIGN_KEY, String(Math.max(legacyProgress(storage), missionIndex + 1)));
@@ -203,6 +205,7 @@ export function campaignChosenBranchId(storage, difficulty) {
  */
 export function campaignMissionUnlocked(storage, difficulty, index) {
   if (!DIFFICULTIES.has(difficulty) || !Number.isInteger(index) || index < 0) return false;
+  if (index === 15) return campaignRecord(storage, difficulty, 'after-the-dawn') > 0;
   const progress = campaignProgressAtDifficulty(storage, difficulty);
   const legacyPreForkSave = storage.getItem(CAMPAIGN_ROUTE_SCHEMA_KEY) === null && progress >= 4;
   if (index === 13 || index === 14) {
@@ -257,7 +260,7 @@ export function saveCampaignResult(storage, difficulty, missionIndex, missionId,
           storage.setItem(CAMPAIGN_ROUTE_RECORDS_KEY, JSON.stringify(chosen));
         }
       } catch { /* Route history is a convenience; completion records still unlock the route. */ }
-    } else {
+    } else if (!BONUS_IDS.has(missionId)) {
       const unlocked = legacyProgress(storage);
       // A pre-fork save at or beyond M4 remains on its legacy route when the
       // player replays M4. Only a first-time M4 completion opts into the fork.
@@ -265,7 +268,7 @@ export function saveCampaignResult(storage, difficulty, missionIndex, missionId,
         storage.setItem(CAMPAIGN_ROUTE_SCHEMA_KEY, '1');
       storage.setItem(LEGACY_CAMPAIGN_KEY, String(Math.max(unlocked, missionIndex + 1)));
     }
-    advanceDifficultyProgress(storage, difficulty, missionIndex + 1);
+    if (!BONUS_IDS.has(missionId)) advanceDifficultyProgress(storage, difficulty, missionIndex + 1);
     return true;
   } catch { return false; }
 }
