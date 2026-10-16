@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -3056,6 +3056,15 @@ function drawEffects(t) {
         ctx.beginPath();ctx.moveTo(p.x+Math.cos(a)*inner,p.y+Math.sin(a)*inner);
         ctx.lineTo(p.x+Math.cos(a)*outer,p.y+Math.sin(a)*outer);ctx.stroke();
       }
+    }else if(e.type==='wreckCover') {
+      ctx.strokeStyle='#ffc36b';ctx.fillStyle='#ffe3a0';ctx.lineWidth=2;ctx.shadowColor='#ffad43';ctx.shadowBlur=10;
+      const spark=r*(.42+life*.18);
+      for(let i=0;i<4;i++){
+        const a=i*Math.PI/2+t*2.2,inner=spark*.25,outer=spark*(.8+life*.25);
+        ctx.beginPath();ctx.moveTo(p.x+Math.cos(a)*inner,p.y+Math.sin(a)*inner);
+        ctx.lineTo(p.x+Math.cos(a)*outer,p.y+Math.sin(a)*outer);ctx.stroke();
+      }
+      ctx.beginPath();ctx.arc(p.x,p.y,Math.max(2,spark*.22),0,Math.PI*2);ctx.fill();
     }else{
       ctx.fillStyle=e.type==='projectile'?'#ffcf76':'#fff0a5';ctx.shadowColor='#ffab56';ctx.shadowBlur=10;
       ctx.beginPath();ctx.arc(p.x,p.y,Math.max(2,r*.45),0,Math.PI*2);ctx.fill();
@@ -4095,6 +4104,13 @@ function updateSelectionCard() {
   };
   const digInStates=digInUnits.map(digInOrderStatus).filter(Boolean);
   const digInStatus=digInStates[0]||null;
+  const wreckCoverRulesAvailable=!replayMode&&
+    (game.replayVersion==null||game.replayVersion>=WRECK_COVER_RULES_VERSION);
+  const wreckCoverHint=wreckCoverRulesAvailable&&units.some(unit=>unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
+    game.unitDefs?.[unit.defId]?.armor==='infantry'&&!game.unitDefs?.[unit.defId]?.flying&&
+    (game.wrecks||[]).some(wreck=>wreck.expiresAt>game.time&&!wreck.campaignFreightCache&&
+      fogAt(wreck.x,wreck.y)===2&&Math.hypot(unit.x-wreck.x,unit.y-wreck.y)>WRECK_COVER_RADIUS&&
+      Math.hypot(unit.x-wreck.x,unit.y-wreck.y)<=WRECK_COVER_PROXIMITY));
   const digInTooltip=`Dig In · face a direction without moving. ${INFANTRY_DIG_IN_SETUP_SECONDS}s setup, ${INFANTRY_DIG_IN_DURATION_SECONDS}s protection; the 30s shared cooldown starts on use. Frontal direct ballistic and cannon damage is reduced by ${Math.round((1-INFANTRY_DIG_IN_DAMAGE_MULTIPLIER)*100)}%; explosives and flanking bypass it.`;
   const loadedHarvesters=units.filter(unit=>unit.owner==='player'&&unit.defId==='harvester'&&unit.cargo>0);
   const gunships=units.filter(unit=>unit.owner==='player'&&game.unitDefs?.[unit.defId]?.flying&&
@@ -4293,7 +4309,10 @@ function updateSelectionCard() {
     const digInLine=digInUnits.length?` · DIG IN ${digInReadyUnits.length}/${digInUnits.length} READY${digInStates.length?` · ${digInStates[0]}`:''}`:'';
     return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${paceLabel?` · ${paceLabel}`:''}${routed?` · ${routed} ROUTED`:''}${digInLine}`;
   })():'';
-  const subtitle=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?first.powerStandby===true?'PAUSED · STANDBY':workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
+  const subtitleBase=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?first.powerStandby===true?'PAUSED · STANDBY':workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
+  const coverHintText=digInStatus||singleDigInCooldown||fieldActive||recommissionState||serviceOrderState
+    ?'NEAR WRECK':'WRECK NEARBY · KEEP BEHIND HULL';
+  const subtitle=`${subtitleBase}${wreckCoverHint?` · ${coverHintText}`:''}`;
   const rank=!isBuilding&&selected.length===1?VETERANCY_RANKS[Math.min(VETERANCY_RANKS.length-1,first.veterancy||0)]:null;
   const nextRank=rank?VETERANCY_RANKS[(first.veterancy||0)+1]:null;
   const rankProgress=rank?nextRank?Math.max(0,Math.min(100,Math.round(((first.xp||0)-rank.xp)/(nextRank.xp-rank.xp)*100))):100:0;

@@ -43,6 +43,10 @@ export const STORMGLASS_BLOOM_ENRICHMENT = 180;
 export const WRECK_LIFETIME_SECONDS = 120;
 export const WRECK_RECOVERY_SECONDS = 4;
 export const WRECK_RECOMMISSION_RULES_VERSION = 72;
+export const WRECK_COVER_RULES_VERSION = 75;
+export const WRECK_COVER_DAMAGE_MULTIPLIER = 0.8;
+export const WRECK_COVER_RADIUS = 0.55;
+export const WRECK_COVER_PROXIMITY = 1.6;
 export const WRECK_RECOMMISSION_SECONDS = 12;
 export const WRECK_RECOMMISSION_COST_FRACTION = 0.4;
 export const WRECK_RECOMMISSION_HEALTH_FRACTION = 0.4;
@@ -366,6 +370,7 @@ export class Game {
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     this.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
+    this.wreckCoverRulesVersion = WRECK_COVER_RULES_VERSION;
     this.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     this.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
     this.siegeExpansionRulesVersion = SIEGE_EXPANSION_RULES_VERSION;
@@ -2855,13 +2860,20 @@ export class Game {
   }
 
   _wallCoverMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage) {
+    const protection = this._wallCoverProtection(target, damageType, attackerOwner, sourceId,
+      sourcePosition, areaDamage);
+    if (protection.effect) this.effects.push({ id: `fx${this._nextEffectId++}`, ...protection.effect });
+    return protection.multiplier;
+  }
+
+  _wallCoverProtection(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage) {
     if ((this.replayVersion ?? 20) < 20 || areaDamage ||
         !['ballistic', 'cannon'].includes(damageType) ||
         !UNIT_DEFS[target.defId] || UNIT_DEFS[target.defId].flying ||
         !attackerOwner || attackerOwner === target.owner ||
         !sourceId || !sourcePosition?.projectile ||
         sourcePosition.sourceId !== sourceId || sourcePosition.owner !== attackerOwner ||
-        !Number.isFinite(sourcePosition.x) || !Number.isFinite(sourcePosition.y)) return 1;
+        !Number.isFinite(sourcePosition.x) || !Number.isFinite(sourcePosition.y)) return { multiplier: 1 };
     for (const wall of this.buildings) {
       if (wall.defId !== 'wall' || wall.owner !== target.owner || wall.hp <= 0 || wall.progress < 1)
         continue;
@@ -2869,15 +2881,13 @@ export class Game {
       const gapY = Math.max(wall.y - target.y, 0, target.y - wall.y - wall.h);
       if (Math.hypot(gapX, gapY) > 1.05) continue;
       const intercept = segmentBoxEntry(sourcePosition.x, sourcePosition.y, target.x, target.y, wall);
-      if (intercept !== null) {
-        this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'wallCover',
+      if (intercept !== null) return { multiplier: WALL_COVER_DAMAGE_MULTIPLIER,
+        effect: { type: 'wallCover',
           x: sourcePosition.x + (target.x - sourcePosition.x) * intercept,
           y: sourcePosition.y + (target.y - sourcePosition.y) * intercept,
-          owner: target.owner, ttl: 0.28, maxTtl: 0.28 });
-        return WALL_COVER_DAMAGE_MULTIPLIER;
-      }
+          owner: target.owner, ttl: 0.28, maxTtl: 0.28 } };
     }
-    return 1;
+    return { multiplier: 1 };
   }
 
   _digInDamageMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage) {
@@ -2893,6 +2903,44 @@ export class Game {
     return difference <= INFANTRY_DIG_IN_ARC_RADIANS ? INFANTRY_DIG_IN_DAMAGE_MULTIPLIER : 1;
   }
 
+  _wreckCoverProtection(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage) {
+    if ((this.replayVersion != null && this.replayVersion < WRECK_COVER_RULES_VERSION) || areaDamage ||
+        !['ballistic', 'cannon'].includes(damageType) ||
+        UNIT_DEFS[target?.defId]?.armor !== 'infantry' || UNIT_DEFS[target?.defId]?.flying ||
+        !attackerOwner || attackerOwner === target.owner || !sourceId || !sourcePosition?.projectile ||
+        sourcePosition.sourceId !== sourceId || sourcePosition.owner !== attackerOwner ||
+        !Number.isFinite(sourcePosition.x) || !Number.isFinite(sourcePosition.y)) return { multiplier: 1 };
+    const candidates = [];
+    for (const wreck of this.wrecks) {
+      if (!(wreck.expiresAt > this.time) || wreck.campaignFreightCache === true) continue;
+      const targetDistance = dist(wreck.x, wreck.y, target.x, target.y);
+      if (targetDistance <= WRECK_COVER_RADIUS || targetDistance > WRECK_COVER_PROXIMITY) continue;
+      const sourceDistance = dist(wreck.x, wreck.y, sourcePosition.x, sourcePosition.y);
+      if (sourceDistance <= WRECK_COVER_RADIUS) continue;
+      const dx = target.x - sourcePosition.x, dy = target.y - sourcePosition.y;
+      const lengthSq = dx * dx + dy * dy;
+      if (lengthSq <= 1e-12) continue;
+      const projection = ((wreck.x - sourcePosition.x) * dx + (wreck.y - sourcePosition.y) * dy) / lengthSq;
+      const closestX = sourcePosition.x + projection * dx, closestY = sourcePosition.y + projection * dy;
+      const offsetX = closestX - wreck.x, offsetY = closestY - wreck.y;
+      const discriminant = WRECK_COVER_RADIUS ** 2 - (offsetX * offsetX + offsetY * offsetY);
+      if (discriminant < 0) continue;
+      const halfChord = Math.sqrt(discriminant / lengthSq);
+      const entry = projection - halfChord;
+      if (entry <= 0 || entry >= 1 || projection + halfChord <= 0) continue;
+      candidates.push({ wreck, entry, sourceDistance });
+    }
+    candidates.sort((a, b) => a.entry - b.entry || a.sourceDistance - b.sourceDistance ||
+      String(a.wreck.id).localeCompare(String(b.wreck.id)));
+    const chosen = candidates[0];
+    if (!chosen) return { multiplier: 1 };
+    return { multiplier: WRECK_COVER_DAMAGE_MULTIPLIER,
+      effect: { type: 'wreckCover',
+        x: sourcePosition.x + (target.x - sourcePosition.x) * chosen.entry,
+        y: sourcePosition.y + (target.y - sourcePosition.y) * chosen.entry,
+        owner: target.owner, wreckId: chosen.wreck.id, ttl: 0.28, maxTtl: 0.28 } };
+  }
+
   _applyDamage(target, damage, damageType, attackerOwner, sourceId = null, sourcePosition = null, areaDamage = false) {
     if (!target || target.hp <= 0 || target.embarkedIn) return;
     // Campaign-only authored defenses can make a structure invulnerable until
@@ -2900,6 +2948,17 @@ export class Game {
     if (target.campaignShielded === true) return;
     if (target._campaignRecoveryUntil > this.time) return;
     const armor = UNIT_DEFS[target.defId]?.armor || BUILDING_DEFS[target.defId]?.armor || 'structure';
+    const wallCover = this._wallCoverProtection(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage);
+    const digInCover = this._digInDamageMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition,
+      areaDamage);
+    const wreckCover = this._wreckCoverProtection(target, damageType, attackerOwner, sourceId, sourcePosition,
+      areaDamage);
+    const coverMultiplier = Math.min(wallCover.multiplier, digInCover, wreckCover.multiplier);
+    // Wall wins equal reductions to avoid emitting two cover cues for one hit.
+    const coverEffect = wallCover.multiplier === coverMultiplier ? wallCover.effect :
+      wreckCover.multiplier === coverMultiplier && wreckCover.multiplier < wallCover.multiplier
+        ? wreckCover.effect : null;
+    if (coverEffect) this.effects.push({ id: `fx${this._nextEffectId++}`, ...coverEffect });
     const multiplier = (ARMOR_MULTIPLIER[damageType]?.[armor] ?? 1) *
       (BUILDING_DEFS[target.defId] && target.owner !== attackerOwner &&
         this.research?.[attackerOwner]?.doctrine === 'siege' ? 1.2 : 1) *
@@ -2908,8 +2967,7 @@ export class Game {
         this.breachZones?.some(zone => zone.owner === attackerOwner && zone.until > this.time &&
           dist(zone.x, zone.y, this._entityCenter(target).x, this._entityCenter(target).y) <= zone.radius) ? 1.45 : 1) *
       this._directionalArmorMultiplier(target, attackerOwner, sourceId, sourcePosition) *
-      Math.min(this._wallCoverMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage),
-        this._digInDamageMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage)) *
+      coverMultiplier *
       (target.promotion === 'bulwark' &&
         (this.replayVersion == null || this.replayVersion >= UNIT_PROMOTION_RULES_VERSION)
         ? UNIT_PROMOTION_DEFS.bulwark.damageTakenMultiplier : 1) *
@@ -7734,9 +7792,14 @@ export class Game {
     // v73 while preserving any earlier legacy pin established above.
     if (game.replayVersion == null && data.infantryDigInRulesVersion !== INFANTRY_DIG_IN_RULES_VERSION)
       game.replayVersion = INFANTRY_DIG_IN_RULES_VERSION - 1;
+    // Version 74 saves have Dig In but no battlefield wreck cover. Pin them
+    // before v75 so their recorded direct-fire damage remains unchanged.
+    if (game.replayVersion == null && data.wreckCoverRulesVersion !== WRECK_COVER_RULES_VERSION)
+      game.replayVersion = WRECK_COVER_RULES_VERSION - 1;
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     game.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
+    game.wreckCoverRulesVersion = WRECK_COVER_RULES_VERSION;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;

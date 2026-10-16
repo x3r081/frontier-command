@@ -6,7 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  INFANTRY_DIG_IN_RULES_VERSION,
+  INFANTRY_DIG_IN_RULES_VERSION, WRECK_COVER_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -29,7 +29,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 73;
+const RANKED_SEASON = 74;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -67,10 +67,11 @@ const RANKED_SEASON = 73;
 // bounded skirmish AI use; all solo boards and ranked multiplayer advance for
 // this new strategic recovery option. Version 73 adds the separate Iron
 // Reclaimed campaign operation. Version 74 adds infantry field entrenchment
-// and defensive AI use. All solo boards advance; multiplayer starts Season 73.
-const CAMPAIGN_SCORE_FLOOR = INFANTRY_DIG_IN_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = INFANTRY_DIG_IN_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = INFANTRY_DIG_IN_RULES_VERSION;
+// and defensive AI use. Version 75 adds neutral wreck cover for infantry.
+// All solo boards advance; multiplayer starts Season 74.
+const CAMPAIGN_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -867,7 +868,8 @@ function projectedState(lobby, member) {
   // Salvage is shared battlefield information only while in live sight.
   // An old explored tile must not report fresh losses or remote recovery.
   data.wrecks = (data.wrecks || []).filter(wreck =>
-    fog[Math.floor(wreck.y)]?.[Math.floor(wreck.x)] === 2);
+    wreck.expiresAt > game.time && fog[Math.floor(wreck.y)]?.[Math.floor(wreck.x)] === 2);
+  const visibleWreckIds = new Set(data.wrecks.map(wreck => wreck.id));
   // Visible hostile units may be shown for tactical feedback, but their
   // serialized orders and paths can point deep into terrain this commander
   // has never explored. Those are private command state, not visible state.
@@ -891,7 +893,8 @@ function projectedState(lobby, member) {
     // whether a hidden or visible building has been switched off.
     if (entity.kind === 'building' || data.buildings.includes(entity)) delete entity.powerStandby;
   }
-  data.effects = data.effects.filter(effect => fog[Math.floor(effect.y)]?.[Math.floor(effect.x)] === 2);
+  data.effects = data.effects.filter(effect => fog[Math.floor(effect.y)]?.[Math.floor(effect.x)] === 2 &&
+    (effect.type !== 'wreckCover' || visibleWreckIds.has(effect.wreckId)));
   data.scans = data.scans.filter(scan => scan.owner === side);
   // Breach target zones persist longer than their visual effect. Keep an
   // opponent's hidden cast out of the serialized multiplayer state too.

@@ -2,7 +2,10 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { getCampaignFieldOrderView } from '../game/campaign.js';
-import { unitWeaponRange, UNIT_PROMOTION_RULES_VERSION } from '../game/engine.js';
+import {
+  unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
+  WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY,
+} from '../game/engine.js';
 
 // The game owns tile coordinates. This renderer only maps tile (x, y) to
 // Three.js ground (x, z); no game rules or positions are changed here.
@@ -1479,11 +1482,34 @@ export class Renderer3D {
     const welding=new THREE.InstancedMesh(weldGeometry,new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.96,depthTest:false,depthWrite:false,toneMapped:false}),capacity);
     welding.count=0;welding.frustumCulled=false;welding.renderOrder=8;welding.name='Engineer wreck welding';
     group.add(welding);this.wreckWelding=welding;
+    // A broken hull edge is a proximity cue for a selected friendly squad.
+    // One instanced batch covers every visible wreck, with a hard cap of 32.
+    const cueParts=[];
+    for(const [x,z] of [[-0.39,-0.56],[0.39,-0.56],[-0.39,0.56],[0.39,0.56]]) {
+      cueParts.push({geometry:new THREE.BoxGeometry(0.22,0.035,0.045),position:[x,0,z]});
+      cueParts.push({geometry:new THREE.BoxGeometry(0.045,0.035,0.22),position:[x+(x<0?0.087:-0.087),0,z+(z<0?0.087:-0.087)]});
+    }
+    const cueMaterial=new THREE.MeshBasicMaterial({
+      color:0xffc15b,transparent:true,opacity:0.66,depthTest:true,depthWrite:false,toneMapped:false
+    });
+    const groundState=this.groundReliefMaterials?.[0]?.userData.groundFlatZoneState;
+    const relief=groundState?{key:'terrain-relief-v1',
+      code:`uniform vec4 uGroundFlatZones[${GROUND_FLAT_ZONE_CAPACITY}];
+        uniform int uGroundFlatZoneCount; uniform float uGroundQuality;
+        ${groundReliefFunction(this.mapStyle)}`,
+      uniforms:{uGroundFlatZones:{value:groundState.vectors},
+        uGroundFlatZoneCount:groundState.countUniform,uGroundQuality:this.groundQualityUniform},
+      expression:'groundRelief(raisedWorld.xz)*0.82'}:null;
+    followVisualSurface(cueMaterial,this.visualHeightUniforms,
+      {...(relief?{displacement:relief}:{})});
+    const cue=new THREE.InstancedMesh(joinUnindexed(cueParts),cueMaterial,capacity);
+    cue.count=0;cue.frustumCulled=false;cue.renderOrder=6;cue.name='Selected squad wreck proximity';
+    group.add(cue);this.wreckCoverCue=cue;
   }
 
   _syncWrecks(game,time) {
     if(!Array.isArray(game.wrecks)||game.wrecks.length===0) {
-      if(this.wreckMeshes&&this._wreckSignature!=='') for(const mesh of [...this.wreckMeshes,this.wreckWorkRing,this.wreckWelding]) if(mesh) mesh.count=0;
+      if(this.wreckMeshes&&this._wreckSignature!=='') for(const mesh of [...this.wreckMeshes,this.wreckWorkRing,this.wreckWelding,this.wreckCoverCue]) if(mesh) mesh.count=0;
       this.wreckVisuals.clear();this._wreckSignature='';return;
     }
     if(!this.wreckMeshes) this._makeWreckBatch();
@@ -1492,11 +1518,12 @@ export class Renderer3D {
       if(!wreck||!Number.isFinite(wreck.x)||!Number.isFinite(wreck.y)) continue;
       const tx=Math.floor(wreck.x),tz=Math.floor(wreck.y);
       if(tx<0||tz<0||tz>=game.height||tx>=game.width||(game.fog?.[tz]?.[tx]??2)!==2) continue;
-      if(Number.isFinite(wreck.expiresAt)&&time>=wreck.expiresAt) continue;
+      if(Number.isFinite(wreck.expiresAt)&&Number.isFinite(game.time)&&game.time>=wreck.expiresAt) continue;
       visible.push(wreck);
       if(visible.length>=this.wreckCapacity) break;
     }
     const active=this._visibleWreckRecommissioners(game,visible);
+    this._syncWreckCoverCue(game,visible);
     const signature=visible.map(w=>`${w.id}:${w.x}:${w.y}:${w.value}:${w.faction}:${w.restoreDefId||''}`).join('|');
     if(signature===this._wreckSignature) {
       this._syncWreckRecommissioning(active,time);
@@ -1535,6 +1562,35 @@ export class Renderer3D {
     }
     this.wreckVisuals=new Map(visible.map(w=>[w.id,w]));
     this._syncWreckRecommissioning(active,time);
+  }
+
+  _syncWreckCoverCue(game,wrecks) {
+    if(!this.wreckCoverCue)return;
+    const version=game.replayVersion;
+    if(version!=null&&version<WRECK_COVER_RULES_VERSION) {this.wreckCoverCue.count=0;return;}
+    const selected=new Set(game.selection||[]);
+    const friendlyInfantry=(game.units||[]).filter(unit=>unit&&unit.hp>0&&unit.owner==='player'&&
+      !unit.embarkedIn&&(selected.has(unit.id)||unit.selected)&&
+      game.unitDefs?.[unit.defId]?.armor==='infantry');
+    let count=0;
+    for(const wreck of wrecks) {
+      if(count>=this.wreckCapacity)break;
+      if(wreck.campaignFreightCache===true)continue;
+      const nearby=friendlyInfantry.some(unit=>{
+        const dx=unit.x-wreck.x,dy=unit.y-wreck.y;
+        const distanceSq=dx*dx+dy*dy;
+        return distanceSq>WRECK_COVER_RADIUS*WRECK_COVER_RADIUS&&
+          distanceSq<=WRECK_COVER_PROXIMITY*WRECK_COVER_PROXIMITY;
+      });
+      if(!nearby)continue;
+      // The material applies the same terrain shelf and relief displacement
+      // as the ground; instance Y therefore remains a small local lift.
+      this.tmpObj.position.set(wreck.x,0.035,wreck.y);
+      this.tmpObj.rotation.set(0,0,0);this.tmpObj.scale.set(1,1,1);this.tmpObj.updateMatrix();
+      this.wreckCoverCue.setMatrixAt(count++,this.tmpObj.matrix);
+    }
+    this.wreckCoverCue.count=count;
+    if(count)this.wreckCoverCue.instanceMatrix.needsUpdate=true;
   }
 
   _visibleWreckRecommissioners(game,wrecks) {
@@ -2031,7 +2087,7 @@ export class Renderer3D {
     for(const [id,visual] of [...this.collapseVisuals]) this._removeBuildingCollapse(id,visual);
     this._disposeGroup(this.terrainGroup);
     this.crashSite=null;
-    this.wreckMeshes=null;this.wreckGroup=null;this.wreckWorkRing=null;this.wreckWelding=null;this.wreckVisuals.clear();this._wreckSignature='';
+    this.wreckMeshes=null;this.wreckGroup=null;this.wreckWorkRing=null;this.wreckWelding=null;this.wreckCoverCue=null;this.wreckVisuals.clear();this._wreckSignature='';
     this.ruinBatches=null;this.ruinGroup=null;this.ruinVisuals.clear();this.ruinSignature='';
     this.fogTexture?.dispose();
     this.fogTexture=null;
@@ -5535,6 +5591,27 @@ export class Renderer3D {
           depthWrite:false,toneMapped:false}));
       core.position.y=0.31;core.userData.wallCoverCore=true;g.add(core);
       g.rotation.y=(hash(Math.floor(fx.x||0),Math.floor(fx.y||0),71)-0.5)*Math.PI;
+    } else if(fx.type==='wreckCover') {
+      // A sharp amber deflection mark keeps a hull-blocked hit distinct from
+      // wall cover. Three objects total, with no light or per-hit fragments.
+      const ring=new THREE.Mesh(new THREE.RingGeometry(0.36,0.48,24,1,-0.42,2.05),
+        new THREE.MeshBasicMaterial({color:0xffb642,transparent:true,opacity:0.9,
+          depthWrite:false,side:THREE.DoubleSide,toneMapped:false}));
+      ring.rotation.x=-Math.PI/2;ring.position.y=0.055;ring.userData.wreckCoverRing=true;g.add(ring);
+      const streaks=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({
+        color:0xffedb5,transparent:true,opacity:0.98,depthWrite:false,toneMapped:false
+      }));
+      streaks.geometry.setAttribute('position',new THREE.Float32BufferAttribute([
+        -0.12,0.20,0.01, -0.52,0.43,0.18,
+        -0.02,0.25,0.00,  0.38,0.61,-0.28,
+         0.02,0.19,0.04,  0.17,0.51,0.55,
+      ],3));
+      streaks.userData.wreckCoverStreaks=true;g.add(streaks);
+      const core=new THREE.Mesh(new THREE.OctahedronGeometry(0.15,0),
+        new THREE.MeshBasicMaterial({color:0xfff0c2,transparent:true,opacity:0.96,
+          depthWrite:false,toneMapped:false}));
+      core.position.set(0,0.27,0);core.userData.wreckCoverCore=true;g.add(core);
+      g.rotation.y=(hash(Math.floor(fx.x||0),Math.floor(fx.y||0),75)-0.5)*Math.PI;
     } else if(fx.type==='projectile') {
       // Give each weapon family a distinct silhouette so a mixed volley stays
       // legible at the normal command camera distance. Reuse the same three
@@ -5868,7 +5945,7 @@ export class Renderer3D {
         :clamp((fx.ttl??0.5)/(fx.maxTtl||0.5),0,1);
       const r=fx.radius||0.4;
       g.scale.setScalar(g.userData.stormcallVisual||fx.type==='breach'||fx.type==='interdict'?1:fx.type==='projectile'?1:
-        fx.type==='wallCover'?0.82:Math.max(0.15,r*(1.65-life*0.65)));
+        (fx.type==='wallCover'||fx.type==='wreckCover')?0.82:Math.max(0.15,r*(1.65-life*0.65)));
       if(g.userData.stormcallVisual) this._animateStormcallEffect(g,life,time);
       if(fx.type==='breach') {
         const pulse=0.86+0.14*(0.5+0.5*Math.sin(time*2.6));
@@ -5947,6 +6024,17 @@ export class Renderer3D {
           o.scale.setScalar(0.72+age*0.3);
           o.material.opacity=0.94*life;
         }
+        if(o.userData.wreckCoverRing) {
+          const age=1-life;
+          o.scale.setScalar(0.76+age*0.62);
+          o.material.opacity=0.9*life;
+        }
+        if(o.userData.wreckCoverStreaks) o.material.opacity=0.98*life;
+        if(o.userData.wreckCoverCore) {
+          const age=1-life;
+          o.scale.setScalar(0.72+age*0.38);
+          o.material.opacity=0.96*life;
+        }
         if(o.userData.burstSmoke) {
           const age=1-life, i=o.userData.index;
           o.quaternion.copy(this.camera.quaternion);
@@ -5985,6 +6073,7 @@ export class Renderer3D {
           !o.userData.burstSmoke && !o.userData.shockRing && !o.userData.impactDustWave &&
           !o.userData.muzzlePlume && !o.userData.wallCoverRing && !o.userData.healRing &&
           !o.userData.healPart && !o.userData.wallCoverStreaks && !o.userData.wallCoverCore &&
+          !o.userData.wreckCoverRing && !o.userData.wreckCoverStreaks && !o.userData.wreckCoverCore &&
           !o.userData.breachPart && !o.userData.interdictPart) o.material.opacity=o.userData.haze?(1-life)*life*0.65:
           (o.userData.shaft?0.42:o.userData.ring?0.62:0.85)*life;
         if(o.userData.spark) {
