@@ -46,7 +46,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['barracks','barracks-vesper'].includes(id)?'?rev=81':['rifle','rocket'].includes(id)?'?rev=76':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
@@ -4135,8 +4135,9 @@ function updateProductionRepeatControls(site) {
   const intent=status.enabled?`AUTO · ${unitName||'UNIT'} · ${state}`:'AUTO TRAIN OFF';
   const explanation=status.reason?` · ${status.reason}`:'';
   const statusText=pending?'WAITING FOR SERVER CONFIRMATION':`${intent}${explanation}`;
-  $('#production-repeat-status').textContent=statusText;
-  $('#production-repeat-status').title=statusText;
+  const statusLabel=$('#production-repeat-status');
+  if(statusLabel.textContent!==statusText)statusLabel.textContent=statusText;
+  statusLabel.title=statusText;
   select.title=definitions.map(([id,def])=>{
     const required=def.prerequisites||def.requires||[];
     const missing=(Array.isArray(required)?required:[required]).filter(Boolean).filter(req=>!hasRequirement(req));

@@ -11,10 +11,31 @@ import sys
 from pathlib import Path
 
 import bpy
+from mathutils import Matrix
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "scripts"))
 import create_3d_assets as kit  # noqa: E402
+
+
+def yaw_structure_to_front():
+    """Bake a half-turn around the building origin into all model meshes.
+
+    The tactical view approaches authored buildings from Three.js +Z. Blender
+    +Y exports toward Three.js -Z, so these two Barracks need their entries on
+    Blender -Y before export. Rotating each object's location and local mesh
+    together keeps the world origin, unit scale, and semantic node pivots.
+    """
+    turn = Matrix.Rotation(3.141592653589793, 4, "Z")
+    for obj in list(bpy.context.scene.objects):
+        if obj.type != "MESH":
+            continue
+        obj.location = turn @ obj.location
+        obj.rotation_euler = (turn.to_3x3() @ obj.rotation_euler.to_matrix()).to_euler()
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        bpy.ops.object.transform_apply(location=False, rotation=True, scale=False)
 
 
 def aegis_barracks():
@@ -95,6 +116,7 @@ def aegis_barracks():
         preserved=("Entry canopy light",),
         join_groups=(("Entry blast door", door_parts, (0, .858, .43)),),
     )
+    yaw_structure_to_front()
     kit.export("barracks")
 
 
@@ -165,6 +187,7 @@ def vesper_barracks():
     kit.cube("Roof signal", (.91, -.86, 1.08), (.30, .12, .04), m["accent"], .006)
 
     kit.consolidate_static_meshes(preserved=("Pod violet vent",))
+    yaw_structure_to_front()
     kit.export("vesper-barracks")
 
 

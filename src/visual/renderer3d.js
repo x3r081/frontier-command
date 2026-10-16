@@ -1338,7 +1338,7 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=['barracks','vesperBarracks'].includes(key)?'?rev=81':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         if(['rifle','rocket'].includes(key)) gltf.scene.traverse(object=>{

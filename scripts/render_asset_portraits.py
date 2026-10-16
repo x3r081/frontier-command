@@ -124,9 +124,14 @@ def setup_render(meshes, faction, asset_id=None):
 
     # These vehicles carry their defining equipment at the front of the hull.
     front_view = asset_id in {"apache", "harvester", "guardian", "stealthTank", "serviceBay",
-                              "lightTank", "rifle", "rocket", "engineer", "power", "barracks-vesper", "scout-vesper", "harvester-vesper",
-                              "radar-vesper", "tech-vesper", "buggy-vesper", "barracks", "factory"}
-    direction = Vector((5.5, 8.0 if front_view else -8.0, 5.6)).normalized()
+                              "lightTank", "rifle", "rocket", "engineer", "power", "scout-vesper", "harvester-vesper",
+                              "radar-vesper", "tech-vesper", "buggy-vesper", "factory"}
+    if asset_id in {"barracks", "barracks-vesper"}:
+        # Barracks entrances are authored on Blender -Y so the RTS camera sees
+        # them from Three.js +Z after glTF axis conversion.
+        direction = Vector((5.5, -8.0, 5.6)).normalized()
+    else:
+        direction = Vector((5.5, 8.0 if front_view else -8.0, 5.6)).normalized()
     right = direction.cross(Vector((0, 0, 1))).normalized()
     up = right.cross(direction).normalized()
     projected_w = max(abs((corner - center).dot(right)) for corner in corners) * 2
