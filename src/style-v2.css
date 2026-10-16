@@ -2803,11 +2803,24 @@ button:focus-visible { outline: 2px solid #e0ff9c; outline-offset: 3px; }
 .armory-entry-copy { min-width:0; display:flex; flex-direction:column; gap:3px; }
 .armory-entry-copy strong { font:700 16px/1 "Barlow Condensed",sans-serif; }
 .armory-entry-copy small { color:#88a293; font:600 9px/1 Inter,sans-serif; letter-spacing:.12em; }
-.armory-detail { min-width:0; min-height:0; overflow:auto; position:relative; display:grid; grid-template-columns:minmax(170px,34%) minmax(0,1fr); grid-template-rows:auto auto auto 1fr auto; align-content:start; column-gap:20px; padding:18px 20px; border:1px solid #3b5847; background:linear-gradient(135deg,#14231b,#0c1714); scrollbar-color:#6d906c #12231b; }
+.armory-detail { min-width:0; min-height:0; overflow:auto; position:relative; display:grid; grid-template-columns:minmax(220px,45%) minmax(0,1fr); grid-template-rows:auto auto auto 1fr auto; align-content:start; column-gap:20px; padding:18px 20px; border:1px solid #3b5847; background:linear-gradient(135deg,#14231b,#0c1714); scrollbar-color:#6d906c #12231b; }
 .armory-faction-tag { grid-column:1/-1; color:#c9ff66; font:700 10px/1 Inter,sans-serif; letter-spacing:.15em; }
 .armory-faction-tag.vesper { color:#fd8d7f; }
-.armory-portrait { grid-column:1; grid-row:2/5; min-height:200px; display:grid; place-items:center; background:radial-gradient(ellipse at center,#7eae7a20,transparent 68%); }
+.armory-portrait { grid-column:1; grid-row:2/5; min-height:200px; position:relative; overflow:hidden; display:grid; place-items:center; background:radial-gradient(ellipse at center,#7eae7a20,transparent 68%); }
 .armory-portrait img { width:100%; height:clamp(170px,28vh,280px); object-fit:contain; filter:drop-shadow(0 12px 16px #0009); }
+.armory-portrait.has-model-preview { min-height:clamp(300px,52vh,560px); grid-row:2/6; }
+.armory-portrait.has-model-preview > img { display:none; }
+.armory-model-host { position:absolute; inset:0; width:100%; height:100%; min-width:0; min-height:0; }
+.armory-model-viewer { position:relative; display:flex; flex-direction:column; width:100%; height:100%; min-height:180px; overflow:hidden; }
+.armory-model-stage { position:relative; flex:1 1 auto; min-height:0; touch-action:none; cursor:grab; }
+.armory-model-stage:active { cursor:grabbing; }
+.armory-model-canvas { display:block; width:100%; height:100%; outline:none; }
+.armory-model-controls { position:relative; z-index:2; flex:0 0 auto; display:flex; justify-content:center; gap:0; padding:3px 0; pointer-events:none; }
+.armory-model-control { box-sizing:border-box; width:44px; min-width:44px; height:44px; padding:0; border:1px solid #719274; border-radius:2px; background:rgba(7,18,14,.88); color:#e1f2d9; font:700 20px/1 "Barlow Condensed",sans-serif; cursor:pointer; pointer-events:auto; }
+.armory-model-control:hover { border-color:#c9ff66; background:#1a3021; }
+.armory-model-control:focus-visible { outline:2px solid #d9ff93; outline-offset:1px; }
+.armory-model-status { position:relative; z-index:2; align-self:center; max-width:calc(100% - 14px); margin:0 7px 5px; padding:4px 7px; border:1px solid #355042; background:rgba(7,18,14,.78); color:#c5d8c3; font:600 9px/1.25 Inter,sans-serif; text-align:center; pointer-events:none; }
+.armory-model-viewer.is-fallback { display:none; }
 .armory-detail h3 { grid-column:2; grid-row:2; align-self:end; margin:4px 0 5px; color:#f1f7e9; font:800 clamp(27px,4vw,42px)/.95 "Barlow Condensed",sans-serif; }
 .armory-role { grid-column:2; grid-row:3; margin:0 0 8px; color:#9cbb9c; font:700 10px/1.2 Inter,sans-serif; letter-spacing:.1em; }
 .armory-description { grid-column:2; grid-row:4; align-self:start; margin:0 0 10px; color:#bfd0c2; font-size:12px; line-height:1.55; }
@@ -2849,6 +2862,10 @@ button:focus-visible { outline: 2px solid #e0ff9c; outline-offset: 3px; }
   .armory-faction-tag,.armory-detail h3,.armory-role,.armory-description,.armory-stats,.armory-prereq,.armory-perk { grid-column:1; }
   .armory-portrait { grid-column:1; grid-row:auto; min-height:130px; }
   .armory-portrait img { height:140px; }
+  .armory-portrait.has-model-preview { min-height:clamp(250px,42vh,340px); grid-row:auto; }
+  .armory-model-viewer { min-height:205px; }
+  .armory-model-controls { gap:0; padding:3px 0; }
+  .armory-model-control { width:44px; min-width:44px; height:44px; }
   .armory-detail h3 { grid-row:auto; font-size:27px; }
   .armory-role,.armory-detail .armory-description { grid-row:auto; }
   .armory-detail .armory-description { font-size:12px; line-height:1.5; }

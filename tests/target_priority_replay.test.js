@@ -27,10 +27,10 @@ function makeRecordedPreference(priority) {
 
 test('target-priority command has strict enum replay schema and rules-82 gate', () => {
   assert.equal(TARGET_PRIORITY_RULES_VERSION, 82);
-  assert.equal(SOLO_REPLAY_VERSION, 82);
+  assert.ok(SOLO_REPLAY_VERSION >= TARGET_PRIORITY_RULES_VERSION);
   const valid = { tick: 0, sequence: 0, method: 'issueSetTargetPriority', args: ['vehicles'], selectedIds: ['u1'] };
   assert.equal(validateSoloReplay(envelope, [valid], 12, SOLO_REPLAY_VERSION), true);
-  assert.throws(() => createSoloPlayback(envelope, [valid], 12, SOLO_REPLAY_VERSION - 1),
+  assert.throws(() => createSoloPlayback(envelope, [valid], 12, TARGET_PRIORITY_RULES_VERSION - 1),
     /target priorities require replay version 82/i);
   for (const args of [[], ['auto', 'infantry'], [null], ['Infantry'], ['all'], [{ vehicles: true }]]) {
     assert.throws(() => validateSoloReplay(envelope, [{ ...valid, args }], 12, SOLO_REPLAY_VERSION),

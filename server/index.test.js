@@ -11,7 +11,7 @@ import WebSocket from 'ws';
 import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESERVE_RULES_VERSION,
   AI_ENGINEER_RAID_RULES_VERSION, AI_FIELD_BUNKER_RULES_VERSION, POWER_STANDBY_RULES_VERSION,
   WRECK_RECOMMISSION_RULES_VERSION, WRECK_COVER_RULES_VERSION, GARRISON_RULES_VERSION,
-  MEDIC_ESCORT_RULES_VERSION,
+  MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, COUNTERBATTERY_RULES_VERSION,
@@ -493,6 +493,8 @@ test('current solo rules floor applies across campaign and every skirmish diffic
       scoreVersion: 71 },
     { ...base, id: 'assembly-campaign-v82', mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: 82 },
+    { ...base, id: `assembly-campaign-v${SOLO_REPLAY_VERSION - 1}`, mode: 'campaign', scenarioId: 'first-harvest',
+      scoreVersion: SOLO_REPLAY_VERSION - 1 },
     { ...base, id: `assembly-campaign-v${SOLO_REPLAY_VERSION}`, mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: SOLO_REPLAY_VERSION },
     ...['easy', 'normal', 'hard'].flatMap(difficulty => [
@@ -500,6 +502,8 @@ test('current solo rules floor applies across campaign and every skirmish diffic
         scenarioId: 'shard-valley', scoreVersion: 71, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
       { ...base, id: `assembly-skirmish-${difficulty}-v82`, mode: 'skirmish', difficulty,
         scenarioId: 'shard-valley', scoreVersion: 82, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+      { ...base, id: `assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION - 1}`, mode: 'skirmish', difficulty,
+        scenarioId: 'shard-valley', scoreVersion: SOLO_REPLAY_VERSION - 1, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
       { ...base, id: `assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION}`, mode: 'skirmish', difficulty,
         scenarioId: 'shard-valley', scoreVersion: SOLO_REPLAY_VERSION, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
     ]),
@@ -512,16 +516,23 @@ test('current solo rules floor applies across campaign and every skirmish diffic
   store.history.push(history);
   try {
     const campaign = await api('/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token);
-    assert.deepEqual((await campaign.json()).entries.map(entry => entry.id), [`assembly-campaign-v${SOLO_REPLAY_VERSION}`]);
+    assert.deepEqual((await campaign.json()).entries.map(entry => entry.id),
+      [`assembly-campaign-v${SOLO_REPLAY_VERSION}`],
+    'only the current v85 campaign result remains comparable after combat repair');
     for (const difficulty of ['easy', 'normal', 'hard']) {
       const response = await api(`/api/leaderboard?mode=skirmish&difficulty=${difficulty}&scenarioId=shard-valley`, profile.token);
       assert.deepEqual((await response.json()).entries.map(entry => entry.id),
-        [`assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION}`]);
+        [`assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION}`],
+        `only the current v85 ${difficulty} result remains comparable after combat repair`);
     }
+    const multiplayerRating = await api('/api/multiplayer/rating', profile.token);
+    assert.equal((await multiplayerRating.json()).season, ENGINEER_FIELD_REPAIR_RULES_VERSION,
+      'Engineer combat repair advances the ranked multiplayer season');
     assert.ok(SOLO_REPLAY_VERSION >= WRECK_RECOMMISSION_RULES_VERSION,
       'the current replay version includes the global solo comparison floor');
     assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
-    assert.equal(SOLO_REPLAY_VERSION, COUNTERBATTERY_RULES_VERSION);
+    assert.equal(COUNTERBATTERY_RULES_VERSION, 84);
+    assert.equal(SOLO_REPLAY_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION);
     assert.equal(POWER_STANDBY_RULES_VERSION, 71);
     assert.equal(WRECK_RECOMMISSION_RULES_VERSION, 72);
     assert.equal(AI_ENGINEER_RAID_RULES_VERSION, 70);
@@ -1101,7 +1112,7 @@ test('Iron Reclaimed tickets follow the verified After the Dawn rescue at the sa
   assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('iron-reclaimed'));
 });
 
-test('v83 Medic floor retires older campaign boards without deleting campaign progress', async () => {
+test('v85 Engineer repair floor retires older campaign boards without deleting progress', async () => {
   const profile = await createProfile('Recovery Ranking');
   const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
     faction: 'aegis', fieldOrderId: 'none', fieldOrderStatus: 'none', carryoverId: 'none',
@@ -1117,23 +1128,28 @@ test('v83 Medic floor retires older campaign boards without deleting campaign pr
     { ...base, id: 'recovery-v79', scenarioId: 'iron-reclaimed', scoreVersion: 79 },
     { ...base, id: 'rescue-now-v79', scenarioId: 'after-the-dawn', scoreVersion: 79 },
     { ...base, id: 'recovery-v83', scenarioId: 'iron-reclaimed', scoreVersion: 83 },
-    { ...base, id: 'rescue-now-v83', scenarioId: 'after-the-dawn', scoreVersion: 83 });
+    { ...base, id: 'rescue-now-v83', scenarioId: 'after-the-dawn', scoreVersion: 83 },
+    { ...base, id: 'recovery-v84', scenarioId: 'iron-reclaimed', scoreVersion: 84 },
+    { ...base, id: 'rescue-now-v84', scenarioId: 'after-the-dawn', scoreVersion: 84 },
+    { ...base, id: 'recovery-v85', scenarioId: 'iron-reclaimed', scoreVersion: 85 },
+    { ...base, id: 'rescue-now-v85', scenarioId: 'after-the-dawn', scoreVersion: 85 });
   const rows = async scenario => (await (await api(
     `/api/leaderboard?mode=campaign&scenarioId=${scenario}`, profile.token)).json()).entries.map(row => row.id);
-  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v83']);
+  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v85']);
   assert.deepEqual((await rows('after-the-dawn')).filter(id => id.startsWith('rescue-')),
-    ['rescue-now-v83']);
+    ['rescue-now-v85']);
   assert.ok(store.scores.some(score => score.id === 'recovery-v79'), 'archived scores remain stored');
   assert.ok(store.scores.some(score => score.id === 'rescue-still-v72'), 'archived victories stay stored');
   assert.ok(store.scores.some(score => score.id === 'recovery-v78'), 'v78 results remain stored off-board');
-  assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 83);
+  assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season,
+    ENGINEER_FIELD_REPAIR_RULES_VERSION);
 });
 
-test('v80 AI bunker history remains stored below the v83 all-mode Medic floor', async () => {
+test('v80 AI bunker history remains stored below the v85 all-mode Engineer repair floor', async () => {
   assert.equal(AI_FIELD_BUNKER_RULES_VERSION, 80);
   assert.equal(GARRISON_RULES_VERSION, 79);
   assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
-  assert.equal(SOLO_REPLAY_VERSION, COUNTERBATTERY_RULES_VERSION);
+  assert.equal(SOLO_REPLAY_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION);
   const profile = await createProfile('Bunker AI Ranking');
   const common = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis', seconds: 100,
     kills: 4, completedAt: 100, verified: true, result: 'victory' };
@@ -1146,10 +1162,13 @@ test('v80 AI bunker history remains stored below the v83 all-mode Medic floor', 
     aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id });
   const rows = [
     campaignScore(78), campaignScore(79), campaignScore(80), campaignScore(82), campaignScore(83),
+    campaignScore(84), campaignScore(85),
     skirmishScore('easy', 78), skirmishScore('easy', 79), skirmishScore('easy', 80),
-    skirmishScore('easy', 82), skirmishScore('easy', 83),
-    skirmishScore('normal', 79), skirmishScore('normal', 80), skirmishScore('normal', 82), skirmishScore('normal', 83),
-    skirmishScore('hard', 79), skirmishScore('hard', 80), skirmishScore('hard', 82), skirmishScore('hard', 83),
+    skirmishScore('easy', 82), skirmishScore('easy', 83), skirmishScore('easy', 84), skirmishScore('easy', 85),
+    skirmishScore('normal', 79), skirmishScore('normal', 80), skirmishScore('normal', 82),
+    skirmishScore('normal', 83), skirmishScore('normal', 84), skirmishScore('normal', 85),
+    skirmishScore('hard', 79), skirmishScore('hard', 80), skirmishScore('hard', 82),
+    skirmishScore('hard', 83), skirmishScore('hard', 84), skirmishScore('hard', 85),
   ];
   const history = { id: 'history-bunker-normal-v79', profileId: profile.profile.id,
     mode: 'skirmish', scenarioId: 'shard-valley', scenarioName: 'Shard Valley', difficulty: 'normal',
@@ -1161,20 +1180,21 @@ test('v80 AI bunker history remains stored below the v83 all-mode Medic floor', 
   const asSet = values => [...values].sort();
   try {
     assert.deepEqual(asSet(await ids('/api/leaderboard?mode=campaign&scenarioId=first-harvest')),
-      ['bunker-floor-campaign-v83'],
-      'campaign floor advances with the all-mode Medic fix');
+      ['bunker-floor-campaign-v85'],
+      'campaign floor advances with Engineer combat repair');
     assert.deepEqual(asSet(await ids('/api/leaderboard?mode=skirmish&difficulty=easy&scenarioId=shard-valley')),
-      ['bunker-floor-easy-v83'],
-      'Easy skirmish receives the global Medic floor');
+      ['bunker-floor-easy-v85'],
+      'Easy skirmish receives the global Engineer repair floor');
     for (const difficulty of ['normal', 'hard'])
       assert.deepEqual(await ids(`/api/leaderboard?mode=skirmish&difficulty=${difficulty}&scenarioId=shard-valley`),
-        [`bunker-floor-${difficulty}-v83`], `${difficulty} receives the global Medic floor`);
+        [`bunker-floor-${difficulty}-v85`], `${difficulty} receives the global Engineer repair floor`);
     assert.ok(store.scores.includes(rows.find(row => row.id === 'bunker-floor-normal-v79')),
       'the retired v79 result remains stored');
     assert.ok((await ids('/api/records/history')).includes(history.id),
       'the retired v79 skirmish victory remains in private history');
-    assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 83,
-      'the all-mode Medic fix starts its ranked multiplayer season');
+    assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season,
+      ENGINEER_FIELD_REPAIR_RULES_VERSION,
+      'Engineer combat repair starts its ranked multiplayer season');
   } finally {
     for (const row of rows) {
       const index = store.scores.indexOf(row);
@@ -1217,8 +1237,9 @@ test('Iron Reclaimed records a server-verified public-command victory on its own
   assert.ok(board.entries.some(entry => entry.id === result.entry.id));
 });
 
-test('Counterbattery tickets require same-difficulty Iron Reclaimed and its board alone uses version 84', async () => {
-  assert.equal(SOLO_REPLAY_VERSION, COUNTERBATTERY_RULES_VERSION);
+test('Counterbattery tickets retain archived unlocks and its board uses the current combat floor', async () => {
+  assert.equal(SOLO_REPLAY_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION);
+  assert.ok(SOLO_REPLAY_VERSION >= COUNTERBATTERY_RULES_VERSION);
   const profile = await createProfile('Counterbattery Unlock');
   const start = (difficulty = 'normal', carryoverId = 'none') => api('/api/scores/runs', profile.token, {
     method: 'POST', body: json({ mode: 'campaign', difficulty, faction: 'aegis',
@@ -1238,10 +1259,14 @@ test('Counterbattery tickets require same-difficulty Iron Reclaimed and its boar
       faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 83, verified: true, result: 'victory', completedAt: 101 },
     { id: 'counterbattery-board-v84', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
       faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 84, verified: true, result: 'victory', completedAt: 102 },
+    { id: 'counterbattery-board-v85', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 85, verified: true, result: 'victory', completedAt: 105 },
     { id: 'counterbattery-prior-board-v82', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
       faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 82, verified: true, result: 'victory', completedAt: 103 },
     { id: 'counterbattery-prior-board-v83', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
       faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 83, verified: true, result: 'victory', completedAt: 104 },
+    { id: 'counterbattery-prior-board-v85', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 85, verified: true, result: 'victory', completedAt: 106 },
   ];
   store.scores.push(iron, ...boardRows);
   let runId;
@@ -1249,6 +1274,7 @@ test('Counterbattery tickets require same-difficulty Iron Reclaimed and its boar
     const progress = await (await api('/api/campaign/progress', profile.token)).json();
     assert.ok(progress.difficulties.normal.unlockedMissionIds.includes('counterbattery'),
       'a verified archived version-73 Iron Reclaimed victory unlocks the sequel');
+    assert.ok(store.scores.includes(iron), 'the archived v73 unlock score remains stored');
     assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('counterbattery'));
 
     const response = await start('normal', 'signal');
@@ -1257,18 +1283,18 @@ test('Counterbattery tickets require same-difficulty Iron Reclaimed and its boar
     runId = ticket.runId;
     const locked = store.runs.find(run => run.id === runId);
     assert.equal(locked.scenarioId, 'counterbattery', 'the authoritative ticket fixes its scenario');
-    assert.equal(locked.rulesVersion, 84);
+    assert.equal(locked.rulesVersion, ENGINEER_FIELD_REPAIR_RULES_VERSION);
     assert.equal(locked.carryoverId, 'signal', 'only Iron Reclaimed field-order rewards supply the carryover');
     assert.deepEqual(locked.campaignVeteran, survivor,
       'the prior Iron Reclaimed victory supplies its eligible survivor');
 
     const counterbatteryRows = (await (await api(
       '/api/leaderboard?mode=campaign&scenarioId=counterbattery', profile.token)).json()).entries;
-    assert.deepEqual(counterbatteryRows.map(entry => entry.id), ['counterbattery-board-v84']);
+    assert.deepEqual(counterbatteryRows.map(entry => entry.id), ['counterbattery-board-v85']);
     const priorRows = (await (await api(
       '/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token)).json()).entries;
-    assert.deepEqual(priorRows.map(entry => entry.id), ['counterbattery-prior-board-v83'],
-      'existing campaign boards keep their version-83 comparison floor');
+    assert.deepEqual(priorRows.map(entry => entry.id), ['counterbattery-prior-board-v85'],
+      'existing campaign boards use the current v85 comparison floor');
   } finally {
     if (runId) store.runs = store.runs.filter(run => run.id !== runId);
     store.scores = store.scores.filter(score => score !== iron && !boardRows.includes(score));
@@ -4253,6 +4279,92 @@ test('heal effects expose only currently projected Medic and patient IDs with vi
   assert.equal(ownHeal.sourceId, ownMedic.id, 'own known Medic IDs are retained');
   assert.equal(ownHeal.targetId, patient.id);
   assert.equal(ownHeal.owner, 'player');
+});
+
+test('authenticated Engineer repair commands enforce ownership and keep kits, progress, and hidden sources private', async () => {
+  const hostProfile = await createProfile('Field Repair Host');
+  const guestProfile = await createProfile('Field Repair Guest');
+  const host = await openSocket(hostProfile.token);
+  const guest = await openSocket(guestProfile.token);
+  try {
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'hello')));
+    sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+    const lobbyMessage = await nextMessage(host, message => message.type === 'lobby');
+    sendSocket(guest, { type: 'join_lobby', code: lobbyMessage.code });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.length === 2);
+    await nextMessage(guest, message => message.type === 'lobby');
+    sendSocket(host, { type: 'set_ready', ready: true });
+    sendSocket(guest, { type: 'set_ready', ready: true });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.every(player => player.ready));
+    sendSocket(host, { type: 'start_match' });
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'match_start')));
+
+    const lobby = lobbies.get(lobbyMessage.code);
+    const game = lobby.game;
+    game.units.length = 0; game.buildings.length = 0; game.effects.length = 0; game.selection = [];
+    for (const row of game.terrain) for (const tile of row)
+      Object.assign(tile, { type: 'sand', resource: 0, walkable: true, buildable: true });
+    for (const row of game.fog) row.fill(2);
+    const ownEngineer = game._createUnit('player', 'engineer', 10.5, 10.5);
+    const refillingEngineer = game._createUnit('player', 'engineer', 12.5, 10.5);
+    refillingEngineer.fieldRepairKits = 1;
+    const ownVehicle = game._createUnit('player', 'lightTank', 39.5, 30.5);
+    ownVehicle.hp -= 120;
+    const foreignEngineer = game._createUnit('enemy', 'engineer', 25.5, 25.5);
+    const nearVehicleScout = game._createUnit('enemy', 'scout', 41.5, 30.5);
+    const foreignVehicle = game._createUnit('enemy', 'lightTank', 43.5, 30.5);
+    foreignVehicle.hp -= 120;
+    foreignEngineer.fieldRepairKits = 1;
+    foreignEngineer._fieldRepairProgress = 1.25;
+    foreignEngineer.order = { type: 'fieldRepair', targetId: foreignVehicle.id };
+    const workshop = game._createBuilding('player', 'serviceBay', 12, 8);
+    const issue = async (requestId, command, ids, payload = {}) => {
+      sendSocket(host, { type: 'command', requestId, command, ids, ...payload });
+      return nextMessage(host, message => message.type === 'command_result' && message.requestId === requestId);
+    };
+
+    assert.equal((await issue('field-repair-malformed', 'issueFieldRepair', [ownEngineer.id], { targetId: 41 })).ok, false);
+    assert.equal((await issue('field-repair-foreign-engineer', 'issueFieldRepair', [foreignEngineer.id],
+      { targetId: ownVehicle.id })).ok, false, 'foreign selected units are excluded by authenticated selection');
+    assert.equal((await issue('field-repair-foreign-target', 'issueFieldRepair', [ownEngineer.id],
+      { targetId: foreignVehicle.id })).ok, false, 'the engine rejects repairs to the other seat’s vehicle');
+    assert.equal((await issue('field-repair-own-target', 'issueFieldRepair', [ownEngineer.id],
+      { targetId: ownVehicle.id })).ok, true);
+    assert.deepEqual(ownEngineer.order, { type: 'fieldRepair', targetId: ownVehicle.id });
+    assert.equal((await issue('field-repair-refill', 'issueRefillRepairKits', [refillingEngineer.id])).ok, true);
+    assert.equal(refillingEngineer.order.type, 'refillRepairKits');
+    assert.equal(refillingEngineer.order.workshopId, workshop.id);
+
+    ownEngineer._fieldRepairProgress = 2.5;
+    game.effects.push({ id: 'fx-field-repair-private', type: 'heal', kind: 'fieldRepair', x: ownVehicle.x,
+      y: ownVehicle.y, radius: 0.7, ttl: 0.75, maxTtl: 0.75, sourceId: ownEngineer.id,
+      targetId: ownVehicle.id, owner: 'player' });
+    const hostMember = lobby.members.find(member => member.side === 'player');
+    const guestMember = lobby.members.find(member => member.side === 'enemy');
+    const hostView = projectedState(lobby, hostMember);
+    const friendlyEngineer = hostView.units.find(unit => unit.id === ownEngineer.id);
+    assert.equal(friendlyEngineer.fieldRepairKits, 2);
+    assert.equal(friendlyEngineer._fieldRepairProgress, 2.5);
+    assert.equal(friendlyEngineer.order.targetId, ownVehicle.id);
+    const visibleHostileEngineer = hostView.units.find(unit => unit.id === foreignEngineer.id);
+    assert.ok(visibleHostileEngineer, 'the known hostile Engineer is projected while in player vision');
+    assert.equal('fieldRepairKits' in visibleHostileEngineer, false);
+    assert.equal('_fieldRepairProgress' in visibleHostileEngineer, false);
+    assert.equal('order' in visibleHostileEngineer, false);
+    const guestView = projectedState(lobby, guestMember);
+    assert.equal(guestView.units.some(unit => unit.id === ownEngineer.id), false,
+      'a hidden repairing Engineer is omitted from the opposing projection');
+    assert.equal(guestView.units.some(unit => unit.id === ownVehicle.id), true,
+      'the target is observed separately from its hidden repair Engineer');
+    const fieldRepairEffect = guestView.effects.find(effect => effect.id === 'fx-field-repair-private');
+    assert.ok(fieldRepairEffect, 'the repair pulse remains visible around the observed vehicle');
+    assert.equal(fieldRepairEffect.sourceId, undefined, 'the hidden Engineer ID is removed from the pulse');
+    assert.equal(fieldRepairEffect.targetId, ownVehicle.id);
+    assert.ok(nearVehicleScout, 'the enemy vision probe observes the vehicle, not its hidden Engineer');
+  } finally {
+    sendSocket(host, { type: 'leave_lobby' });
+    host.close(); guest.close();
+  }
 });
 
 test('multiplayer projection shares the Bloom beacon but keeps opponent charged cargo private', () => {

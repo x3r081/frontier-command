@@ -7,7 +7,7 @@ import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   INFANTRY_DIG_IN_RULES_VERSION,
-  TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION,
+  TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
@@ -32,7 +32,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = MEDIC_ESCORT_RULES_VERSION;
+const RANKED_SEASON = ENGINEER_FIELD_REPAIR_RULES_VERSION;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -88,9 +88,11 @@ const RANKED_SEASON = MEDIC_ESCORT_RULES_VERSION;
 // across solo and ranked play, advancing every solo floor and ranked season.
 // Version 84 adds Counterbattery as a bonus sequel; only its campaign board
 // requires v84, while earlier campaign/skirmish boards and multiplayer stay put.
-const CAMPAIGN_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
+// Version 85 adds Engineer Field Repair, a combat heal with private kit/refill
+// state. Its combat impact advances all solo comparison floors and ranked play.
+const CAMPAIGN_SCORE_FLOOR = ENGINEER_FIELD_REPAIR_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = ENGINEER_FIELD_REPAIR_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = ENGINEER_FIELD_REPAIR_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -915,6 +917,7 @@ function projectedState(lobby, member) {
     delete entity.rallyTargetId;
     delete entity.garrisonIds;
     delete entity.targetPriority;
+    delete entity.fieldRepairKits;
     if ('path' in entity) entity.path = [];
     // Standby is private economy state. An opponent snapshot must not reveal
     // whether a hidden or visible building has been switched off.
@@ -1157,6 +1160,7 @@ function startMatch(lobby) {
 }
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueGarrison', 'issueEvacuateGarrison', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
+  'issueFieldRepair', 'issueRefillRepairKits',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally', 'setRallyTarget',
   'issueSetTargetPriority',
   'toggleRepair', 'setBuildingPower', 'setProductionRepeat', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'useSelectedUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
@@ -1242,6 +1246,10 @@ function command(lobby, member, message) {
       case 'useUnitAbility': return game.useUnitAbility(message.unitId, message.abilityId);
       case 'useSelectedUnitAbility': return activateSelectedUnitAbility(game, message.abilityId);
       case 'issueEngineer': return game.issueEngineer(message.targetId);
+      case 'issueFieldRepair': return typeof message.targetId === 'string'
+        ? game.issueFieldRepair(message.targetId)
+        : { ok: false, reason: 'Choose a valid friendly ground vehicle to repair.' };
+      case 'issueRefillRepairKits': return game.issueRefillRepairKits();
       case 'issueRecoverWreck': return game.issueRecoverWreck(message.wreckId);
       case 'issueRecommissionWreck': return typeof message.wreckId === 'string'
         ? game.issueRecommissionWreck(message.wreckId)

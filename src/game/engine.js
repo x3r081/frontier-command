@@ -90,6 +90,12 @@ export const AI_FIELD_BUNKER_RULES_VERSION = 80;
 export const MOBILE_RALLY_RULES_VERSION = 81;
 export const TARGET_PRIORITY_RULES_VERSION = 82;
 export const MEDIC_ESCORT_RULES_VERSION = 83;
+export const ENGINEER_FIELD_REPAIR_RULES_VERSION = 85;
+export const ENGINEER_FIELD_REPAIR_KITS = 2;
+export const ENGINEER_FIELD_REPAIR_AMOUNT = 120;
+export const ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS = 5;
+export const ENGINEER_FIELD_REPAIR_REFILL_SECONDS = 8;
+export const ENGINEER_FIELD_REPAIR_REFILL_COST = 80;
 export const TARGET_PRIORITY_OPTIONS = Object.freeze(['auto', 'infantry', 'vehicles', 'aircraft', 'structures']);
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
@@ -174,7 +180,7 @@ export const UNIT_DEFS = Object.freeze({
     description: 'Long-range missiles excel against armor and structures.' },
   engineer: { id: 'engineer', name: 'Engineer', faction: 'all', role: 'engineer', producer: 'barracks', cost: 450, buildTime: 11,
     health: 70, armor: 'infantry', speed: 1.35, sight: 5, radius: 0.24, weapon: null,
-    description: 'Captures damaged enemy structures and restores friendly ones.' },
+    description: 'Captures damaged enemy structures and restores friendly ones. Carries two field repair kits for ground vehicles; refill them at a powered Field Workshop.' },
   harvester: { id: 'harvester', name: 'Crystal Harvester', faction: 'all', role: 'harvester', producer: 'factory', cost: 1250, buildTime: 23,
     health: 610, armor: 'heavy', speed: 0.92, sight: 5, radius: 0.42, capacity: 700, weapon: null,
     description: 'Collects crystal and delivers it to a refinery for credits. Aegis harvesters extract 20% faster within 6 tiles of a powered refinery.' },
@@ -386,6 +392,7 @@ export class Game {
     this.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
     this.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
     this.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
+    this.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
     this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
@@ -1179,6 +1186,8 @@ export class Game {
       cargo: 0, veterancy: 0, xp: 0, kills: 0, promotion: null, revealedUntil: 0, _pathGoal: null, _repath: 0,
       _harvestTile: null, _healCooldown: 0, ammo: d.ammoMax ?? null, _resumeOrder: null,
       targetPriority: 'auto',
+      ...(defId === 'engineer' && this._engineerFieldRepairEnabled()
+        ? { fieldRepairKits: ENGINEER_FIELD_REPAIR_KITS } : {}),
       _stormglassCargo: 0,
       _unloadRefineryId: null, _unloadApproach: null, _unloadRemaining: 0, _unloadProgress: 0,
       homeRefineryId: null,
@@ -2291,6 +2300,10 @@ export class Game {
     for (const u of units) {
       if (u.defId === 'harvester') this._releaseHarvesterDock(u);
       u.order = { type: 'idle' }; u.path = []; u._pathGoal = null;
+      if (u.defId === 'engineer' && this._engineerFieldRepairEnabled()) {
+        u._fieldRepairProgress = 0; u._fieldRepairRefillProgress = 0;
+        u._fieldRepairWaiting = null;
+      }
     }
     for (const bunker of bunkers) delete bunker._garrisonTargetId;
     this._event('order', { order: 'stop', ids: [...units.map(u => u.id), ...bunkers.map(b => b.id)] });
@@ -2567,6 +2580,10 @@ export class Game {
 
   _medicEscortEnabled() {
     return this.replayVersion == null || this.replayVersion >= MEDIC_ESCORT_RULES_VERSION;
+  }
+
+  _engineerFieldRepairEnabled() {
+    return this.replayVersion == null || this.replayVersion >= ENGINEER_FIELD_REPAIR_RULES_VERSION;
   }
 
   _targetPriorityMatches(priority, target) {
@@ -4316,6 +4333,74 @@ export class Game {
     return remaining.length === 0;
   }
 
+  issueFieldRepair(targetId) {
+    const owner = this.commandOwner || 'player';
+    if (this.status !== 'playing') return { ok: false, reason: 'Field repairs are available while the battle is playing.' };
+    if (!this._engineerFieldRepairEnabled())
+      return { ok: false, reason: `Engineer field repairs require replay version ${ENGINEER_FIELD_REPAIR_RULES_VERSION}.` };
+    if (typeof targetId !== 'string') return { ok: false, reason: 'Choose a friendly ground vehicle.' };
+    const target = this.getEntity(targetId);
+    if (!target || !this.units.includes(target) || target.hp <= 0 || target.owner !== owner || target.embarkedIn ||
+        !this._isFieldRepairVehicle(target) || target.hp >= target.maxHp)
+      return { ok: false, reason: 'Choose a damaged, unembarked friendly ground vehicle.' };
+    const assigned = this.units.find(unit => unit.owner === owner && unit.hp > 0 &&
+      unit.defId === 'engineer' && !unit.embarkedIn && unit.order?.type === 'fieldRepair' &&
+      unit.order.targetId === target.id);
+    if (assigned) return { ok: false, reason: 'Another Engineer is already repairing that vehicle.' };
+    const engineers = this._selectedCommandUnits().filter(unit => unit.defId === 'engineer' &&
+      !unit.embarkedIn && (unit.fieldRepairKits || 0) > 0);
+    if (!engineers.length) return { ok: false, reason: 'Select a living Engineer with a field repair kit.' };
+    const engineer = engineers.sort((a, b) => this._distanceToEntity(a.x, a.y, target) -
+      this._distanceToEntity(b.x, b.y, target) || a.id.localeCompare(b.id))[0];
+    engineer.order = { type: 'fieldRepair', targetId: target.id };
+    engineer.path = []; engineer._pathGoal = null;
+    engineer._fieldRepairProgress = 0;
+    engineer._fieldRepairLastTargetX = target.x;
+    engineer._fieldRepairLastTargetY = target.y;
+    engineer._fieldRepairWaiting = null;
+    engineer._fieldRepairRefillProgress = 0;
+    this._event('order', { order: 'fieldRepair', ids: [engineer.id], targetId: target.id });
+    this._event('fieldRepairStarted', { engineerId: engineer.id, targetId: target.id,
+      owner, kits: engineer.fieldRepairKits });
+    return { ok: true, engineerId: engineer.id, targetId: target.id, kits: engineer.fieldRepairKits };
+  }
+
+  issueRefillRepairKits() {
+    const owner = this.commandOwner || 'player';
+    if (this.status !== 'playing') return { ok: false, reason: 'Field kit refills are available while the battle is playing.' };
+    if (!this._engineerFieldRepairEnabled())
+      return { ok: false, reason: `Engineer field repairs require replay version ${ENGINEER_FIELD_REPAIR_RULES_VERSION}.` };
+    const engineers = this._selectedCommandUnits().filter(unit => unit.defId === 'engineer' &&
+      !unit.embarkedIn && (unit.fieldRepairKits || 0) < ENGINEER_FIELD_REPAIR_KITS);
+    if (!engineers.length) return { ok: false, reason: 'Select a living Engineer missing field repair kits.' };
+    const bays = this.buildings.filter(building => building.owner === owner && building.defId === 'serviceBay' &&
+      building.hp > 0 && building.progress >= 1 && building.powered);
+    if (!bays.length) return { ok: false, reason: 'A completed powered friendly Field Workshop is required to refill kits.' };
+    const refillOrders = [];
+    for (const engineer of engineers) {
+      const choices = bays.map(workshop => ({ workshop, point: this._aiWorkshopApproach(engineer, workshop) }))
+        .filter(choice => choice.point)
+        .sort((a, b) => a.point.length - b.point.length || a.workshop.id.localeCompare(b.workshop.id));
+      const chosen = choices[0];
+      if (!chosen) continue;
+      engineer.order = { type: 'refillRepairKits', workshopId: chosen.workshop.id,
+        x: chosen.point.x, y: chosen.point.y };
+      engineer.path = []; engineer._pathGoal = null;
+      engineer._fieldRepairProgress = 0;
+      engineer._fieldRepairRefillProgress = 0;
+      engineer._fieldRepairWaiting = null;
+      refillOrders.push(engineer);
+    }
+    if (!refillOrders.length) return { ok: false, reason: 'No reachable Field Workshop is available.' };
+    this._event('order', { order: 'refillRepairKits', ids: refillOrders.map(unit => unit.id) });
+    return { ok: true, ids: refillOrders.map(unit => unit.id) };
+  }
+
+  _isFieldRepairVehicle(unit) {
+    const def = UNIT_DEFS[unit?.defId];
+    return !!def && !def.flying && ['light', 'heavy'].includes(def.armor);
+  }
+
   issueEngineer(targetId) {
     const owner = this.commandOwner || 'player';
     const target = this.getEntity(targetId);
@@ -4496,6 +4581,155 @@ export class Game {
           'Service paused; insufficient credits.' });
     }
     // Order completion is checked after the building repair tick next frame.
+  }
+
+  _setEngineerFieldRepairWaiting(unit, reason, target = null) {
+    if (unit._fieldRepairWaiting === reason) return;
+    unit._fieldRepairWaiting = reason;
+    if (reason) this._event('fieldRepairWaiting', { engineerId: unit.id, owner: unit.owner,
+      targetId: target?.id || null, reason });
+  }
+
+  _finishEngineerFieldOrder(unit, message = null) {
+    unit.order = { type: 'idle' };
+    unit.path = []; unit._pathGoal = null;
+    unit._fieldRepairProgress = 0;
+    unit._fieldRepairRefillProgress = 0;
+    unit._fieldRepairWaiting = null;
+    if (message) this._event('fieldRepairOrderEnded', { engineerId: unit.id, owner: unit.owner, message });
+  }
+
+  _updateFieldRepair(unit, dt) {
+    if (!this._engineerFieldRepairEnabled() || unit.defId !== 'engineer' || unit.hp <= 0 || unit.embarkedIn) {
+      this._finishEngineerFieldOrder(unit);
+      return;
+    }
+    const target = this.getEntity(unit.order?.targetId);
+    if (!target || !this.units.includes(target) || target.hp <= 0 || target.owner !== unit.owner ||
+        target.embarkedIn || !this._isFieldRepairVehicle(target) || target.hp >= target.maxHp ||
+        (unit.fieldRepairKits || 0) < 1) {
+      this._finishEngineerFieldOrder(unit, 'Field repair ended; the target or kit is no longer available.');
+      return;
+    }
+    const unitIndex = this.units.indexOf(unit);
+    const earlierAssignment = this.units.find(other => other !== unit && this.units.indexOf(other) < unitIndex &&
+      other.owner === unit.owner && other.hp > 0 && !other.embarkedIn && other.defId === 'engineer' &&
+      other.order?.type === 'fieldRepair' && other.order.targetId === target.id);
+    if (earlierAssignment) {
+      this._finishEngineerFieldOrder(unit, 'Another Engineer is already repairing that vehicle.');
+      return;
+    }
+    const distance = this._distanceToEntity(unit.x, unit.y, target);
+    if (distance > 1.2) {
+      unit._fieldRepairProgress = 0;
+      unit._fieldRepairLastTargetX = target.x;
+      unit._fieldRepairLastTargetY = target.y;
+      this._setEngineerFieldRepairWaiting(unit, null, target);
+      this._moveUnit(unit, target.x, target.y, dt, 0.9);
+      return;
+    }
+    const moved = Number.isFinite(unit._fieldRepairLastTargetX) &&
+      (Math.abs(target.x - unit._fieldRepairLastTargetX) > 0.001 ||
+        Math.abs(target.y - unit._fieldRepairLastTargetY) > 0.001);
+    unit._fieldRepairLastTargetX = target.x;
+    unit._fieldRepairLastTargetY = target.y;
+    if (moved) {
+      unit._fieldRepairProgress = 0;
+      this._setEngineerFieldRepairWaiting(unit, 'target-moving', target);
+      return;
+    }
+    this._setEngineerFieldRepairWaiting(unit, null, target);
+    unit._fieldRepairProgress = Math.min(ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS,
+      Math.max(0, unit._fieldRepairProgress || 0) + dt);
+    if (unit._fieldRepairProgress + 0.000001 < ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS) return;
+    if (target.hp <= 0 || target.owner !== unit.owner || target.embarkedIn ||
+        this._distanceToEntity(unit.x, unit.y, target) > 1.2 ||
+        Math.abs(target.x - unit._fieldRepairLastTargetX) > 0.001 ||
+        Math.abs(target.y - unit._fieldRepairLastTargetY) > 0.001) {
+      unit._fieldRepairProgress = 0;
+      return;
+    }
+    const amount = Math.min(ENGINEER_FIELD_REPAIR_AMOUNT, target.maxHp - target.hp);
+    if (amount <= 0) { this._finishEngineerFieldOrder(unit); return; }
+    target.hp += amount;
+    unit.fieldRepairKits = Math.max(0, Math.min(ENGINEER_FIELD_REPAIR_KITS,
+      Math.trunc(unit.fieldRepairKits || 0)) - 1);
+    unit._fieldRepairProgress = 0;
+    this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'heal', x: target.x, y: target.y,
+      radius: 0.7, ttl: 0.75, maxTtl: 0.75, sourceId: unit.id, targetId: target.id,
+      owner: unit.owner, kind: 'fieldRepair' });
+    this._event('fieldRepairCompleted', { engineerId: unit.id, targetId: target.id,
+      owner: unit.owner, amount, kits: unit.fieldRepairKits });
+    if (target.hp >= target.maxHp || unit.fieldRepairKits <= 0)
+      this._finishEngineerFieldOrder(unit);
+  }
+
+  _updateRepairKitRefill(unit, dt) {
+    if (!this._engineerFieldRepairEnabled() || unit.defId !== 'engineer' || unit.hp <= 0 || unit.embarkedIn) {
+      this._finishEngineerFieldOrder(unit);
+      return;
+    }
+    if ((unit.fieldRepairKits || 0) >= ENGINEER_FIELD_REPAIR_KITS) {
+      this._finishEngineerFieldOrder(unit);
+      return;
+    }
+    let workshop = this.getEntity(unit.order?.workshopId);
+    if (!workshop || workshop.defId !== 'serviceBay' || workshop.owner !== unit.owner ||
+        workshop.hp <= 0 || workshop.progress < 1) {
+      const replacements = this.buildings.filter(building => building.owner === unit.owner &&
+        building.defId === 'serviceBay' && building.hp > 0 && building.progress >= 1)
+        .map(candidate => ({ workshop: candidate, point: this._aiWorkshopApproach(unit, candidate) }))
+        .filter(candidate => candidate.point)
+        .sort((a, b) => a.point.length - b.point.length || a.workshop.id.localeCompare(b.workshop.id));
+      const replacement = replacements[0];
+      if (!replacement) {
+        this._setEngineerFieldRepairWaiting(unit, 'workshop');
+        return;
+      }
+      workshop = replacement.workshop;
+      unit.order.workshopId = workshop.id;
+      unit.order.x = replacement.point.x;
+      unit.order.y = replacement.point.y;
+      unit.path = []; unit._pathGoal = null;
+      this._setEngineerFieldRepairWaiting(unit, null);
+    }
+    const point = Number.isFinite(unit.order.x) && Number.isFinite(unit.order.y)
+      ? { x: unit.order.x, y: unit.order.y } : this._aiWorkshopApproach(unit, workshop);
+    if (!point) {
+      this._setEngineerFieldRepairWaiting(unit, 'workshop');
+      return;
+    }
+    if (this._distanceToEntity(unit.x, unit.y, workshop) > 2.5) {
+      unit._fieldRepairWaiting = null;
+      this._moveUnit(unit, point.x, point.y, dt, 0.2);
+      return;
+    }
+    const waiting = !workshop.powered ? 'power' : this._repairCreditsAvailable(unit.owner) < ENGINEER_FIELD_REPAIR_REFILL_COST
+      ? 'credits' : null;
+    if (waiting !== unit._fieldRepairWaiting) {
+      unit._fieldRepairWaiting = waiting;
+      if (waiting) this._event('fieldRepairWaiting', { engineerId: unit.id, owner: unit.owner,
+        workshopId: workshop.id, reason: waiting });
+    }
+    if (waiting) return;
+    unit._fieldRepairRefillProgress = Math.min(ENGINEER_FIELD_REPAIR_REFILL_SECONDS,
+      Math.max(0, unit._fieldRepairRefillProgress || 0) + dt);
+    if (unit._fieldRepairRefillProgress + 0.000001 < ENGINEER_FIELD_REPAIR_REFILL_SECONDS) return;
+    if (workshop.owner !== unit.owner || workshop.hp <= 0 || !workshop.powered ||
+        this._repairCreditsAvailable(unit.owner) < ENGINEER_FIELD_REPAIR_REFILL_COST) {
+      unit._fieldRepairRefillProgress = 0;
+      return;
+    }
+    this.credits[unit.owner] -= ENGINEER_FIELD_REPAIR_REFILL_COST;
+    unit.fieldRepairKits = Math.min(ENGINEER_FIELD_REPAIR_KITS,
+      Math.max(0, Math.trunc(unit.fieldRepairKits || 0)) + 1);
+    unit._fieldRepairRefillProgress = 0;
+    unit._fieldRepairWaiting = null;
+    this._event('fieldRepairKitsChanged', { engineerId: unit.id, owner: unit.owner,
+      workshopId: workshop.id, kits: unit.fieldRepairKits, cost: ENGINEER_FIELD_REPAIR_REFILL_COST });
+    if (unit.fieldRepairKits >= ENGINEER_FIELD_REPAIR_KITS) {
+      this._finishEngineerFieldOrder(unit);
+    }
   }
 
   _updateWreckRecovery(unit, dt) {
@@ -4742,6 +4976,8 @@ export class Game {
       }
       return;
     }
+    if (order.type === 'fieldRepair') { this._updateFieldRepair(u, dt); return; }
+    if (order.type === 'refillRepairKits') { this._updateRepairKitRefill(u, dt); return; }
     if (order.type === 'service') { this._updateServiceOrder(u, dt); return; }
     if (order.type === 'recommissionWreck') { this._updateWreckRecommission(u, dt); return; }
     if (order.type === 'board') {
@@ -8699,6 +8935,10 @@ export class Game {
     if (game.replayVersion == null && data.targetPriorityRulesVersion === TARGET_PRIORITY_RULES_VERSION &&
         data.medicEscortRulesVersion !== MEDIC_ESCORT_RULES_VERSION)
       game.replayVersion = TARGET_PRIORITY_RULES_VERSION;
+    // Markerless v84 saves predate Engineer field repair kits.
+    if (game.replayVersion == null && data.medicEscortRulesVersion === MEDIC_ESCORT_RULES_VERSION &&
+        data.engineerFieldRepairRulesVersion !== ENGINEER_FIELD_REPAIR_RULES_VERSION)
+      game.replayVersion = MEDIC_ESCORT_RULES_VERSION + 1;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -8848,6 +9088,7 @@ export class Game {
     game.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
     game.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
     game.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
+    game.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
     game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
       data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
         building.owner === 'enemy' && building.defId === 'bunker');
@@ -9012,6 +9253,10 @@ export class Game {
     const targetPriorityDataEnabled = game._targetPriorityEnabled() &&
       (data.targetPriorityRulesVersion === TARGET_PRIORITY_RULES_VERSION ||
         game.replayVersion != null && game.replayVersion >= TARGET_PRIORITY_RULES_VERSION);
+    const engineerFieldRepairDataEnabled = game._engineerFieldRepairEnabled() &&
+      (data.engineerFieldRepairRulesVersion === ENGINEER_FIELD_REPAIR_RULES_VERSION ||
+        game.replayVersion != null && game.replayVersion >= ENGINEER_FIELD_REPAIR_RULES_VERSION);
+    const assignedFieldRepairTargets = new Set();
     for (const unit of game.units) {
       unit._recommissioned = game._wreckRecommissionEnabled() && unit._recommissioned === true;
       if (unit.order?.type === 'recommissionWreck') {
@@ -9065,6 +9310,61 @@ export class Game {
       unit.stance = ['aggressive', 'defensive', 'holdFire'].includes(unit.stance) ? unit.stance : 'aggressive';
       unit.targetPriority = targetPriorityDataEnabled && TARGET_PRIORITY_OPTIONS.includes(unit.targetPriority)
         ? unit.targetPriority : 'auto';
+      if (engineerFieldRepairDataEnabled && unit.defId === 'engineer') {
+        unit.fieldRepairKits = Number.isFinite(unit.fieldRepairKits)
+          ? clamp(Math.trunc(unit.fieldRepairKits), 0, ENGINEER_FIELD_REPAIR_KITS) : ENGINEER_FIELD_REPAIR_KITS;
+        if (unit.order?.type === 'fieldRepair') {
+          const target = game.getEntity(unit.order.targetId);
+          const valid = unit.hp > 0 && !unit.embarkedIn && unit.fieldRepairKits > 0 && target &&
+            game.units.includes(target) && target.hp > 0 && target.owner === unit.owner && !target.embarkedIn &&
+            game._isFieldRepairVehicle(target) && target.hp < target.maxHp &&
+            !assignedFieldRepairTargets.has(target.id);
+          if (valid) {
+            assignedFieldRepairTargets.add(target.id);
+            unit.order = { type: 'fieldRepair', targetId: target.id };
+            unit._fieldRepairProgress = Number.isFinite(unit._fieldRepairProgress)
+              ? clamp(unit._fieldRepairProgress, 0, ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS) : 0;
+            unit._fieldRepairLastTargetX = Number.isFinite(unit._fieldRepairLastTargetX)
+              ? clamp(unit._fieldRepairLastTargetX, 0, game.width) : target.x;
+            unit._fieldRepairLastTargetY = Number.isFinite(unit._fieldRepairLastTargetY)
+              ? clamp(unit._fieldRepairLastTargetY, 0, game.height) : target.y;
+            unit._fieldRepairWaiting = [null, 'target-moving'].includes(unit._fieldRepairWaiting)
+              ? unit._fieldRepairWaiting : null;
+            unit._fieldRepairRefillProgress = 0;
+          } else {
+            unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+            unit._fieldRepairProgress = 0; unit._fieldRepairWaiting = null;
+          }
+        } else if (unit.order?.type === 'refillRepairKits') {
+          if (unit.hp > 0 && !unit.embarkedIn && unit.fieldRepairKits < ENGINEER_FIELD_REPAIR_KITS) {
+            const workshopId = typeof unit.order.workshopId === 'string' && unit.order.workshopId.length <= 64
+              ? unit.order.workshopId : null;
+            const pointValid = Number.isFinite(unit.order.x) && unit.order.x >= 0 && unit.order.x < game.width &&
+              Number.isFinite(unit.order.y) && unit.order.y >= 0 && unit.order.y < game.height;
+            unit.order = { type: 'refillRepairKits', workshopId,
+              ...(pointValid ? { x: unit.order.x, y: unit.order.y } : {}) };
+            unit._fieldRepairRefillProgress = Number.isFinite(unit._fieldRepairRefillProgress)
+              ? clamp(unit._fieldRepairRefillProgress, 0, ENGINEER_FIELD_REPAIR_REFILL_SECONDS) : 0;
+            unit._fieldRepairWaiting = [null, 'workshop', 'power', 'credits'].includes(unit._fieldRepairWaiting)
+              ? unit._fieldRepairWaiting : null;
+            unit._fieldRepairProgress = 0;
+          } else {
+            unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+            unit._fieldRepairRefillProgress = 0; unit._fieldRepairWaiting = null;
+          }
+        } else {
+          unit._fieldRepairProgress = 0; unit._fieldRepairRefillProgress = 0;
+          unit._fieldRepairWaiting = null;
+        }
+      } else {
+        delete unit.fieldRepairKits;
+        if (unit.order?.type === 'fieldRepair' || unit.order?.type === 'refillRepairKits') {
+          unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+        }
+        unit._fieldRepairProgress = 0; unit._fieldRepairRefillProgress = 0;
+        unit._fieldRepairWaiting = null;
+        delete unit._fieldRepairLastTargetX; delete unit._fieldRepairLastTargetY;
+      }
       const oldRank = Number.isFinite(unit.veterancy) ? Math.trunc(unit.veterancy) : 0;
       unit.veterancy = clamp(oldRank, 0, VETERANCY_RANKS.length - 1);
       unit.promotion = isUnitPromotionEligible(unit) && Object.hasOwn(UNIT_PROMOTION_DEFS, unit.promotion)

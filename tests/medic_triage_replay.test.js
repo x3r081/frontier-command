@@ -57,7 +57,7 @@ function runPublicMedicFollow(replayVersion) {
 
 test('paid Medic Follow command is recorded and exact in rules 83 and archived rules 82', () => {
   assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
-  assert.equal(SOLO_REPLAY_VERSION, 83);
+  assert.ok(SOLO_REPLAY_VERSION >= MEDIC_ESCORT_RULES_VERSION);
   for (const version of [82, MEDIC_ESCORT_RULES_VERSION]) {
     const result = runPublicMedicFollow(version);
     assert.deepEqual(result.commands.map(command => command.method), [

@@ -108,7 +108,7 @@ test('seed chooses a repeatable variant and version 10 replay preserves the clas
 });
 
 test('Canyon Ring variant 1 balances the middle relay and v43 replays retain the old route', () => {
-  assert.equal(SOLO_REPLAY_VERSION, 57);
+  assert.ok(SOLO_REPLAY_VERSION >= 44);
   const seed = 80218;
   const envelope = { mode: 'skirmish', difficulty: 'normal', faction: 'aegis', seed,
     scenarioId: 'canyon-ring' };
@@ -117,14 +117,15 @@ test('Canyon Ring variant 1 balances the middle relay and v43 replays retain the
   const v44Playback = createSoloPlayback(envelope, [], 0, 44);
   const v44Replay = v44Playback.game;
   const currentReplay = createSoloPlayback(envelope, [], 0, SOLO_REPLAY_VERSION).game;
+  const withoutElevation = terrain => terrain.map(row => row.map(({ elevation, ...tile }) => tile));
   const legacyLayout = new Game({ seed, mapId: 'canyon-ring', mapVariant: 1, legacyCanyonRingVariant1: true });
   assert.equal(oldReplay.mapVariant, 1);
-  assert.deepEqual(oldReplay.terrain, legacyLayout.terrain);
-  assert.deepEqual(oldPlayback.reset().terrain, legacyLayout.terrain,
+  assert.deepEqual(withoutElevation(oldReplay.terrain), withoutElevation(legacyLayout.terrain));
+  assert.deepEqual(withoutElevation(oldPlayback.reset().terrain), withoutElevation(legacyLayout.terrain),
     'reset reconstructs the archived layout');
-  assert.deepEqual(v44Replay.terrain, currentReplay.terrain,
-    'version 44 playback retains the revised Canyon Ring route');
-  assert.deepEqual(v44Playback.reset().terrain, currentReplay.terrain,
+  assert.deepEqual(withoutElevation(v44Replay.terrain), withoutElevation(currentReplay.terrain),
+    'version 44 playback retains the revised Canyon Ring route despite later elevation annotations');
+  assert.deepEqual(withoutElevation(v44Playback.reset().terrain), withoutElevation(currentReplay.terrain),
     'version 44 reset reconstructs its archived terrain');
   assert.notDeepEqual(currentReplay.terrain, oldReplay.terrain);
   assert.deepEqual(Game.deserialize(currentReplay.serialize()).terrain, currentReplay.terrain,

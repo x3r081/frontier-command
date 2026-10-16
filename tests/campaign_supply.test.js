@@ -81,7 +81,7 @@ test('every later authored operation can start with each requisition package', (
 });
 
 test('campaign replay version 9 carries supply choice while old records default to none', () => {
-  assert.equal(SOLO_REPLAY_VERSION, 57);
+  assert.ok(SOLO_REPLAY_VERSION >= 9);
   const currentEnvelope = envelope(13, { supplyId: 'recon' });
   assert.equal(validateSoloEnvelope(currentEnvelope), 13);
   const current = createSoloPlayback(currentEnvelope, [], 0);

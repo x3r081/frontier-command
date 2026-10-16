@@ -668,6 +668,7 @@ function closeTrackedDialog(id, restoreFocus = true) {
   if (layer.classList.contains('hidden')) return;
   if(id==='#multiplayer-modal')leaveCasualSearch('Search cancelled because you left multiplayer.');
   hide(id);
+  if(id==='#armory')clearArmoryModel();
   if (id === '#armory' && armoryAutoPaused) {
     armoryAutoPaused = false;
     if (playing && !gameEnded) {
@@ -998,6 +999,24 @@ function selectedObjects() {
   const ids = new Set(game.selection || []);
   return [...game.units, ...game.buildings].filter(o => ids.has(o.id) && !o.embarkedIn);
 }
+function fieldRepairRulesInGame(){
+  return !!game&&!replayMode&&(game.replayVersion==null||game.replayVersion>=85)&&
+    typeof game.issueFieldRepair==='function'&&typeof game.issueRefillRepairKits==='function';
+}
+function fieldRepairPatient(target){
+  const def=game?.unitDefs?.[target?.defId];
+  return fieldRepairRulesInGame()&&target?.owner==='player'&&target.hp>0&&target.hp<target.maxHp&&
+    !target.embarkedIn&&!('w' in target)&&!def?.flying&&['light','heavy'].includes(def?.armor);
+}
+function engineerStructureTarget(target){
+  if(!target||!('w' in target))return false;
+  if(game?.bridges?.includes(target))return !!target.destroyed;
+  return target.hp>0&&(target.owner==='player'?target.hp<target.maxHp:
+    target.hp<=target.maxHp*0.75&&!(target.defId==='bunker'&&target.garrisonIds?.length));
+}
+function selectedKitEngineers(){
+  return fieldRepairRulesInGame()?selectedObjects().filter(unit=>unit.defId==='engineer'&&unit.owner==='player'&&unit.hp>0):[];
+}
 function reverseMoveUnits(units=selectedObjects()) {
   if(!game||game.replayVersion!=null&&game.replayVersion<61)return [];
   return units.filter(unit=>{
@@ -1009,7 +1028,7 @@ function reverseMoveUnits(units=selectedObjects()) {
 function battlefieldPickerIsOpen() { return !$('#battlefield-picker-panel').classList.contains('hidden'); }
 function updateBattlefieldPickerAddSquadControl() {
   const button=$('#battlefield-picker-add-squad');
-  button.closest('.battlefield-picker-squad-tools').classList.toggle('hidden',['board','bunkerAttack','rally','follow'].includes(attackMoveMode));
+  button.closest('.battlefield-picker-squad-tools').classList.toggle('hidden',['board','bunkerAttack','rally','follow','engineer'].includes(attackMoveMode));
   button.classList.toggle('active',battlefieldPickerAddSquadMode);
   button.setAttribute('aria-pressed',String(battlefieldPickerAddSquadMode));
   button.disabled=!game||!playing||paused||replayMode;
@@ -1106,6 +1125,10 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
     .map(entry=>({...entry,ariaLabel:`Target ${entry.ariaLabel.replace(/^Center camera on visible enemy /,'')}`}));
   if(attackMoveMode==='follow')return entries.filter(entry=>isFriendlyFollowTarget(entry.entity))
     .map(entry=>({...entry,ariaLabel:`Escort ${entry.ariaLabel.replace(/^Select friendly /,'')}`}));
+  if(attackMoveMode==='engineer')return entries.filter(entry=>entry.wreck||
+    engineerStructureTarget(entry.entity)||fieldRepairPatient(entry.entity)).map(entry=>({...entry,
+      ariaLabel:fieldRepairPatient(entry.entity)?`Patch ${entry.ariaLabel.replace(/^Select friendly /,'')}`:
+        `Engineer task: ${entry.ariaLabel}`}));
   if(attackMoveMode==='rally'&&mobileRallyAvailable())return entries.filter(entry=>isFriendlyRallyUnit(entry.entity))
     .map(entry=>({...entry,ariaLabel:`Rally reinforcements to ${entry.ariaLabel.replace(/^Select friendly /,'')}`}));
   return [...intelEntries, ...entries];
@@ -1150,12 +1173,12 @@ function renderBattlefieldPicker() {
     if (current !== button) list.insertBefore(button.closest('li'), list.children[index] || null);
   });
   const boarding=attackMoveMode==='board', bunkerAttack=attackMoveMode==='bunkerAttack';
-  const rallying=attackMoveMode==='rally'&&mobileRallyAvailable(), following=attackMoveMode==='follow';
+  const rallying=attackMoveMode==='rally'&&mobileRallyAvailable(), following=attackMoveMode==='follow', engineering=attackMoveMode==='engineer';
   $('#battlefield-picker-empty').classList.toggle('hidden', entries.length > 0);
   $('#battlefield-picker-empty').textContent=boarding?'No completed friendly carriers or Field Bunkers.':
-    bunkerAttack?'No enemy targets in current sight.':rallying?'No friendly rally units. Choose a fixed point on the battlefield.':following?'No other friendly units or structures to escort.':'No friendly forces or visible objects.';
+    bunkerAttack?'No enemy targets in current sight.':rallying?'No friendly rally units. Choose a fixed point on the battlefield.':following?'No other friendly units or structures to escort.':engineering?'No damaged friendly vehicles, wrecks, bridges, or structures in view.':'No friendly forces or visible objects.';
   $('#battlefield-picker-panel .battlefield-picker-heading strong').textContent = boarding?
-    'CHOOSE CARRIER OR FIELD BUNKER':bunkerAttack?'CHOOSE VISIBLE ENEMY TARGET':rallying?'CHOOSE FRIENDLY RALLY UNIT':following?'CHOOSE FRIENDLY ESCORT TARGET':contacts.length
+    'CHOOSE CARRIER OR FIELD BUNKER':bunkerAttack?'CHOOSE VISIBLE ENEMY TARGET':rallying?'CHOOSE FRIENDLY RALLY UNIT':following?'CHOOSE FRIENDLY ESCORT TARGET':engineering?'CHOOSE ENGINEER TASK':contacts.length
       ? 'OBJECTS & LAST-SEEN INTEL' : 'VISIBLE OBJECTS';
   updateBattlefieldPickerIntelBadge(contacts);
   if (removedFocused) (list.querySelector('button') || $('#battlefield-picker-toggle')).focus();
@@ -1188,8 +1211,8 @@ function activateBattlefieldObject(key, { additive = false } = {}) {
     renderBattlefieldPicker();
     return;
   }
-  if(['board','bunkerAttack','rally','follow'].includes(attackMoveMode)){
-    issueTargetOrder(x,y,false,entry.entity);
+  if(['board','bunkerAttack','rally','follow','engineer'].includes(attackMoveMode)){
+    issueTargetOrder(x,y,false,entry.wreck||entry.entity);
     renderBattlefieldPicker();
     return;
   }
@@ -1302,7 +1325,7 @@ function activateRepairCommand() {
   }
   const b=selectedBuilding();
   if(b){const stopping=!!b.repairing;resultMessage(game.toggleRepair(b.id),stopping?'REPAIR STOPPED':'REPAIR ORDERED');updateUI(true);return;}
-  if(selected.some(o=>o.defId==='engineer')){startTargetOrder('engineer','ENGINEER TASK','SELECT WRECK, BRIDGE, OR STRUCTURE');return;}
+  if(selected.some(o=>o.defId==='engineer')){startTargetOrder('engineer','ENGINEER TASK',fieldRepairRulesInGame()?'SELECT DAMAGED VEHICLE, WRECK, BRIDGE, OR STRUCTURE':'SELECT WRECK, BRIDGE, OR STRUCTURE');return;}
   toast('SELECT A STRUCTURE OR ENGINEER',true);
 }
 function activateGuardCommand() {
@@ -1706,6 +1729,33 @@ function setBuildingStandby(buildingId,standby) {
   }
 }
 let armoryFaction = 'aegis', armoryKind = 'units', armorySelected = '';
+let armoryModelCleanup=null, armoryModelToken=0, armoryModelModulePromise=null;
+function clearArmoryModel(){
+  armoryModelToken++;
+  armoryModelCleanup?.();
+  armoryModelCleanup=null;
+}
+function previewArmoryUnit(visual,portrait,detail,name){
+  const token=armoryModelToken;
+  const defId=armorySelected, faction=armoryFaction;
+  const host=document.createElement('div');host.className='armory-model-host';host.hidden=true;
+  visual.append(host);
+  armoryModelModulePromise??=import('./ui/armoryModelViewer.js');
+  armoryModelModulePromise.then(({mountArmoryModelViewer})=>{
+    if(token!==armoryModelToken||!visual.isConnected)return;
+    armoryModelCleanup=mountArmoryModelViewer(host,{defId,faction,name,
+      onReady:()=>{
+        if(token!==armoryModelToken)return;
+        host.hidden=false;portrait.hidden=true;
+        visual.classList.add('has-model-preview');detail.classList.add('has-model-preview');
+      },
+      onFallback:()=>{
+        if(token!==armoryModelToken)return;
+        host.hidden=false;portrait.hidden=false;
+        visual.classList.remove('has-model-preview');detail.classList.remove('has-model-preview');
+      }});
+  }).catch(()=>{if(token===armoryModelToken)host.remove();armoryModelModulePromise=null;});
+}
 const factionPerks = {
   aegis: 'Aegis harvesters extract crystal 20% faster near a powered Refinery. Secure Aegis Shelter relays restore nearby friendly infantry at 1 HP per second. Aegis also fields the Guardian, Field Medic, Kestrel, Watchtower, Skyshield Battery, and Ion Spire.',
   vesper: 'Vesper combat units recover salvage credits when they destroy completed enemy structures. Vesper fields Pyro Troopers, Specter Tanks, Wraith Gunships, SAM Sites, Obelisks, and Warhead Temples.',
@@ -1750,6 +1800,7 @@ function openPromotion(unit) {
   openTrackedDialog('#promotion-modal');
 }
 function renderArmory() {
+  clearArmoryModel();
   const defs = armoryKind === 'units' ? UNIT_DEFS : BUILDING_DEFS;
   const entries = Object.entries(defs).filter(([,d]) => !d.faction || d.faction === 'all' || d.faction === armoryFaction);
   if (!entries.some(([id]) => id === armorySelected)) armorySelected = entries[0]?.[0] || '';
@@ -1762,7 +1813,7 @@ function renderArmory() {
     const variant=portraitVariant(armoryFaction,id); img.src=portraitSource(variant); img.onerror=()=>{img.onerror=null;img.src=portraitSource(id);};
     const copy=document.createElement('span');copy.className='armory-entry-copy'; const name=document.createElement('strong');name.textContent=d.name;const meta=document.createElement('small');meta.textContent=armoryKind==='units'?(d.role||'unit').toUpperCase():(d.power?`${d.power>0?'+':''}${d.power} POWER`:'STRUCTURE');copy.append(name,meta);button.append(img,copy);list.append(button);
   }
-  const detail=$('#armory-detail'); detail.replaceChildren(); const d=defs[armorySelected]; if(!d)return;
+  const detail=$('#armory-detail'); detail.classList.remove('has-model-preview');detail.replaceChildren(); const d=defs[armorySelected]; if(!d)return;
   const title=document.createElement('h3');title.textContent=d.name;
   const faction=document.createElement('div');faction.className=`armory-faction-tag ${armoryFaction}`;faction.textContent=armoryFaction==='aegis'?'AEGIS DEFENSE NETWORK':'VESPER STRIKE COMMAND';
   const visual=document.createElement('div');visual.className='armory-portrait';const portrait=document.createElement('img');portrait.alt=`${d.name} field portrait`;const detailPortrait=portraitVariant(armoryFaction,armorySelected);portrait.src=portraitSource(detailPortrait);portrait.onerror=()=>{portrait.onerror=null;portrait.src=portraitSource(armorySelected);};visual.append(portrait);
@@ -1776,6 +1827,7 @@ function renderArmory() {
   const prereq=document.createElement('p');prereq.className='armory-prereq';prereq.textContent=`PREREQUISITES · ${req.length?req.join(' + '):'None'}`;
   const perk=document.createElement('aside');perk.className='armory-perk';const perkTitle=document.createElement('strong');perkTitle.textContent=`${armoryFaction.toUpperCase()} FACTION DOCTRINE`;const perkCopy=document.createElement('span');perkCopy.textContent=factionPerks[armoryFaction];perk.append(perkTitle,perkCopy);
   detail.append(faction,visual,title,role,desc,stats,prereq,perk);
+  if(armoryKind==='units')previewArmoryUnit(visual,portrait,detail,d.name);
 }
 const campaignIndexById = id => CAMPAIGN_MISSIONS.findIndex(mission => mission.id === id);
 const campaignBranchCode = id => id === 'ghost-channel' ? '04A' : id === 'iron-current' ? '04B' : null;
@@ -2964,6 +3016,8 @@ function issueContext(wx, wy, queue = false) {
     issueBunkerCommand(hit.id,'garrison');
   else if(medicEscortPatient(hit)&&isFriendlyFollowTarget(hit)&&own.length&&own.every(unit=>unit.defId==='medic'))
     resultMessage(game.issueFollow(hit.id),escortFeedback(hit));
+  else if(fieldRepairPatient(hit)&&own.length&&own.every(unit=>unit.defId==='engineer'))
+    resultMessage(game.issueFieldRepair(hit.id),'FIELD REPAIR ORDERED · HOLD THE VEHICLE STILL');
   else if (hit && 'w' in hit && own.some(o=>o.defId==='engineer')) {
     const armed=own.some(o=>game.unitDefs?.[o.defId]?.weapon);
     if(armed&&hit.owner==='enemy'){
@@ -3196,10 +3250,12 @@ function issueTargetOrder(wx,wy,queue=false,targetOverride=null){
   }
   if(mode==='super'){result=game.useSuperweapon(wx,wy);success='STRATEGIC STRIKE ORDERED';}
   else if(mode==='engineer'){
-    const target=objectAt(wx,wy);
+    const target=targetOverride||objectAt(wx,wy);
     const wreck=target&&game.wrecks?.includes(target);
-    result=wreck?game.issueRecoverWreck(target.id):target&&'w' in target?game.issueEngineer(target.id):
-      {ok:false,reason:'Choose a wreck, bridge, or structure.'}; success=wreck?'WRECK RECOVERY ORDERED':'ENGINEER ORDERED';
+    const patient=fieldRepairPatient(target);
+    result=wreck?game.issueRecoverWreck(target.id):patient?game.issueFieldRepair(target.id):engineerStructureTarget(target)?game.issueEngineer(target.id):
+      {ok:false,reason:fieldRepairRulesInGame()?'Choose a damaged friendly ground vehicle or structure, a wreck, a destroyed bridge, or an empty enemy structure at 75% health or less.':'Choose a wreck, destroyed bridge, damaged friendly structure, or empty enemy structure at 75% health or less.'};
+    success=wreck?'WRECK RECOVERY ORDERED':patient?'FIELD REPAIR ORDERED · HOLD THE VEHICLE STILL':'ENGINEER ORDERED';
   }
   else if(mode==='patrol'){result=game.issuePatrol(wx,wy);success='PATROL ROUTE SET';}
   else if(mode==='rally'){
@@ -3824,7 +3880,7 @@ function render(t) {
     draw3dHealthOverlay();
     drawBridgeHealthOverlay();
     if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}
-    drawQueuedRoute();drawSelectionBox();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();
+    drawQueuedRoute();drawSelectionBox();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();
     return;
   }
   ctx.clearRect(0,0,visibleW,visibleH);
@@ -3834,7 +3890,7 @@ function render(t) {
   for(const wreck of game.wrecks||[])drawWreckFallback(wreck,t);
   const entities=[...game.buildings.map(o=>({o,k:0,y:o.y+o.h})),...game.units.filter(o=>!o.embarkedIn).map(o=>({o,k:1,y:o.y}))].sort((a,b)=>a.y-b.y);
   for(const e of entities){if(e.k===0)drawBuilding(e.o,t);else drawUnit(e.o,t);}
-  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();
+  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();
 }
 function drawSalvageDropFallback(t){
   const drop=game?.salvageDrop;
@@ -3881,6 +3937,38 @@ function drawCommandAbilityMarker(t){
   octx.strokeStyle=valid?'#c6ff83':'#ff866f';octx.fillStyle=valid?'#c6ff8319':'#ff866f18';octx.lineWidth=2;octx.setLineDash([9,7]);
   octx.beginPath();octx.ellipse(pointer.x,pointer.y,radius+pulse,(radius+pulse)*.55,0,0,Math.PI*2);octx.fill();octx.stroke();
   octx.setLineDash([]);octx.beginPath();octx.moveTo(pointer.x-10,pointer.y);octx.lineTo(pointer.x+10,pointer.y);octx.moveTo(pointer.x,pointer.y-10);octx.lineTo(pointer.x,pointer.y+10);octx.stroke();octx.restore();
+}
+function drawFieldRepairChannels(){
+  if(!game||game.replayVersion!=null&&game.replayVersion<85)return;
+  const selected=new Set(game.selection||[]);
+  for(const engineer of game.units){
+    if(engineer.owner!=='player'||engineer.defId!=='engineer'||engineer.hp<=0||engineer.embarkedIn)continue;
+    const patching=engineer.order?.type==='fieldRepair';
+    const refilling=engineer.order?.type==='refillRepairKits';
+    const progress=patching?engineer._fieldRepairProgress:refilling?engineer._fieldRepairRefillProgress:0;
+    const target=patching?game.getEntity(engineer.order.targetId):engineer;
+    if(!target||target.hp<=0||target.owner!=='player'||target.embarkedIn||!(progress>0))continue;
+    const p=toScreen(target.x,target.y),e=toScreen(engineer.x,engineer.y);
+    if(p.x<0||p.x>visibleW||p.y<0||p.y>visibleH)continue;
+    const radius=Math.max(14,20*camera.zoom),fraction=Math.max(0,Math.min(1,progress/(patching?5:8)));
+    octx.save();
+    if(patching){
+      octx.strokeStyle='#8fe7d8aa';octx.lineWidth=2;
+      octx.beginPath();octx.moveTo(e.x,e.y-10);octx.lineTo(p.x,p.y-12);octx.stroke();
+    }
+    octx.translate(p.x,p.y+3);octx.scale(1,.6);
+    octx.lineWidth=3;octx.strokeStyle='#0c2728c9';octx.beginPath();octx.arc(0,0,radius,0,Math.PI*2);octx.stroke();
+    octx.strokeStyle='#9ff4df';octx.beginPath();octx.arc(0,0,radius,-Math.PI/2,-Math.PI/2+Math.PI*2*fraction);octx.stroke();
+    octx.restore();
+    if(selected.has(engineer.id)||selected.has(target.id)){
+      const label=patching?`FIELD KIT · ${Math.floor(progress)}/5S`:`REFILL KIT · ${Math.floor(progress)}/8S`;
+      octx.save();octx.font='700 10px Barlow Condensed, sans-serif';octx.textAlign='center';
+      const width=octx.measureText(label).width;
+      const x=Math.max(width/2+8,Math.min(visibleW-width/2-8,p.x)),y=Math.max(18,p.y-radius-17);
+      octx.fillStyle='#071d1be8';octx.fillRect(x-width/2-6,y-11,width+12,17);
+      octx.fillStyle='#bdffe9';octx.fillText(label,x,y);octx.restore();
+    }
+  }
 }
 function drawDigInMarker(){
   if(!digInMode||!game||!pointer.inside)return;
@@ -4926,7 +5014,7 @@ function updateSelectionCard() {
   $('#cmd-repair').classList.toggle('hidden',showTargetPriority&&!canRepairStructure&&!canOrderEngineer&&!canAssignHome);
   $('#cmd-repair').disabled=!canRepairStructure&&!canOrderEngineer&&!canAssignHome;
   $('#cmd-repair').lastChild.textContent=canAssignHome?'HOME':canOrderEngineer&&!canRepairStructure?'ENGINEER':'REPAIR';
-  $('#cmd-repair').title=canAssignHome?'Choose a completed friendly Refinery as the selected Harvesters’ persistent home. Loaded cargo unloads there, then they keep mining. Press R.':canOrderEngineer&&!canRepairStructure?'Send engineer to a wreck, bridge, or structure (R)':'Repair selected structure (R)';
+  $('#cmd-repair').title=canAssignHome?'Choose a completed friendly Refinery as the selected Harvesters’ persistent home. Loaded cargo unloads there, then they keep mining. Press R.':canOrderEngineer&&!canRepairStructure?fieldRepairRulesInGame()?'Engineer tasks (R): patch a damaged friendly vehicle with a field kit, salvage a wreck, rebuild a bridge, or capture a damaged structure.':'Send engineer to a wreck, bridge, or structure (R)':'Repair selected structure (R)';
   $('#cmd-repair').setAttribute('aria-label',canAssignHome?'Choose Home Refinery for selected Harvesters (R)':canOrderEngineer&&!canRepairStructure?'Engineer task (R)':'Repair selected structure (R)');
   const guardButton=$('#cmd-guard');
   guardButton.lastChild.textContent=homeCanAutoDock?'AUTO DOCK':'GUARD';
@@ -4936,9 +5024,15 @@ function updateSelectionCard() {
     !game.unitDefs?.[unit.defId]?.flying&&['light','heavy'].includes(game.unitDefs?.[unit.defId]?.armor));
   const serviceBays=game.buildings.filter(building=>building.owner==='player'&&building.defId==='serviceBay'&&
     building.hp>0&&building.progress>=1);
-  $('#cmd-service').disabled=!serviceUnits.length||!serviceBays.length;
-  $('#cmd-service').title=!serviceUnits.length?'Select a damaged ground vehicle':!serviceBays.length?
-    'Build a Field Workshop first':'Send selected damaged vehicles to a Field Workshop and restore their previous orders';
+  const kitEngineers=selectedKitEngineers();
+  const onlyKitEngineers=kitEngineers.length>0&&kitEngineers.length===selected.length;
+  const missingKits=kitEngineers.some(unit=>(unit.fieldRepairKits||0)<2);
+  $('#cmd-service').lastChild.textContent=onlyKitEngineers?'REFILL':'SERVICE';
+  $('#cmd-service').disabled=onlyKitEngineers?!missingKits||!serviceBays.some(b=>b.powered):!serviceUnits.length||!serviceBays.length;
+  $('#cmd-service').title=onlyKitEngineers?!missingKits?'Both Engineer field repair kits are ready. Use Engineer task (R) on a damaged vehicle.':
+    !serviceBays.some(b=>b.powered)?'Build and power a Field Workshop to refill repair kits.':'Return Engineers to a powered Field Workshop. Each kit costs 80 credits and takes 8 seconds. Engineers remain at the Workshop after refill.':
+    !serviceUnits.length?'Select a damaged ground vehicle':!serviceBays.length?'Build a Field Workshop first':'Send selected damaged vehicles to a Field Workshop and restore their previous orders';
+  $('#cmd-service').setAttribute('aria-label',onlyKitEngineers?'Refill Engineer repair kits at a powered Field Workshop, 80 credits and 8 seconds per kit':'Service damaged ground vehicles at a Field Workshop');
   updateMobileSquads();
   if(!selected.length){
     $('#cmd-repair').disabled=true;$('#cmd-repair').lastChild.textContent='REPAIR';$('#cmd-repair').title='Repair selected structure (R)';$('#cmd-repair').setAttribute('aria-label','Repair selected structure (R)');
@@ -5000,11 +5094,17 @@ function updateSelectionCard() {
   const medicPatient=first.owner==='player'&&first.defId==='medic'&&first.order?.type==='follow'
     ?game.getEntity(first.order.targetId):null;
   const medicState=medicEscortPatient(medicPatient)?`ESCORT TRIAGE · ${game.unitDefs[medicPatient.defId].name.toUpperCase()}`:null;
+  const repairKitState=first.owner==='player'&&first.defId==='engineer'&&(game.replayVersion==null||game.replayVersion>=85)&&Number.isFinite(first.fieldRepairKits)?
+    `KITS ${Math.max(0,Math.min(2,first.fieldRepairKits))}/2 · ${first.order?.type==='fieldRepair'
+      ?first._fieldRepairWaiting==='target-moving'?'HOLD VEHICLE STILL':`PATCHING ${Math.floor(first._fieldRepairProgress||0)}/5S`
+      :first.order?.type==='refillRepairKits'?first._fieldRepairWaiting?`REFILL PAUSED · ${String(first._fieldRepairWaiting).toUpperCase()}`:
+        first._fieldRepairRefillProgress>0?`REFILL ${Math.floor(first._fieldRepairRefillProgress)}/8S`:'RETURNING TO WORKSHOP'
+        :'ENGINEER TASK (R) TO PATCH'}`:null;
   const reinforcementState=first.owner==='player'&&first._productionRally?
     first._productionRally.stage==='approach'?'RENDEZVOUS WITH RALLY UNIT':'FOLLOWING RALLY UNIT':null;
   const tacticalState=fieldActive||digInStatus||(singleDigInCooldown?`DIG IN COOLDOWN · ${singleDigInCooldown}S`:
     disrupted?`WEAPON DISRUPTED · ${Math.ceil(first.suppressedUntil-game.time)}S`:
-    fieldHint||recommissionState||serviceOrderState||harvesterState||aircraftState||medicState||reinforcementState||
+    fieldHint||recommissionState||repairKitState||serviceOrderState||harvesterState||aircraftState||medicState||reinforcementState||
     (serviceSupported?`FIELD REPAIRS ACTIVE · ${unitOrder}`:refinerySupported?'NETWORK SUPPORTED · +20% EXTRACTION':first.defId==='stealthTank'&&first.revealedUntil<=(game?.time||0)?'CLOAKED · AMBUSH READY':isTroopCarrier(first)?`PASSENGERS ${first.passengerIds?.length||0}/${unitDef.capacity} · ${unitOrder}`:unitOrder));
   const workshopState=first.defId==='serviceBay'?(first.powered?'FIELD REPAIRS ONLINE':'FIELD REPAIRS OFFLINE'):null;
   const groupSummary=selected.length>1&&units.length?(()=>{
@@ -7023,7 +7123,8 @@ function installMultiplayerCommandAdapters(target){
   const commands={
     issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueFormationMove:(x,y,formationId,movement='move',queue=false,matchPace=false)=>({x,y,formationId,movement,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
     issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issueAssignRefinery:(refineryId=null)=>({refineryId}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueGarrison:buildingId=>({buildingId}),issueEvacuateGarrison:buildingId=>({buildingId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueDigIn:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),issueSetTargetPriority:priority=>({priority}),
-    issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueRecommissionWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
+    issueEngineer:targetId=>({targetId}),issueFieldRepair:targetId=>({targetId}),issueRefillRepairKits:()=>({}),
+    issueRecoverWreck:wreckId=>({wreckId}),issueRecommissionWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:(defId,producerId)=>({defId,...(producerId!==undefined?{producerId}:{})}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
     useUnitAbility:(unitId,abilityId)=>({unitId,abilityId}),
@@ -7861,7 +7962,12 @@ $('#command-actions').addEventListener('click',event=>{
 $('#cmd-guard').addEventListener('click',activateGuardCommand);
 $('#cmd-patrol').addEventListener('click',()=>startTargetOrder('patrol','PATROL'));
 $('#cmd-follow').addEventListener('click',()=>startTargetOrder('follow','FOLLOW','SELECT FRIENDLY TARGET'));
-$('#cmd-service').addEventListener('click',()=>startTargetOrder('service','SERVICE','SELECT FRIENDLY FIELD WORKSHOP'));
+$('#cmd-service').addEventListener('click',()=>{
+  const engineers=selectedKitEngineers();
+  if(engineers.length&&engineers.length===selectedObjects().length){
+    resultMessage(game.issueRefillRepairKits(),'RETURNING FOR PAID KIT REFILLS');updateUI(true);
+  }else startTargetOrder('service','SERVICE','SELECT FRIENDLY FIELD WORKSHOP');
+});
 $('#cmd-board').addEventListener('click',()=>startTargetOrder('board','BOARD','SELECT FRIENDLY CARRIER OR FIELD BUNKER'));
 $('#cmd-unload').addEventListener('click',()=>startTargetOrder('unload','UNLOAD','SELECT DROP SITE'));
 $('#cmd-stop').addEventListener('click',()=>resultMessage(game?.issueStop?.()));

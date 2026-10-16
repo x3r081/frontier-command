@@ -93,7 +93,7 @@ test('version 30 replay carries the veteran through creation and reset; legacy e
   const veteran = { defId: 'flamer', faction: 'vesper', veterancy: 1, promotion: null };
   const envelope = { mode: 'campaign', difficulty: 'normal', faction: 'aegis', seed: 287,
     scenarioId: 'silent-switch', campaignVeteran: veteran };
-  assert.equal(SOLO_REPLAY_VERSION, 57);
+  assert.ok(SOLO_REPLAY_VERSION >= 30);
   assert.equal(validateSoloEnvelope(envelope), 1);
   const playback = createSoloPlayback(envelope, [], 0, 30);
   const initial = playback.game.units.find(unit => unit.defId === 'flamer' && unit.faction === 'vesper');
