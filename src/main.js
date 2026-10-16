@@ -44,7 +44,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'||id==='guardian'?'?rev=2':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'||id==='guardian'?'?rev=2':id==='orca'?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
@@ -4500,6 +4500,13 @@ function processEvents() {
     const type=typeof e==='string'?e:e.type||'';
     const msg=typeof e==='string'?e:e.message||e.text;
     if (!replayMode && currentMode !== 'multiplayer') recordBattleMoment(battleMoments, e);
+    if(type==='incomingAttack'){
+      if(game.mode==='skirmish'&&game.difficulty==='easy'&&!replayMode){
+        toast('CADET INTEL · ENEMY ASSAULT LAUNCHED · PREPARE DEFENSES',true,6000);
+        audio.play('alert');
+      }
+      continue;
+    }
     if(type==='salvageDropIncoming'){
       toast('PUBLIC SALVAGE DROP INBOUND · FIND THE AMBER BEACON',false,5000);audio.play('alert');continue;
     }

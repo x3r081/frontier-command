@@ -1202,7 +1202,7 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='stealthTank'?'?rev=2':key==='artillery'?'?rev=1':'';
+      const revision=key==='stealthTank'?'?rev=2':key==='artillery'||key==='orca'?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         compactAuthoredModel(gltf.scene,key);

@@ -80,6 +80,13 @@
 .manual-camera-callout { display: grid; gap: 5px; margin-top: 13px; padding: 12px 14px; border: 1px solid rgba(201, 255, 102, .45); background: rgba(29, 55, 38, .7); color: #d9e9d4; font-size: 12px; line-height: 1.5; }
 .manual-camera-callout strong { color: #c9ff66; font: 800 13px/1 "Barlow Condensed", sans-serif; letter-spacing: .11em; }
 .manual-camera-callout kbd { display: inline-block; margin: 0 1px; padding: 0 4px; border: 1px solid rgba(201, 255, 102, .55); color: #f2ffe5; font: 700 11px/1.5 "Barlow Condensed", sans-serif; }
+@media (min-width: 671px) {
+  .toast-container { bottom: 184px; max-width: calc(100% - 44px); }
+}
+@media (min-width: 671px) and (max-height: 600px) {
+  .toast-container { left: 180px; bottom: 70px; max-width: calc(100% - 202px); }
+  .toast { min-width: 0; }
+}
 @media (max-width: 670px) { .camera-nav { display: none; } }
 .battlefield-wrap:has(.deployment-intro:not(.hidden)) .campaign-guidance,
 .battlefield-wrap:has(.deployment-intro:not(.hidden)) .campaign-tracker,

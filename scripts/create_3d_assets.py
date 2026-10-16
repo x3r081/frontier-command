@@ -1953,24 +1953,150 @@ def siege_crawler():
 
 
 def gunship():
+    global LOW_POLY_BEVEL
+    previous_bevel = LOW_POLY_BEVEL
+    LOW_POLY_BEVEL = True
     clean(); m = palette()
-    # Compact rotor gunship sized to its 0.4 radius, with twin pylons and tail boom.
-    cube("Armored fuselage", (0, 0, .20), (.38, 1.02, .30), m["armor"], .12)
-    cube("Cockpit canopy", (0, .30, .34), (.31, .42, .18), m["glass"], .07)
-    cube("Nose armor", (0, .56, .20), (.30, .28, .18), m["edge"], .055)
-    cube("Main wing", (0, -.08, .19), (1.34, .27, .10), m["dark"], .045)
-    for x in [-.48, .48]:
-        cube("Weapon pylon", (x, -.02, .15), (.22, .55, .10), m["edge"], .035)
-        cube("Faction wing light", (x, .05, .23), (.13, .18, .045), m["accent"], .015)
-        cylinder("Engine nacelle", (x, -.26, .12), .15, .48, m["dark"], 10, (math.pi/2, 0, 0))
-        cylinder("Engine glow", (x, -.49, .12), .095, .045, m["accent"], 10, (math.pi/2, 0, 0))
-    cube("Tail boom", (0, -.64, .23), (.13, .55, .14), m["armor"], .035)
-    cube("Tailplane", (0, -.86, .22), (.48, .18, .07), m["edge"], .025)
-    cylinder("Rotor mast", (0, -.10, .47), .06, .38, m["dark"], 8)
-    cylinder("Rotor hub", (0, -.10, .68), .12, .09, m["accent"], 8)
+    # Aegis ceramic and graphite separate the armored airframe from its exposed
+    # drive hardware while the pale alloy picks out only protected leading edges.
+    m["armor"] = material("Aegis orca ceramic", (.46, .58, .57), .42, .40)
+    m["edge"] = material("Aegis orca pale armor", (.77, .82, .75), .54, .32)
+    m["dark"] = material("Aegis orca graphite", (.055, .105, .12), .46, .50)
+    m["steel"] = material("Aegis orca blue steel", (.19, .30, .32), .65, .38)
+    m["glass"] = material("Aegis orca cockpit glass", (.035, .43, .56), .42, .20)
+    m["accent"] = material("Aegis orca unit marking", (.035, .46, .65), .38, .30)
+
+    def shell(name, stations, mat):
+        """Join octagonal cross sections into a compact faceted fuselage."""
+        verts = []
+        ring = 8
+        for y, width, bottom, shoulder, crown in stations:
+            verts.extend([
+                (-width * .72, y, bottom), (width * .72, y, bottom),
+                (width, y, shoulder), (width * .82, y, crown - .035),
+                (width * .48, y, crown), (-width * .48, y, crown),
+                (-width * .82, y, crown - .035), (-width, y, shoulder),
+            ])
+        # Winding faces outward: the first cap faces -Y, the last +Y, and the
+        # side faces follow the shell surface instead of pointing inward.
+        faces = [tuple(range(ring))]
+        for station in range(len(stations) - 1):
+            start = station * ring
+            end = (station + 1) * ring
+            for i in range(ring):
+                faces.append((end + i, end + (i + 1) % ring,
+                              start + (i + 1) % ring, start + i))
+        last = (len(stations) - 1) * ring
+        faces.append(tuple(reversed(range(last, last + ring))))
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata(verts, [], faces)
+        mesh.materials.append(mat)
+        mesh.update()
+        obj = bpy.data.objects.new(name, mesh)
+        bpy.context.collection.objects.link(obj)
+        return obj
+
+    def cockpit(name, stations):
+        """Transparent six-sided canopy with a sloped windshield and roof."""
+        verts = []
+        ring = 6
+        for y, width, base, crown in stations:
+            verts.extend([(-width, y, base), (width, y, base),
+                          (width * .91, y, crown - .045), (width * .48, y, crown),
+                          (-width * .48, y, crown), (-width * .91, y, crown - .045)])
+        faces = [tuple(range(ring))]
+        for station in range(len(stations) - 1):
+            start = station * ring
+            end = (station + 1) * ring
+            for i in range(ring):
+                faces.append((end + i, end + (i + 1) % ring,
+                              start + (i + 1) % ring, start + i))
+        last = (len(stations) - 1) * ring
+        faces.append(tuple(reversed(range(last, last + ring))))
+        mesh = bpy.data.meshes.new(name)
+        mesh.from_pydata(verts, [], faces)
+        mesh.materials.append(m["glass"])
+        mesh.update()
+        obj = bpy.data.objects.new(name, mesh)
+        bpy.context.collection.objects.link(obj)
+        return obj
+
+    # The full airframe stays inside the original compact tactical footprint.
+    shell("Armored fuselage", [
+        (-.72, .12, .12, .24, .34), (-.53, .24, .10, .31, .43),
+        (-.20, .29, .09, .34, .48), (.16, .30, .10, .34, .47),
+        (.48, .25, .11, .30, .40), (.72, .13, .15, .24, .31),
+    ], m["armor"])
+    # Layered wedge cheeks give the nose a protected, forward facing profile.
+    shell("Nose impact shell", [
+        (.45, .235, .12, .30, .39), (.63, .19, .14, .27, .34),
+        (.82, .105, .16, .22, .25),
+    ], m["edge"])
+    # Lower dark keel remains visible beneath the ceramic shell.
+    cube("Armored lower keel", (0, -.02, .105), (.38, 1.15, .09), m["dark"], .035)
+
+    # Low, angular canopy sits above the forward hull and has visible framing.
+    cube("Canopy armored sill", (0, .31, .37), (.43, .53, .075), m["dark"], .035)
+    cockpit("Faceted flight canopy", [
+        (.10, .145, .48, .63), (.30, .185, .45, .68),
+        (.52, .16, .405, .62), (.63, .09, .36, .52),
+    ])
+    cube("Canopy center brace", (0, .38, .66), (.025, .27, .018), m["steel"], .006)
+
+    # A short, broad shoulder wing carries armor pylons and the two engine pods.
+    cube("Broad rotor wing", (0, -.13, .245), (1.34, .32, .105), m["dark"], .035)
+    cube("Wing center armor", (0, -.12, .305), (.68, .28, .055), m["armor"], .025)
+    for x in [-.50, .50]:
+        cube("Armored weapon pylon", (x, -.04, .15), (.21, .52, .16), m["edge"], .035)
+        cube("Pylon root fairing", (x * .76, -.03, .31), (.20, .39, .09), m["steel"], .025)
+        # Slender twin missile rails and three small faceted warheads per side.
+        cube("Rocket pod housing", (x, -.015, .095), (.19, .61, .13), m["steel"], .035)
+        for y in [-.16, .04, .24]:
+            cone("Rocket warhead", (x, y + .08, .10), .042, .008, .16,
+                 m["dark"], 6, (math.pi / 2, 0, 0))
+        for y in [-.25, .24]:
+            cube("Pylon clamp", (x, y, .17), (.22, .07, .055), m["dark"], .012)
+
+    # Engine housings are longitudinal, with recessed forward intakes and
+    # ringed armored exhausts at the rear. There are no emissive light parts.
+    for x in [-.51, .51]:
+        cylinder("Twin engine nacelle", (x, -.275, .205), .145, .57,
+                 m["dark"], 12, (math.pi / 2, 0, 0))
+        cylinder("Engine intake lip", (x, .015, .205), .153, .045,
+                 m["steel"], 12, (math.pi / 2, 0, 0))
+        cylinder("Recessed intake", (x, .041, .205), .105, .012,
+                 m["recess"], 12, (math.pi / 2, 0, 0))
+        cylinder("Exhaust shroud", (x, -.575, .205), .16, .065,
+                 m["edge"], 12, (math.pi / 2, 0, 0))
+        cylinder("Dark exhaust throat", (x, -.615, .205), .105, .012,
+                 m["recess"], 12, (math.pi / 2, 0, 0))
+
+    # Narrow tail boom, paired fins and stabilizers make the rear silhouette
+    # read as a rotor attack craft instead of a generic flying brick.
+    cube("Tapered tail boom", (0, -.69, .265), (.13, .57, .15), m["armor"], .035)
+    for x in [-.16, .16]:
+        cube("Tail vertical fin", (x, -.86, .36), (.075, .22, .31), m["dark"], .02)
+    cube("Tail stabilizer", (0, -.82, .25), (.52, .16, .065), m["edge"], .02)
+
+    # Recessed landing skids and two short struts remain legible from above.
+    for x in [-.24, .24]:
+        cylinder("Landing skid rail", (x, -.02, .055), .027, 1.00,
+                 m["dark"], 8, (math.pi / 2, 0, 0))
+        for y in [-.34, .32]:
+            cylinder("Landing skid strut", (x, y, .12), .022, .19,
+                     m["steel"], 8)
+
+    # Rotor pivot and blade names are renderer3d hooks; keep them as separate
+    # nodes while merging all static pieces by authored material.
+    cylinder("Rotor pedestal", (0, -.10, .49), .12, .12, m["edge"], 10)
+    cylinder("Rotor mast", (0, -.10, .58), .055, .22, m["dark"], 8)
+    cylinder("Rotor hub", (0, -.10, .70), .11, .085, m["steel"], 8)
+    cylinder("Rotor cap", (0, -.10, .748), .06, .035, m["edge"], 8)
     for angle in [0, math.pi/2]:
-        blade = cube("Main rotor blade", (0, -.10, .74), (1.42, .08, .025), m["dark"], .02)
+        blade = cube("Main rotor blade", (0, -.10, .74), (1.42, .075, .022), m["dark"], .012)
         blade.rotation_euler[2] = angle
+    consolidate_static_meshes(preserved=("Main rotor blade", "Main rotor blade.001"))
+    LOW_POLY_BEVEL = previous_bevel
     export("gunship")
 
 
