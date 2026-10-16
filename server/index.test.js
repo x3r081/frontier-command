@@ -478,7 +478,7 @@ test('leaderboard validates filters and ranks only compatible verified scores', 
   assert.equal(history[1].score, 7410);
 });
 
-test('v57 skirmish boards compare combat pursuit and Shard Valley resources while preserving older results', async () => {
+test('v58 skirmish boards compare tactical elevation while preserving older results', async () => {
   const profile = await createProfile('Route Compatibility');
   const base = { profileId: profile.profile.id, mode: 'skirmish', difficulty: 'normal',
     faction: 'aegis', skirmishOpening: 'established', victoryMode: 'dominion',
@@ -514,9 +514,11 @@ test('v57 skirmish boards compare combat pursuit and Shard Valley resources whil
       aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
     { ...base, id: 'route-v56-shard', scenarioId: 'shard-valley', scoreVersion: 56,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
-    { ...base, id: 'route-v57-canyon', scenarioId: 'canyon-ring', scoreVersion: 57,
-      aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
     { ...base, id: 'route-v57-shard', scenarioId: 'shard-valley', scoreVersion: 57,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
+    { ...base, id: 'route-v58-canyon', scenarioId: 'canyon-ring', scoreVersion: 58,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+    { ...base, id: 'route-v58-shard', scenarioId: 'shard-valley', scoreVersion: 58,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
     { ...base, id: 'siege-v53', scenarioId: 'twin-passes', scoreVersion: 53,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
@@ -524,7 +526,7 @@ test('v57 skirmish boards compare combat pursuit and Shard Valley resources whil
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-v56', scenarioId: 'twin-passes', scoreVersion: 56,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
-    { ...base, id: 'siege-v57', scenarioId: 'twin-passes', scoreVersion: 57,
+    { ...base, id: 'siege-v58', scenarioId: 'twin-passes', scoreVersion: 58,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-easy-v52', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 52,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
@@ -532,7 +534,7 @@ test('v57 skirmish boards compare combat pursuit and Shard Valley resources whil
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-easy-v56', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 56,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
-    { ...base, id: 'siege-easy-v57', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 57,
+    { ...base, id: 'siege-easy-v58', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 58,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
   ];
   store.scores.push(...rows);
@@ -547,19 +549,19 @@ test('v57 skirmish boards compare combat pursuit and Shard Valley resources whil
   try {
     const shard = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=shard-valley', profile.token)).json()).entries;
     const canyon = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=canyon-ring', profile.token)).json()).entries;
-    assert.deepEqual(shard.map(entry => entry.id), ['route-v57-shard']);
-    assert.deepEqual(canyon.map(entry => entry.id), ['route-v57-canyon']);
+    assert.deepEqual(shard.map(entry => entry.id), ['route-v58-shard']);
+    assert.deepEqual(canyon.map(entry => entry.id), ['route-v58-canyon']);
     const siege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=normal',
       profile.token)).json()).entries;
-    assert.deepEqual(siege.map(entry => entry.id), ['siege-v57'],
-      'v56 Siege Director scores predate the new combat pursuit');
+    assert.deepEqual(siege.map(entry => entry.id), ['siege-v58'],
+      'v57 Siege Director scores predate tactical elevation');
     const easySiege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=easy',
       profile.token)).json()).entries;
-    assert.deepEqual(easySiege.map(entry => entry.id), ['siege-easy-v57'],
-      'combat pursuit applies on Easy even though expansion does not');
+    assert.deepEqual(easySiege.map(entry => entry.id), ['siege-easy-v58'],
+      'tactical elevation applies on Easy too');
     assert.equal(shard[0].aiCommanderProfileId, AI_COMMANDER_PROFILES[1].id);
     assert.deepEqual((await (await api(`/api/leaderboard?mode=skirmish&scenarioId=canyon-ring&aiCommanderProfileId=${AI_COMMANDER_PROFILES[0].id}`,
-      profile.token)).json()).entries.map(entry => entry.id), ['route-v57-canyon']);
+      profile.token)).json()).entries.map(entry => entry.id), ['route-v58-canyon']);
     assert.equal((await api('/api/leaderboard?mode=skirmish&aiCommanderProfileId=unknown', profile.token)).status, 400);
     assert.ok(store.scores.some(score => score.id === 'route-v44-canyon'),
       'retiring an old result from comparable rankings does not erase it');
@@ -1956,7 +1958,7 @@ test('ranked match terminal results update both ratings once; casual and private
   const ratingAResponse = await api('/api/multiplayer/rating', a.token);
   const ratingBResponse = await api('/api/multiplayer/rating', b.token);
   const ratingA = await ratingAResponse.json(); const ratingB = await ratingBResponse.json();
-  assert.equal(ratingA.season, 52, 'the ranked rating reset follows combat pursuit and map balance changes');
+  assert.equal(ratingA.season, 53, 'the ranked rating reset follows tactical elevation');
   assert.equal(ratingA.games, 1); assert.equal(ratingB.games, 1);
   assert.equal(ratingA.rating + ratingB.rating, 2400);
   assert.equal(ratingA.wins + ratingB.wins, 1);

@@ -48,6 +48,7 @@ export const SIEGE_DIRECTOR_RULES_VERSION = 53;
 export const SIEGE_EXPANSION_RULES_VERSION = 54;
 export const AI_HARVESTER_RETREAT_RULES_VERSION = 56;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
+export const TACTICAL_ELEVATION_RULES_VERSION = 58;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
 export const DOCTRINE_REPLACEMENT_COST = 1350;
@@ -333,6 +334,7 @@ export class Game {
     this.difficulty = ['easy', 'normal', 'hard'].includes(difficulty) ? difficulty : 'normal';
     this.mode = mode;
     this.replayVersion = replayVersion;
+    this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     this.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     this.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -485,6 +487,29 @@ export class Game {
         }
       }
     }
+    return this._applyTacticalVantageZones(grid);
+  }
+
+  _applyTacticalVantageZones(grid) {
+    // Small authored plateaus add a position choice around each map's main
+    // contest lane. They only annotate walkable tiles; movement and placement
+    // continue to use the existing tile flags.
+    if ((this.replayVersion != null && this.replayVersion < TACTICAL_ELEVATION_RULES_VERSION) ||
+        !['skirmish', 'multiplayer'].includes(this.mode)) return grid;
+    const zones = {
+      'shard-valley': [[31, 24], [20, 30], [43, 17]],
+      'twin-passes': [[25, 13], [34, 35], [31, 24]],
+      'delta-crossing': [[17, 18], [38, 27], [31, 24]],
+      'canyon-ring': [[24, 13], [39, 35], [31, 24]],
+      'storm-basin': [[20, 18], [43, 29], [31, 24]],
+    }[this.mapId] || [];
+    for (const [cx, cy] of zones) {
+      for (let y = cy - 2; y <= cy + 2; y++) for (let x = cx - 2; x <= cx + 2; x++) {
+        if (!this._inBounds(x, y) || dist(x + 0.5, y + 0.5, cx + 0.5, cy + 0.5) > 2.15) continue;
+        const tile = grid[y][x];
+        if (tile.walkable && (tile.type === 'sand' || tile.type === 'crystal')) tile.elevation = 1;
+      }
+    }
     return grid;
   }
 
@@ -544,11 +569,24 @@ export class Game {
         tile.walkable = true; tile.buildable = false;
       }
     }
-    return grid;
+    return this._applyTacticalVantageZones(grid);
   }
 
   _inBounds(x, y) { return x >= 0 && y >= 0 && x < this.width && y < this.height; }
   _tile(x, y) { return this._inBounds(x, y) ? this.terrain[y][x] : null; }
+
+  _unitOnVantage(unit) {
+    if (!unit || (this.replayVersion != null && this.replayVersion < TACTICAL_ELEVATION_RULES_VERSION) ||
+        UNIT_DEFS[unit.defId]?.flying || !UNIT_DEFS[unit.defId]) return false;
+    return (this._tile(Math.floor(unit.x), Math.floor(unit.y))?.elevation || 0) > 0;
+  }
+
+  _unitSight(unit, baseSight) { return baseSight + (this._unitOnVantage(unit) ? 1 : 0); }
+
+  _unitWeaponRange(unit, weaponDef) {
+    return unitWeaponRange(unit, weaponDef, this.replayVersion) +
+      (this._unitOnVantage(unit) && weaponDef ? 0.5 : 0);
+  }
 
   _placeDeltaBridges() {
     this.bridges = [[20, 21], [41, 21]].map(([x, y], index) => {
@@ -1140,7 +1178,8 @@ export class Game {
       const seenBy = [...this.units, ...this.buildings].some(e => {
         if (e.owner !== viewer || e.hp <= 0 || e.embarkedIn || (e.w && e.progress < 1)) return false;
         const ox = e.x + (e.w || 0) / 2, oy = e.y + (e.h || 0) / 2;
-        const sight = this._stormSight(ox, oy, UNIT_DEFS[e.defId]?.sight || BUILDING_DEFS[e.defId]?.sight || 5);
+        const sight = this._stormSight(ox, oy, UNIT_DEFS[e.defId] ?
+          this._unitSight(e, UNIT_DEFS[e.defId].sight || 5) : BUILDING_DEFS[e.defId]?.sight || 5);
         return dist(ox, oy, ex, ey) <= sight && this._hasLineOfSight(ox, oy, ex, ey);
       }) || this.relays.some(r => r.owner === viewer && dist(r.x, r.y, ex, ey) <= this._stormSight(r.x, r.y, 6) &&
         this._hasLineOfSight(r.x, r.y, ex, ey)) || this.scans.some(scan => scan.owner === viewer &&
@@ -1878,8 +1917,8 @@ export class Game {
       if (entity.owner !== owner || entity.hp <= 0 || entity.embarkedIn ||
         (entity.w && entity.progress < 1)) return false;
       const center = this._entityCenter(entity);
-      const sight = this._stormSight(center.x, center.y,
-        UNIT_DEFS[entity.defId]?.sight || BUILDING_DEFS[entity.defId]?.sight || 5);
+      const sight = this._stormSight(center.x, center.y, UNIT_DEFS[entity.defId] ?
+        this._unitSight(entity, UNIT_DEFS[entity.defId].sight || 5) : BUILDING_DEFS[entity.defId]?.sight || 5);
       return dist(center.x, center.y, tx, ty) <= sight &&
         this._hasLineOfSight(center.x, center.y, tx, ty);
     };
@@ -2038,7 +2077,12 @@ export class Game {
     if (this.superweapon[owner] < 1) return { ok: false, reason: 'Ion strike is still charging.' };
     if (this.mode === 'multiplayer' ? !this._tileVisibleToOwner(owner, Math.floor(x), Math.floor(y)) :
       owner === 'player' ? this.fog[Math.floor(y)][Math.floor(x)] !== 2 :
-        ![...this.units, ...this.buildings].some(e => e.owner === owner && dist(e.x, e.y, x, y) < (UNIT_DEFS[e.defId]?.sight || BUILDING_DEFS[e.defId]?.sight || 5)))
+        ![...this.units, ...this.buildings].some(e => {
+          if (e.owner !== owner) return false;
+          const sight = UNIT_DEFS[e.defId] ? this._unitSight(e, UNIT_DEFS[e.defId].sight || 5) :
+            BUILDING_DEFS[e.defId]?.sight || 5;
+          return dist(e.x, e.y, x, y) < sight;
+        }))
       return { ok: false, reason: 'Target must be visible.' };
     this.superweapon[owner] = 0;
     this._strike(owner, x, y, nuke);
@@ -2076,7 +2120,8 @@ export class Game {
           if (e.owner !== owner || e.hp <= 0 || e.embarkedIn || (e.w && e.progress < 1)) return false;
           const center = this._entityCenter(e);
           const sight = this._stormSight(center.x, center.y,
-            UNIT_DEFS[e.defId]?.sight || BUILDING_DEFS[e.defId]?.sight || 5);
+            UNIT_DEFS[e.defId] ? this._unitSight(e, UNIT_DEFS[e.defId].sight || 5) :
+            BUILDING_DEFS[e.defId]?.sight || 5);
           return dist(center.x, center.y, x, y) <= sight &&
             this._hasLineOfSight(center.x, center.y, x, y);
         }) || this.relays.some(relay => relay.owner === owner &&
@@ -2286,7 +2331,7 @@ export class Game {
   _updateFog() {
     for (const row of this.fog) for (let x = 0; x < row.length; x++) if (row[x] === 2) row[x] = 1;
     for (const u of this.units) if (u.owner === 'player' && u.hp > 0 && !u.embarkedIn)
-      this._revealCircle(u.x, u.y, this._stormSight(u.x, u.y, UNIT_DEFS[u.defId].sight));
+      this._revealCircle(u.x, u.y, this._stormSight(u.x, u.y, this._unitSight(u, UNIT_DEFS[u.defId].sight)));
     for (const b of this.buildings) if (b.owner === 'player' && b.hp > 0 && b.progress >= 1)
       this._revealCircle(b.x + b.w / 2, b.y + b.h / 2,
         this._stormSight(b.x + b.w / 2, b.y + b.h / 2, BUILDING_DEFS[b.defId].sight));
@@ -3303,7 +3348,7 @@ export class Game {
     u.cooldown = Math.max(0, u.cooldown - dt);
     this._updateMedic(u, dt);
     const d = UNIT_DEFS[u.defId];
-    const weaponRange = unitWeaponRange(u, d.weapon, this.replayVersion);
+    const weaponRange = this._unitWeaponRange(u, d.weapon);
     if (u.order?.type === 'recoverWreck') {
       if ((this.replayVersion ?? 10) < 10) { u.order = { type: 'idle' }; return; }
       this._updateWreckRecovery(u, dt);
@@ -3446,7 +3491,7 @@ export class Game {
     }
     if (!target && d.weapon && u.stance !== 'holdFire' && order.type !== 'scatter' && order.type !== 'forceMove') {
       const radius = u.stance === 'defensive' || (order.type === 'move' && order.attackMove) ||
-        order.type === 'guard' || order.type === 'patrol' ? d.sight : weaponRange + 0.25;
+        order.type === 'guard' || order.type === 'patrol' ? this._unitSight(u, d.sight) : weaponRange + 0.25;
       target = this._findEnemyNear(u, radius, d.weapon.target);
       if (target && order.type === 'guard' &&
         this._distanceToEntity(order.x, order.y, target) > 5.5) target = null;
@@ -5945,8 +5990,48 @@ export class Game {
     const assigned = artillery.slice(0, 2);
     for (const unit of assigned) {
       if (unit._aiSiegeTarget === target.id && unit.order?.targetId === target.id) continue;
+      if (unit._aiSiegeTarget === target.id && unit.order?.type === 'move' &&
+          unit.order.aiSiegeVantage) continue;
       unit._relayAssignment = null;
       unit._aiSiegeTarget = target.id;
+      const weapon = UNIT_DEFS[unit.defId]?.weapon;
+      const targetCenter = this._entityCenter(target);
+      const currentDistance = this._distanceToEntity(unit.x, unit.y, target);
+      const baseRange = unitWeaponRange(unit, weapon, this.replayVersion);
+      // Only divert a siege gun when the target is currently outside its
+      // nominal reach. The target must already be visible to the AI, and the
+      // elevated firing tile must have clear line of sight and a short route.
+      if ((this.replayVersion == null || this.replayVersion >= TACTICAL_ELEVATION_RULES_VERSION) &&
+          weapon && !this._unitOnVantage(unit) && currentDistance > baseRange) {
+        const candidates = [];
+        const minX = Math.max(0, Math.floor(unit.x - 10)), maxX = Math.min(this.width - 1, Math.ceil(unit.x + 10));
+        const minY = Math.max(0, Math.floor(unit.y - 10)), maxY = Math.min(this.height - 1, Math.ceil(unit.y + 10));
+        for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+          const tile = this.terrain[y][x];
+          if (tile.elevation !== 1 || !this._isPassable(x, y)) continue;
+          const px = x + 0.5, py = y + 0.5;
+          if (dist(unit.x, unit.y, px, py) > 10 ||
+              this._distanceToEntity(px, py, target) <= baseRange ||
+              this._distanceToEntity(px, py, target) > baseRange + 0.5 ||
+              !this._hasLineOfSight(px, py, targetCenter.x, targetCenter.y)) continue;
+          candidates.push({ x: px, y: py, direct: dist(unit.x, unit.y, px, py), tileY: y, tileX: x });
+        }
+        candidates.sort((a, b) => a.direct - b.direct || a.tileY - b.tileY || a.tileX - b.tileX);
+        for (const point of candidates) {
+          const path = this._findPath(unit.x, unit.y, point.x, point.y);
+          if (!path.length) continue;
+          let length = 0, px = unit.x, py = unit.y;
+          for (const step of path) { length += dist(px, py, step.x, step.y); px = step.x; py = step.y; }
+          if (length > 10) continue;
+          unit._aiSiegeVantageTarget = target.id;
+          unit.order = { type: 'move', x: point.x, y: point.y,
+            aiSiegeDirector: true, aiSiegeVantage: true };
+          unit.path = []; unit._pathGoal = null;
+          break;
+        }
+        if (unit._aiSiegeVantageTarget === target.id && unit.order?.aiSiegeVantage) continue;
+      }
+      unit._aiSiegeVantageTarget = null;
       unit.order = { type: 'attack', targetId: target.id, aiIntel: true, aiSiegeDirector: true,
         lastX: target.x + (target.w || 1) / 2, lastY: target.y + (target.h || 1) / 2 };
       unit.path = []; unit._pathGoal = null;
@@ -6265,6 +6350,10 @@ export class Game {
       game.replayVersion = STORMGLASS_BLOOM_RULES_VERSION - 1;
     if (game.replayVersion == null && data.bloomExpeditionRulesVersion !== BLOOM_EXPEDITION_RULES_VERSION)
       game.replayVersion = BLOOM_EXPEDITION_RULES_VERSION - 1;
+    // Saves without the elevation marker keep their original flat-ground rules.
+    if (game.replayVersion == null &&
+        data.tacticalElevationRulesVersion !== TACTICAL_ELEVATION_RULES_VERSION)
+      game.replayVersion = TACTICAL_ELEVATION_RULES_VERSION - 1;
     // Saves without the Siege Director marker predate the v53 profile and keep
     // the original two-profile seed mapping.
     if (game.mode === 'skirmish' && game.replayVersion == null &&

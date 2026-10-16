@@ -2,6 +2,7 @@
 .menu-screen {
   background: #091211 url('/assets/title-hero-cinematic.webp') center center / cover no-repeat;
 }
+
 .menu-screen::before { opacity: .09; }
 .menu-screen::after { opacity: .19; }
 .menu-grid { opacity: .13; }
@@ -3568,4 +3569,11 @@ body:has(#end-modal:not(.hidden)),
   .battlefield-wrap:has(.campaign-guidance.quick-start-guidance:not(.hidden)) .salvage-locator-copy strong {
     font-size: 10px; letter-spacing: .04em;
   }
+}
+
+.command-panel .selection-info .elevation-advantage {
+  display: block;
+  color: #f0dca1;
+  font-weight: 700;
+  letter-spacing: .05em;
 }

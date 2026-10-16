@@ -203,6 +203,74 @@ function tileColor(kind,x,z,detail=0,style=MAP_STYLES['shard-valley']) {
   return c;
 }
 
+function addElevatedSectorContours(group, game, style, tmpObj) {
+  // Elevation is a tactical surface cue, not a change to entity coordinates.
+  // A shallow continuous rim gives vantage sectors a readable shelf profile
+  // while leaving their tiles, collision, and units on the normal ground plane.
+  const elevated=(x,z)=>game.terrain[z]?.[x]?.elevation===1;
+  const edges=[];
+  for(let z=0;z<game.height;z++)for(let x=0;x<game.width;x++) {
+    if(!elevated(x,z))continue;
+    if(!elevated(x,z-1))edges.push({x:x+0.5,z:z,axis:'x'});
+    if(!elevated(x+1,z))edges.push({x:x+1,z:z+0.5,axis:'z'});
+    if(!elevated(x,z+1))edges.push({x:x+0.5,z:z+1,axis:'x'});
+    if(!elevated(x-1,z))edges.push({x:x,z:z+0.5,axis:'z'});
+  }
+  if(!edges.length)return;
+  const makeBand=(height,width,y,color,emissive=0)=>{
+    const material=new THREE.MeshStandardMaterial({color,emissive,emissiveIntensity:0.22,
+      roughness:0.86,metalness:0.08,flatShading:true});
+    if(height>0.1) {
+      material.customProgramCacheKey=()=> 'eroded-elevation-shelf-strata-v1';
+      material.onBeforeCompile=shader=>{
+        shader.vertexShader=`varying vec3 vShelfWorld; varying float vShelfSide;\n${shader.vertexShader}`.replace(
+          '#include <begin_vertex>',
+          `#include <begin_vertex>
+           #ifdef USE_INSTANCING
+           vShelfWorld=(modelMatrix*instanceMatrix*vec4(transformed,1.0)).xyz;
+           #else
+           vShelfWorld=(modelMatrix*vec4(transformed,1.0)).xyz;
+           #endif
+           vShelfSide=1.0-abs(normal.y);`
+        );
+        shader.fragmentShader=`varying vec3 vShelfWorld; varying float vShelfSide;
+          float shelfHash(vec2 p){return fract(sin(dot(p,vec2(127.1,311.7)))*43758.5453);}
+          float shelfNoise(vec2 p){vec2 i=floor(p),f=fract(p);f=f*f*(3.0-2.0*f);
+            return mix(mix(shelfHash(i),shelfHash(i+vec2(1.0,0.0)),f.x),
+              mix(shelfHash(i+vec2(0.0,1.0)),shelfHash(i+vec2(1.0,1.0)),f.x),f.y);}
+          ${shader.fragmentShader}`.replace(
+          '#include <color_fragment>',
+          `#include <color_fragment>
+           float strataPhase=vShelfWorld.y*145.0+shelfNoise(vShelfWorld.xz*2.3)*2.8;
+           float strata=1.0-smoothstep(0.12,0.64,abs(sin(strataPhase)));
+           float weathering=0.94+shelfNoise(vShelfWorld.xz*4.6)*0.10;
+           diffuseColor.rgb*=weathering*(1.0-vShelfSide*strata*0.17);`
+        );
+      };
+      material.needsUpdate=true;
+    }
+    const mesh=new THREE.InstancedMesh(new THREE.BoxGeometry(1,height,width),material,edges.length);
+    mesh.name='elevated-sector-contour';mesh.count=edges.length;
+    mesh.castShadow=false;mesh.receiveShadow=true;mesh.frustumCulled=false;mesh.raycast=()=>{};
+    edges.forEach((edge,index)=>{
+      tmpObj.position.set(edge.x,y,edge.z);
+      tmpObj.rotation.set(0,edge.axis==='z'?Math.PI/2:0,0);
+      tmpObj.scale.set(1.005,1,1);
+      tmpObj.updateMatrix();mesh.setMatrixAt(index,tmpObj.matrix);
+      const variation=0.91+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),941)*0.17;
+      mesh.setColorAt(index,new THREE.Color(variation,variation,variation));
+    });
+    mesh.instanceMatrix.needsUpdate=true;
+    if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;
+    group.add(mesh);
+  };
+  // A deeper, warm cut bank gives each elevated patch a readable vertical
+  // face. The overhanging cap makes the shelf silhouette read as a landform
+  // from the standard oblique camera, rather than as a line on the sand.
+  makeBand(0.22,0.105,0.045,new THREE.Color(style.shelf).lerp(new THREE.Color(style.rock),0.34));
+  makeBand(0.032,0.145,0.166,new THREE.Color(style.patch).lerp(new THREE.Color(0xf0d49a),0.38),0x33230c);
+}
+
 function mat(color, opts = {}) {
   return new THREE.MeshStandardMaterial({ color, roughness: 0.78, metalness: 0.13, flatShading: true, ...opts });
 }
@@ -1766,7 +1834,16 @@ export class Renderer3D {
         const mesh = this.tileMeshes[kind];
         const idx = indices[kind]++;
         mesh.setMatrixAt(idx, this.tmpObj.matrix);
-        mesh.setColorAt(idx, tileColor(kind==='crystal'?'sand':kind,x,z,t.detail||0,this.mapStyle));
+        const surfaceColor=tileColor(kind==='crystal'?'sand':kind,x,z,t.detail||0,this.mapStyle);
+        if(t.elevation===1) {
+          const patina=noise(x+0.5,z+0.5,7,905);
+          // Keep elevation legible across a whole sector: a restrained warm
+          // mineral patina gives its top a distinct palette without fighting
+          // crystal clusters or changing the underlying sand shader.
+          surfaceColor.lerp(new THREE.Color(this.mapStyle.patch),0.25+patina*0.08);
+          surfaceColor.multiplyScalar(0.98+patina*0.045);
+        }
+        mesh.setColorAt(idx,surfaceColor);
       }
       this.terrainCache[z * game.width + x] = kind;
       this.resourceCache[z * game.width + x] = t.resource || 0;
@@ -1780,6 +1857,7 @@ export class Renderer3D {
       mesh.instanceMatrix.needsUpdate = true;
       if (mesh.instanceColor) mesh.instanceColor.needsUpdate = true;
     }
+    addElevatedSectorContours(this.terrainGroup,game,this.mapStyle,this.tmpObj);
     const rockField=rockFieldGeometry(game,this.mapStyle);
     const rockSurfaceMaterial=mat(0xffffff,{roughness:0.96,metalness:0.025,vertexColors:true,side:THREE.DoubleSide});
     rockSurfaceMaterial.customProgramCacheKey=()=> 'rock-field-strata-v1';
@@ -4466,7 +4544,10 @@ export class Renderer3D {
     const object=(game.units||[]).find(u=>u.id===id)||(game.buildings||[]).find(b=>b.id===id);
     const building=object&&'w' in object;
     const definition=building?game.buildingDefs?.[object.defId]:game.unitDefs?.[object?.defId];
-    const range=building?definition?.weapon?.range:unitWeaponRange(object,definition?.weapon,game.replayVersion);
+    const range=building?definition?.weapon?.range:
+      (typeof game._unitWeaponRange==='function'
+        ? game._unitWeaponRange(object,definition?.weapon)
+        : unitWeaponRange(object,definition?.weapon,game.replayVersion));
     if(!object||object.owner!=='player'||!Number.isFinite(range)||range<=0||
       object.hp<=0||object.embarkedIn||(building&&(object.progress<1||!object.powered))) {
       this.rangeIndicator.visible=false;

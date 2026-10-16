@@ -28,7 +28,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 52;
+const RANKED_SEASON = 53;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -47,9 +47,11 @@ const RANKED_SEASON = 52;
 // Queued orders enter solo replay verification and ranked multiplayer in v56;
 // the latter starts Season 51. Version 57 corrects obstructed combat pursuit in
 // both solo modes and multiplayer, and rebalances Shard Valley's starting crystal.
-// Every solo public comparison floor restarts at 57; multiplayer starts Season 52.
+// Version 58 adds tactical elevation to skirmish and ranked multiplayer. Only
+// the skirmish comparison floor advances; campaign rules stay at version 57.
+// Ranked multiplayer starts Season 53.
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
-  (score.mode === 'skirmish' ? score.scoreVersion >= 57 &&
+  (score.mode === 'skirmish' ? score.scoreVersion >= 58 &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
     : score.mode === 'campaign' && score.scoreVersion >= 57 &&

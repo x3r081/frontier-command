@@ -2253,9 +2253,12 @@ function refreshPointerLabel() {
   const w=toWorld(pointer.x,pointer.y);pointer.wx=w.x;pointer.wy=w.y;
   const bridge=bridgeAt(w.x,w.y);
   const wreck=bridge?null:wreckAt(w.x,w.y);
-  const sector=`SECTOR ${String(Math.floor(w.x)).padStart(2,'0')} // ${String(Math.floor(w.y)).padStart(2,'0')}`;
+  const tileX=Math.floor(w.x),tileY=Math.floor(w.y);
+  const sector=`SECTOR ${String(tileX).padStart(2,'0')} // ${String(tileY).padStart(2,'0')}`;
+  const vantage=game.terrain[tileY]?.[tileX]?.elevation===1&&fogAt(tileX,tileY)===2;
   const label=bridge?`${sector} · ${bridge.destroyed?'BRIDGE DOWN':`BRIDGE ${Math.round(bridge.hp/bridge.maxHp*100)}%`}`:
-    wreck?`${sector} · ${wreck.campaignFreightCache?'FREIGHT CACHE':'WRECK SALVAGE'} ${fmt(wreck.value)} · ${Math.max(1,Math.ceil(wreck.expiresAt-game.time))}S LEFT`:sector;
+    wreck?`${sector} · ${wreck.campaignFreightCache?'FREIGHT CACHE':'WRECK SALVAGE'} ${fmt(wreck.value)} · ${Math.max(1,Math.ceil(wreck.expiresAt-game.time))}S LEFT`:
+      vantage?`${sector} · HIGH GROUND (+1 SIGHT · +0.5 REACH)`:sector;
   if($('#coord-label').textContent!==label)$('#coord-label').textContent=label;
 }
 function panCameraByScreen(dx,dy) {
@@ -2375,7 +2378,13 @@ function issueContext(wx, wy, queue = false) {
     return;
   }
   if (hit && game.bridges?.includes(hit)) {
-    if (own.some(o => o.defId === 'engineer')) resultMessage(game.issueEngineer(hit.id),'BRIDGE REPAIR ORDERED');
+    const engineers = own.filter(o => o.defId === 'engineer');
+    const armed = own.filter(o => game.unitDefs?.[o.defId]?.weapon);
+    if (engineers.length && armed.length) {
+      if (hit.destroyed) resultMessage(game.issueEngineer(hit.id),'BRIDGE REPAIR ORDERED');
+      else resultMessage(game.issueAttack(hit.id),'BRIDGE DEMOLITION ORDERED · ENGINEERS NEED A DESTROYED SPAN');
+    }
+    else if (engineers.length) resultMessage(game.issueEngineer(hit.id),'BRIDGE REPAIR ORDERED');
     else if (own.some(o => game.unitDefs?.[o.defId]?.weapon)) resultMessage(game.issueAttack(hit.id),'BRIDGE DEMOLITION ORDERED');
     else resultMessage(game.issueMove(wx, wy));
     return;
@@ -2384,8 +2393,10 @@ function issueContext(wx, wy, queue = false) {
     resultMessage(game.issueBoard(hit.id),'BOARDING CARRIER');
   else if (hit && 'w' in hit && own.some(o=>o.defId==='engineer')) {
     const armed=own.some(o=>game.unitDefs?.[o.defId]?.weapon);
-    if(armed&&hit.owner==='enemy')resultMessage(game.issueAttack(hit.id),'ATTACK ORDERED');
-    resultMessage(game.issueEngineer(hit.id));
+    if(armed&&hit.owner==='enemy'){
+      resultMessage(game.issueAttack(hit.id),hit.hp/hit.maxHp<=0.75?'ATTACK ORDERED':'ATTACK ORDERED · SEND ENGINEERS BELOW 75%');
+      if(hit.hp/hit.maxHp<=0.75)resultMessage(game.issueEngineer(hit.id),'ENGINEER CAPTURE ORDERED');
+    }else resultMessage(game.issueEngineer(hit.id));
   }
   else if (hit && hit.owner === 'enemy') resultMessage(game.issueAttack(hit.id));
   else if (getCell(wx, wy)?.resource > 0 && own.some(o => /harvester/.test(o.defId))) resultMessage(game.issueMove(wx, wy));
@@ -2447,7 +2458,8 @@ function setRoutePlanMode(enabled){
 }
 function targetOrderHint(mode,label,prompt){
   const routing=['attack','forceMove'].includes(mode);
-  return `${label} · ${prompt}${routing?(routePlanMode?' · TAP MORE POINTS TO CONTINUE':' · SHIFT+CLICK TO QUEUE'):''} <span>·</span> ESC TO CANCEL`;
+  const touchGuide=matchMedia('(pointer: coarse)').matches||innerWidth<=670;
+  return `${label} · ${prompt}${routing?(routePlanMode?' · TAP MORE POINTS TO CONTINUE':touchGuide?' · TAP ROUTE TO QUEUE MORE POINTS':' · SHIFT+CLICK TO QUEUE'):''} <span>·</span> ESC TO CANCEL`;
 }
 function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   if(!game)return;
@@ -2561,6 +2573,16 @@ function drawTerrainTile(x, y, cell, t) {
       if(hash(x,y,81)>.88){ctx.fillStyle='#1b2b2460';ctx.beginPath();ctx.ellipse(p.x+s*.58,p.y+s*.67,s*.22,s*.09,-.3,0,Math.PI*2);ctx.fill();ctx.strokeStyle='#b8c19850';ctx.beginPath();ctx.moveTo(p.x+s*.33,p.y+s*.66);ctx.lineTo(p.x+s*.51,p.y+s*.55);ctx.lineTo(p.x+s*.72,p.y+s*.58);ctx.stroke();}
       if(hash(x,y,82)>.89){ctx.strokeStyle='#c1cda170';ctx.lineWidth=Math.max(1,s*.022);for(let i=0;i<3;i++){const bx=p.x+s*(.2+i*.12),by=p.y+s*(.2+i*.07);ctx.beginPath();ctx.moveTo(bx,by+s*.12);ctx.lineTo(bx+s*.04,by-s*.05);ctx.stroke();}}
     }
+  }
+  if(cell?.elevation===1){
+    ctx.fillStyle='#e6c47824';ctx.fillRect(p.x,p.y,s+1,s+1);
+    ctx.strokeStyle='#efdba887';ctx.lineWidth=Math.max(1,s*.055);
+    ctx.beginPath();
+    if(game.terrain[y-1]?.[x]?.elevation!==1){ctx.moveTo(p.x,p.y);ctx.lineTo(p.x+s,p.y);}
+    if(game.terrain[y+1]?.[x]?.elevation!==1){ctx.moveTo(p.x,p.y+s);ctx.lineTo(p.x+s,p.y+s);}
+    if(game.terrain[y]?.[x-1]?.elevation!==1){ctx.moveTo(p.x,p.y);ctx.lineTo(p.x,p.y+s);}
+    if(game.terrain[y]?.[x+1]?.elevation!==1){ctx.moveTo(p.x+s,p.y);ctx.lineTo(p.x+s,p.y+s);}
+    ctx.stroke();
   }
   ctx.strokeStyle = '#091c1320'; ctx.lineWidth=1; ctx.strokeRect(p.x+.5,p.y+.5,s,s);
   if (cell?.resource > 0) drawCrystal(x,y,cell.resource,t);
@@ -3047,8 +3069,8 @@ function drawMinimap() {
   const lastSeenContacts=lastSeenHostileContacts();
   updateBattlefieldPickerIntelBadge(lastSeenContacts);
   minimap.setAttribute('aria-label', lastSeenContacts.length
-    ? 'Minimap. Friendly forces are squares, visible enemies are diamonds, and unconfirmed last-seen hostile contacts are amber question marks.'
-    : 'Minimap. Friendly forces are squares, visible enemies are diamonds, and unknown relays are circles.');
+    ? 'Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unconfirmed last-seen hostile contacts are amber question marks.'
+    : 'Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unknown relays are circles.');
   mctx.clearRect(0,0,w,h);
   if(!game.radar?.player&&!missionTargets.length){
     minimap.style.cursor='default';
@@ -3063,7 +3085,7 @@ function drawMinimap() {
   }
   minimap.style.cursor='crosshair';
   const terrainPalette=FALLBACK_TERRAIN_PALETTES[game?.mapId]||FALLBACK_TERRAIN_PALETTES['shard-valley'];
-  for(let y=0;y<game.height;y++)for(let x=0;x<game.width;x++){const c=game.terrain[y]?.[x],f=fogAt(x,y);mctx.fillStyle=f===0?'#05100c':f===1?'#26392e':c?.resource>0?'#65d6c8':c?.type==='water'?terrainPalette.water[0]:c?.type==='rock'?terrainPalette.rock[0]:terrainPalette.minimap;mctx.fillRect(x*cw,y*ch,Math.ceil(cw),Math.ceil(ch));}
+  for(let y=0;y<game.height;y++)for(let x=0;x<game.width;x++){const c=game.terrain[y]?.[x],f=fogAt(x,y);mctx.fillStyle=f===0?'#05100c':f===1?'#26392e':c?.resource>0?'#65d6c8':c?.type==='water'?terrainPalette.water[0]:c?.type==='rock'?terrainPalette.rock[0]:terrainPalette.minimap;mctx.fillRect(x*cw,y*ch,Math.ceil(cw),Math.ceil(ch));if(f===2&&c?.elevation===1){mctx.fillStyle='#e4c47b30';mctx.fillRect(x*cw,y*ch,Math.ceil(cw),Math.ceil(ch));}}
   for(const bridge of game.bridges||[]){
     if(fogAt(bridge.x+bridge.w/2,bridge.y+bridge.h/2)!==2)continue;
     mctx.fillStyle=bridge.destroyed?'#e28864':'#e5c47b';
@@ -3541,6 +3563,8 @@ function updateSelectionCard() {
   const field=first._harvestTile||first.order?.type==='harvest'&&Number.isFinite(first.order.x)&&Number.isFinite(first.order.y)?first._harvestTile||{x:first.order.x,y:first.order.y}:null;
   const refinerySupported=!isBuilding&&first.owner==='player'&&first.defId==='harvester'&&faction==='aegis'&&field&&game.buildings.some(b=>b.owner==='player'&&b.defId==='refinery'&&b.hp>0&&b.progress>=1&&b.powered&&Math.hypot(field.x+.5-(b.x+b.w/2),field.y+.5-(b.y+b.h/2))<=6);
   const unitDef=!isBuilding?game.unitDefs?.[first.defId]:null;
+  const elevatedAdvantage=selected.length===1&&!isBuilding&&first.owner==='player'&&
+    !unitDef?.flying&&game._unitOnVantage?.(first);
   const serviceSupported=!isBuilding&&first.owner==='player'&&first.hp<first.maxHp&&!first.embarkedIn&&!unitDef?.flying&&
     ['light','heavy'].includes(unitDef?.armor)&&(game.credits?.player||0)>0&&game.buildings.some(b=>{
       if(b.owner!=='player'||b.defId!=='serviceBay'||b.hp<=0||b.progress<1||!b.powered)return false;
@@ -3593,7 +3617,8 @@ function updateSelectionCard() {
   const bayMeta=isBuilding&&selected.length===1&&first.owner==='player'&&first.defId==='refinery'
     ?` · UNLOAD BAY ${first._unloadHarvesterId?'BUSY':'READY'}`:'';
   const meta=(rank?`INTEGRITY ${pct}% · ${first.kills||0} KILLS · ${nextRank?`${Math.max(0,Math.ceil(nextRank.xp-(first.xp||0)))} XP TO ${nextRank.name.toUpperCase()}`:promotionName?promotionName:'MAX RANK'}`:`ARMOR INTEGRITY · ${pct}%${isBuilding&&first.queue?.length?` · ${first.queue.length} QUEUED`:''}`)+cargoMeta+bayMeta+(queuedOrders?` · ${queuedOrders} QUEUED`:'');
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${rankLine}</div></div>`;
+  const elevationBadge=elevatedAdvantage?`<small class="elevation-advantage" title="Elevated position improves sight by 1 and weapon reach by 0.5">HIGH GROUND · +1 SIGHT${unitDef?.weapon?' · +0.5 REACH':''}</small>`:'';
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${elevationBadge}${rankLine}</div></div>`;
 }
 function placeSquadControlBar() {
   const bar=$('#mobile-squads');
@@ -4180,13 +4205,14 @@ function updateCampaignGuidance(powerState) {
   const raidState=game.campaignState||{};
   const raidRules=game.replayVersion==null
     ?raidState.firstHarvestRaidRulesVersion>=54:game.replayVersion>=54;
+  const touchGuide=matchMedia('(pointer: coarse)').matches||innerWidth<=670;
   let tip;
   if(raidRules&&raidState.firstHarvestRaidWarned&&!raidState.firstHarvestRaidRepelled){
     tip=raidState.firstHarvestRaidFired
       ?{key:'raid-active',stage:'raid-attack',title:'Defend the crystal line',
-        copy:'Vesper raiders are striking the marked crystal line. Select an armed squad and attack visible raiders or guard the threatened Harvester and refinery.'}
+        copy:`Vesper raiders are striking the crystal line. ${touchGuide?'Select defenders, press ATTACK, then tap the lead buggy.':'Select defenders, then right-click the visible lead buggy.'}`}
       :{key:'raid-warning',stage:'raid-warning',title:'Vesper raiders inbound',
-        copy:'Move an armed squad toward the marked crystal line now. Keep the Harvester and both refineries protected.'};
+        copy:`Move defenders to the marked line now. ${touchGuide?'Select them, press ATTACK, then tap the line.':'Use Shift+A, then click the marked line.'} Protect the Harvester and refineries.`};
   }else if((powerState.production||0)<(powerState.consumption||0)){
     const construction=game.construction;
     if(placeId==='power'||construction?.defId==='power'&&construction.ready){

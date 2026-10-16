@@ -5,7 +5,7 @@ import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 57;
+export const SOLO_REPLAY_VERSION = 58;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
