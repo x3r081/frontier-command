@@ -25,7 +25,7 @@ test('ground vehicle losses create bounded, expiring non-blocking wrecks only', 
   buggy.hp = 0;
   game._destroyEntity(buggy, 'player', null);
   assert.deepEqual(game.wrecks[0], { id: 'wreck1', x: 20.5, y: 20.5, value: 68,
-    faction: 'vesper', expiresAt: WRECK_LIFETIME_SECONDS });
+    faction: 'vesper', expiresAt: WRECK_LIFETIME_SECONDS, restoreDefId: 'buggy', restoreUsed: false });
   assert.equal(game._isPassable(20, 20), true, 'wrecks do not alter movement passability');
 
   for (const defId of ['rifle', 'apc', 'dropship']) {

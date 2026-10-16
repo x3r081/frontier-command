@@ -1,12 +1,12 @@
 import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, COMMAND_ABILITIES,
   DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, UNIT_PROMOTION_DEFS, UNIT_PROMOTION_RULES_VERSION,
-  PRODUCTION_SITE_RULES_VERSION, POWER_STANDBY_RULES_VERSION,
+  PRODUCTION_SITE_RULES_VERSION, POWER_STANDBY_RULES_VERSION, WRECK_RECOMMISSION_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 71;
+export const SOLO_REPLAY_VERSION = 72;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -57,6 +57,7 @@ export const SOLO_COMMAND_METHODS = Object.freeze({
   issueDeploy: args => noArgs(args) || (args.length === 1 && (args[0] === null || entityId(args[0]))),
   issueEngineer: oneId,
   issueRecoverWreck: args => args.length === 1 && wreckId(args[0]),
+  issueRecommissionWreck: args => args.length === 1 && wreckId(args[0]),
   issueServiceAtWorkshop: oneId,
   startConstruction: args => args.length === 1 && defId(args[0], BUILDING_DEFS),
   cancelConstruction: noArgs,
@@ -241,6 +242,9 @@ export function createSoloPlayback(envelope, commands, completedTicks, replayVer
   if (replayVersion < 10 && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueRecoverWreck'))
     throw new TypeError('Wreck recovery commands require replay version 10.');
+  if (replayVersion < WRECK_RECOMMISSION_RULES_VERSION && Array.isArray(commands) &&
+      commands.some(command => command?.method === 'issueRecommissionWreck'))
+    throw new TypeError(`Vehicle recommissioning requires replay version ${WRECK_RECOMMISSION_RULES_VERSION}.`);
   if (replayVersion < 21 && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueServiceAtWorkshop'))
     throw new TypeError('Workshop service orders require replay version 21.');

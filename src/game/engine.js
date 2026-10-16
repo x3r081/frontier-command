@@ -42,6 +42,11 @@ export const STORMGLASS_BLOOM_PREMIUM_RATE = 0.35;
 export const STORMGLASS_BLOOM_ENRICHMENT = 180;
 export const WRECK_LIFETIME_SECONDS = 120;
 export const WRECK_RECOVERY_SECONDS = 4;
+export const WRECK_RECOMMISSION_RULES_VERSION = 72;
+export const WRECK_RECOMMISSION_SECONDS = 12;
+export const WRECK_RECOMMISSION_COST_FRACTION = 0.4;
+export const WRECK_RECOMMISSION_HEALTH_FRACTION = 0.4;
+export const WRECK_RECOMMISSION_WORKSHOP_RANGE = 6;
 export const MAX_BATTLEFIELD_WRECKS = 32;
 export const GROUND_ARMOR_FRONT_DAMAGE_MULTIPLIER = 0.85;
 export const GROUND_ARMOR_REAR_DAMAGE_MULTIPLIER = 1.2;
@@ -382,6 +387,7 @@ export class Game {
     this.reinforcementAssemblyRulesVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
     this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     this.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
+    this.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     this._aiCommandRecovery = null;
     this._aiEngineerRaidState = { active: null, cooldownUntil: 0 };
     this.salvageDrop = null;
@@ -2199,8 +2205,9 @@ export class Game {
       return { ok: false, reason: 'Production site selection requires replay version 67.' };
     const check = this.canQueueUnit(defId, owner);
     if (!check.ok) return check;
-    if (owner === 'enemy' && defId !== 'harvester' &&
-        !this._aiCanSpendCredits(owner, UNIT_DEFS[defId].cost))
+    if (owner === 'enemy' && (defId === 'harvester'
+      ? this.credits[owner] - UNIT_DEFS[defId].cost < this._aiRecommissionCreditReserve(owner)
+      : !this._aiCanSpendCredits(owner, UNIT_DEFS[defId].cost)))
       return { ok: false, reason: 'Credits are reserved for a replacement Harvester.' };
     const producer = explicitProducer
       ? check.producers.find(building => building.id === producerId)
@@ -2950,6 +2957,10 @@ export class Game {
   _destroyEntity(entity, attackerOwner, sourceId) {
     if (entity._dead) return;
     entity._dead = true;
+    if (entity.order?.type === 'recommissionWreck') {
+      entity.order = { type: 'idle' }; entity._wreckRecommissionProgress = 0;
+      entity._wreckRecommissionWaiting = null; delete entity._aiWreckRecommission;
+    }
     if (this.bridges.includes(entity)) {
       entity.destroyed = true;
       this._setBridgePassability(entity, false);
@@ -2981,6 +2992,11 @@ export class Game {
         value: Math.min(200, Math.max(20, Math.round((unitDef.cost || 0) * 0.15))),
         faction: entity.faction || ownerFaction(this, entity.owner),
         expiresAt: this.time + WRECK_LIFETIME_SECONDS };
+      if (this._wreckRecommissionEnabled()) {
+        const eligible = !!unitDef.weapon && unitDef.armor !== 'infantry' && unitDef.role !== 'transport';
+        wreck.restoreDefId = eligible ? entity.defId : null;
+        wreck.restoreUsed = entity._recommissioned === true;
+      }
       this.wrecks.push(wreck);
       this._event('wreckCreated', { ...wreck });
     }
@@ -3490,6 +3506,78 @@ export class Game {
     return { ok: true };
   }
 
+  _wreckRecommissionEnabled() {
+    return this.replayVersion == null || this.replayVersion >= WRECK_RECOMMISSION_RULES_VERSION;
+  }
+
+  _recommissionEligibleDef(defId, owner) {
+    const def = UNIT_DEFS[defId];
+    const faction = ownerFaction(this, owner);
+    return !!def?.weapon && !def.flying && def.armor !== 'infantry' && def.role !== 'transport' &&
+      (def.faction === 'all' || def.faction === faction);
+  }
+
+  _recommissionWorkshop(wreck, owner) {
+    return this.buildings.filter(building => building.owner === owner && building.defId === 'serviceBay' &&
+      building.hp > 0 && building.progress >= 1 && building.powered &&
+      this._distanceToEntity(wreck.x, wreck.y, building) <= WRECK_RECOMMISSION_WORKSHOP_RANGE)
+      .sort((a, b) => this._distanceToEntity(wreck.x, wreck.y, a) -
+        this._distanceToEntity(wreck.x, wreck.y, b) || a.id.localeCompare(b.id))[0] || null;
+  }
+
+  canRecommissionWreck(wreckId) {
+    const result = { ok: false };
+    const owner = this.commandOwner || 'player';
+    if (!this._wreckRecommissionEnabled()) return { ...result, reason: 'Vehicle recommissioning is unavailable in this replay.' };
+    if (this.status !== 'playing') return { ...result, reason: 'The battle is no longer in progress.' };
+    const wreck = this.wrecks.find(item => item.id === wreckId && item.expiresAt > this.time);
+    if (!wreck) return { ...result, reason: 'Choose an available wreck.' };
+    const opposingOwner = owner === 'player' ? 'enemy' : 'player';
+    if (!this.isVisible({ x: wreck.x, y: wreck.y, owner: opposingOwner }, owner))
+      return { ...result, reason: 'Wreck is outside current vision.' };
+    const defId = wreck.restoreDefId;
+    const cost = defId && UNIT_DEFS[defId]
+      ? Math.ceil(UNIT_DEFS[defId].cost * WRECK_RECOMMISSION_COST_FRACTION) : null;
+    const response = { ...result, ...(cost == null ? {} : { cost }),
+      seconds: WRECK_RECOMMISSION_SECONDS, ...(defId ? { defId } : {}) };
+    if (!defId || !this._recommissionEligibleDef(defId, owner))
+      return { ...response, reason: 'This wreck cannot be recommissioned by your faction.' };
+    if (wreck.restoreUsed) return { ...response, reason: 'This hull has already been recommissioned.' };
+    if (this.units.some(unit => unit.owner === owner && unit.hp > 0 && unit.defId === 'engineer' &&
+        !unit.embarkedIn && unit.order?.type === 'recommissionWreck' && unit.order.wreckId === wreckId))
+      return { ...response, reason: 'This wreck is already assigned.' };
+    const engineers = this._selectedCommandUnits().filter(unit => unit.defId === 'engineer' &&
+      unit.hp > 0 && !unit.embarkedIn);
+    if (!engineers.length) return { ...response, reason: 'Select a living Engineer.' };
+    const workshop = this._recommissionWorkshop(wreck, owner);
+    if (!workshop) return { ...response, reason: 'A powered friendly Field Workshop must be within 6 tiles.' };
+    if (this.credits[owner] < cost) return { ...response, reason: 'Insufficient credits.' };
+    const reachable = engineers.filter(engineer => dist(engineer.x, engineer.y, wreck.x, wreck.y) <= WRECK_RECOVERY_RANGE ||
+      this._findPath(engineer.x, engineer.y, wreck.x, wreck.y).length > 0);
+    if (!reachable.length) return { ...response, reason: 'No selected Engineer can reach the wreck.' };
+    return { ...response, ok: true };
+  }
+
+  issueRecommissionWreck(wreckId) {
+    const check = this.canRecommissionWreck(wreckId);
+    if (!check.ok) return { ok: false, reason: check.reason };
+    const owner = this.commandOwner || 'player';
+    const wreck = this.wrecks.find(item => item.id === wreckId);
+    const engineer = this._selectedCommandUnits().filter(unit => unit.defId === 'engineer' &&
+      unit.hp > 0 && !unit.embarkedIn &&
+      (dist(unit.x, unit.y, wreck.x, wreck.y) <= WRECK_RECOVERY_RANGE ||
+        this._findPath(unit.x, unit.y, wreck.x, wreck.y).length > 0))
+      .sort((a, b) => dist(a.x, a.y, wreck.x, wreck.y) - dist(b.x, b.y, wreck.x, wreck.y) ||
+        a.id.localeCompare(b.id))[0];
+    engineer.order = { type: 'recommissionWreck', wreckId };
+    engineer._wreckRecommissionProgress = 0;
+    engineer._wreckRecommissionWaiting = null;
+    delete engineer._aiWreckRecommission;
+    engineer.path = []; engineer._pathGoal = null;
+    this._event('order', { order: 'recommissionWreck', ids: [engineer.id], wreckId });
+    return { ok: true };
+  }
+
   issueServiceAtWorkshop(workshopId) {
     const owner = this.commandOwner || 'player';
     if (this.replayVersion != null && this.replayVersion < 21)
@@ -3597,6 +3685,108 @@ export class Game {
       x: wreck.x, y: wreck.y });
   }
 
+  _recommissionSpawnPoint(wreck, defId) {
+    const sx = Math.floor(wreck.x), sy = Math.floor(wreck.y);
+    if (!this._isPassable(sx, sy)) return null;
+    const reachable = new Set([sy * this.width + sx]);
+    const queue = [[sx, sy]];
+    const dirs = [[1, 0], [-1, 0], [0, 1], [0, -1], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+    for (let index = 0; index < queue.length; index++) {
+      const [x, y] = queue[index];
+      for (const [dx, dy] of dirs) {
+        const nx = x + dx, ny = y + dy, key = ny * this.width + nx;
+        if (reachable.has(key) || dist(nx + 0.5, ny + 0.5, wreck.x, wreck.y) > 2.05 ||
+            !this._isPassable(nx, ny) ||
+            (dx && dy && (!this._isPassable(x + dx, y) || !this._isPassable(x, y + dy)))) continue;
+        reachable.add(key); queue.push([nx, ny]);
+      }
+    }
+    const radius = UNIT_DEFS[defId].radius || 0.3;
+    const candidates = [...reachable].map(key => ({ x: key % this.width, y: Math.floor(key / this.width) }))
+      .filter(({ x, y }) => dist(x + 0.5, y + 0.5, wreck.x, wreck.y) <= 2)
+      .sort((a, b) => dist(a.x + 0.5, a.y + 0.5, wreck.x, wreck.y) -
+        dist(b.x + 0.5, b.y + 0.5, wreck.x, wreck.y) || a.y - b.y || a.x - b.x);
+    for (const tile of candidates) {
+      const x = tile.x + 0.5, y = tile.y + 0.5;
+      if (this.buildings.some(building => building.hp > 0 && x >= building.x && x < building.x + building.w &&
+          y >= building.y && y < building.y + building.h)) continue;
+      if (this.units.some(unit => unit.hp > 0 && !unit.embarkedIn && !UNIT_DEFS[unit.defId]?.flying &&
+          dist(x, y, unit.x, unit.y) < radius + (UNIT_DEFS[unit.defId]?.radius || 0.3) + 0.03)) continue;
+      return { x, y };
+    }
+    return null;
+  }
+
+  _updateWreckRecommission(unit, dt) {
+    if (unit.defId !== 'engineer' || !this._wreckRecommissionEnabled()) {
+      unit.order = { type: 'idle' }; unit._wreckRecommissionProgress = 0; return;
+    }
+    const wreck = this.wrecks.find(item => item.id === unit.order.wreckId && item.expiresAt > this.time);
+    const defId = wreck?.restoreDefId;
+    if (!wreck || !defId || wreck.restoreUsed || !this._recommissionEligibleDef(defId, unit.owner)) {
+      unit.order = { type: 'idle' }; unit._wreckRecommissionProgress = 0;
+      unit._wreckRecommissionWaiting = null; delete unit._aiWreckRecommission;
+      unit.path = []; unit._pathGoal = null; return;
+    }
+    if (dist(unit.x, unit.y, wreck.x, wreck.y) > WRECK_RECOVERY_RANGE) {
+      this._moveUnit(unit, wreck.x, wreck.y, dt, WRECK_RECOVERY_RANGE);
+      unit._wreckRecommissionProgress = 0;
+      this._setRecommissionWaiting(unit, null, wreck);
+      return;
+    }
+    const workshop = this._recommissionWorkshop(wreck, unit.owner);
+    if (!workshop) {
+      const existsNearby = this.buildings.some(building => building.owner === unit.owner &&
+        building.defId === 'serviceBay' && building.hp > 0 && building.progress >= 1 &&
+        this._distanceToEntity(wreck.x, wreck.y, building) <= WRECK_RECOMMISSION_WORKSHOP_RANGE);
+      this._setRecommissionWaiting(unit, 'workshop', wreck, existsNearby ?
+        'Recommissioning paused; Field Workshop needs power.' :
+        'Recommissioning paused; no local Field Workshop is available.');
+      return;
+    }
+    const cost = Math.ceil(UNIT_DEFS[defId].cost * WRECK_RECOMMISSION_COST_FRACTION);
+    const aiReserve = unit._aiWreckRecommission === true ? this._aiEconomyReserve(unit.owner) + 600 : 0;
+    if (this.credits[unit.owner] < cost + aiReserve) {
+      this._setRecommissionWaiting(unit, 'credits', wreck, 'Recommissioning paused; insufficient credits.');
+      return;
+    }
+    const point = this._recommissionSpawnPoint(wreck, defId);
+    if (!point) {
+      this._setRecommissionWaiting(unit, 'space', wreck, 'Recommissioning paused; no clear nearby ground.');
+      return;
+    }
+    this._setRecommissionWaiting(unit, null, wreck);
+    unit._wreckRecommissionProgress = (unit._wreckRecommissionProgress || 0) + dt;
+    if (unit._wreckRecommissionProgress + 0.000001 < WRECK_RECOMMISSION_SECONDS) return;
+    if (!this.wrecks.includes(wreck) || wreck.restoreUsed || !this._recommissionWorkshop(wreck, unit.owner) ||
+        this.credits[unit.owner] < cost + aiReserve) return;
+    const clearPoint = this._recommissionSpawnPoint(wreck, defId);
+    if (!clearPoint) { this._setRecommissionWaiting(unit, 'space', wreck,
+      'Recommissioning paused; no clear nearby ground.'); return; }
+    this.credits[unit.owner] -= cost;
+    const vehicle = this._createUnit(unit.owner, defId, clearPoint.x, clearPoint.y);
+    vehicle.hp = vehicle.maxHp * WRECK_RECOMMISSION_HEALTH_FRACTION;
+    vehicle.veterancy = 0; vehicle.xp = 0; vehicle.kills = 0; vehicle.promotion = null;
+    vehicle._recommissioned = true;
+    wreck.restoreUsed = true;
+    this.wrecks = this.wrecks.filter(item => item !== wreck);
+    unit._wreckRecommissionProgress = 0;
+    unit._wreckRecommissionWaiting = null;
+    delete unit._aiWreckRecommission;
+    unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+    this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'recommission', owner: unit.owner,
+      x: vehicle.x, y: vehicle.y, radius: 1.1, ttl: 0.85, maxTtl: 0.85 });
+    this._event('wreckRecommissioned', { id: wreck.id, owner: unit.owner, unitId: unit.id,
+      vehicleId: vehicle.id, defId, cost, x: vehicle.x, y: vehicle.y });
+  }
+
+  _setRecommissionWaiting(unit, reason, wreck, message = '') {
+    if (unit._wreckRecommissionWaiting === reason) return;
+    unit._wreckRecommissionWaiting = reason;
+    if (reason) this._event('wreckRecommissionWaiting', { id: wreck.id, owner: unit.owner,
+      unitId: unit.id, reason, message });
+  }
+
   _updateUnit(u, dt) {
     u._attackMoveHolding = false;
     if (u.hp <= 0) return;
@@ -3641,6 +3831,7 @@ export class Game {
       return;
     }
     if (order.type === 'service') { this._updateServiceOrder(u, dt); return; }
+    if (order.type === 'recommissionWreck') { this._updateWreckRecommission(u, dt); return; }
     if (order.type === 'board') {
       const carrier = this.getEntity(order.carrierId);
       const carrierDef = carrier && UNIT_DEFS[carrier.defId];
@@ -4121,11 +4312,48 @@ export class Game {
   }
 
   _repairCreditsAvailable(owner) {
-    return Math.max(0, (Number(this.credits[owner]) || 0) - this._aiEconomyReserve(owner));
+    return Math.max(0, (Number(this.credits[owner]) || 0) - this._aiEconomyReserve(owner) -
+      this._aiRecommissionCreditReserve(owner));
   }
 
   _aiCanSpendCredits(owner, amount) {
-    return this.credits[owner] - amount >= this._aiEconomyReserve(owner);
+    return this.credits[owner] - amount >= this._aiEconomyReserve(owner) +
+      this._aiRecommissionCreditReserve(owner);
+  }
+
+  _aiRecommissionCreditReserve(owner = 'enemy') {
+    if (owner !== 'enemy' || this.mode !== 'skirmish' || !['normal', 'hard'].includes(this.difficulty) ||
+        !this._wreckRecommissionEnabled()) return 0;
+    const engineer = this.units.filter(unit => unit.owner === owner && unit.hp > 0 && !unit.embarkedIn &&
+      unit.defId === 'engineer' && unit._aiWreckRecommission === true &&
+      unit.order?.type === 'recommissionWreck').sort((a, b) => a.id.localeCompare(b.id)).find(unit => {
+      const wreck = this.wrecks.find(item => item.id === unit.order.wreckId && item.expiresAt > this.time &&
+        !item.restoreUsed && this._recommissionEligibleDef(item.restoreDefId, owner));
+      return !!wreck;
+    });
+    if (!engineer) return 0;
+    const wreck = this.wrecks.find(item => item.id === engineer.order.wreckId);
+    return Math.ceil(UNIT_DEFS[wreck.restoreDefId].cost * WRECK_RECOMMISSION_COST_FRACTION) + 600;
+  }
+
+  _aiCancelInvalidRecommissionOrders() {
+    const active = this.units.filter(unit => unit.owner === 'enemy' && unit.defId === 'engineer' &&
+      unit.hp > 0 && unit._aiWreckRecommission === true && unit.order?.type === 'recommissionWreck');
+    if (!active.length) return;
+    const harvesterReserve = this._aiEconomyReserve('enemy');
+    const recommissionReserve = this._aiRecommissionCreditReserve('enemy');
+    const cannotFundBoth = harvesterReserve > 0 &&
+      this.credits.enemy < harvesterReserve + recommissionReserve;
+    for (const engineer of active) {
+      const wreck = this.wrecks.find(item => item.id === engineer.order.wreckId && item.expiresAt > this.time &&
+        !item.restoreUsed && this._recommissionEligibleDef(item.restoreDefId, 'enemy'));
+      if (wreck && this._recommissionWorkshop(wreck, 'enemy') && !cannotFundBoth) continue;
+      engineer.order = { type: 'idle' };
+      engineer._wreckRecommissionProgress = 0;
+      engineer._wreckRecommissionWaiting = null;
+      delete engineer._aiWreckRecommission;
+      engineer.path = []; engineer._pathGoal = null;
+    }
   }
 
   sellBuilding(buildingId) {
@@ -6153,6 +6381,7 @@ export class Game {
         this._aiCommandRigOpeningComplete = true;
     }
     this._aiRecoverEconomy();
+    this._aiCancelInvalidRecommissionOrders();
     // Replace the economy's first worker before optional expansion, recovery,
     // research, or combat spending can reserve its remaining replacement cost.
     // A full factory queue is left untouched; the AI will retry next tick.
@@ -6700,14 +6929,38 @@ export class Game {
   }
 
   _aiRecoverWrecks() {
-    if ((this.replayVersion ?? 10) < 10 || !this.wrecks.length ||
-        this.creditCapacity.enemy - this.credits.enemy < 1) return;
+    if ((this.replayVersion ?? 10) < 10 || !this.wrecks.length) return;
+    if (this._aiRecommissionCreditReserve('enemy') > 0) return;
     const assigned = new Set(this.units.filter(unit => unit.owner === 'enemy' &&
-      unit.order?.type === 'recoverWreck').map(unit => unit.order.wreckId));
+      ['recoverWreck', 'recommissionWreck'].includes(unit.order?.type)).map(unit => unit.order.wreckId));
     const engineers = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 &&
       unit.defId === 'engineer' && !unit.embarkedIn && unit.order?.type === 'idle')
       .sort((a, b) => a.id.localeCompare(b.id));
     for (const engineer of engineers) {
+      if (this._aiRecommissionCreditReserve('enemy') > 0) return;
+      const canRestore = this.mode === 'skirmish' && ['normal', 'hard'].includes(this.difficulty) &&
+        this._wreckRecommissionEnabled();
+      const reserveFloor = this._aiEconomyReserve('enemy') + 600;
+      const restore = canRestore ? this.wrecks.filter(item => item.expiresAt > this.time &&
+        !assigned.has(item.id) && !item.restoreUsed && this._recommissionEligibleDef(item.restoreDefId, 'enemy') &&
+        dist(engineer.x, engineer.y, item.x, item.y) <= 12 &&
+        this.isVisible({ x: item.x, y: item.y, owner: 'player' }, 'enemy') &&
+        this._recommissionWorkshop(item, 'enemy') &&
+        this.credits.enemy >= Math.ceil(UNIT_DEFS[item.restoreDefId].cost * WRECK_RECOMMISSION_COST_FRACTION) + reserveFloor &&
+        (dist(engineer.x, engineer.y, item.x, item.y) <= WRECK_RECOVERY_RANGE ||
+          this._findPath(engineer.x, engineer.y, item.x, item.y).length > 0))
+        .sort((a, b) => dist(engineer.x, engineer.y, a.x, a.y) - dist(engineer.x, engineer.y, b.x, b.y) ||
+          a.id.localeCompare(b.id))[0] : null;
+      if (restore) {
+        engineer.order = { type: 'recommissionWreck', wreckId: restore.id };
+        engineer._wreckRecommissionProgress = 0;
+        engineer._wreckRecommissionWaiting = null;
+        engineer._aiWreckRecommission = true;
+        engineer.path = []; engineer._pathGoal = null;
+        assigned.add(restore.id);
+        continue;
+      }
+      if (this.creditCapacity.enemy - this.credits.enemy < 1) continue;
       const wreck = this.wrecks.filter(item => item.expiresAt > this.time && !assigned.has(item.id) &&
         dist(engineer.x, engineer.y, item.x, item.y) <= 12 &&
         this.isVisible({ x: item.x, y: item.y, owner: 'player' }, 'enemy'))
@@ -7338,7 +7591,11 @@ export class Game {
     // Preserve any earlier version pin established above.
     if (game.replayVersion == null && data.powerStandbyRulesVersion !== POWER_STANDBY_RULES_VERSION)
       game.replayVersion = POWER_STANDBY_RULES_VERSION - 1;
+    // Markerless saves preserve the earliest legacy pin and predate hull restoration.
+    if (game.replayVersion == null && data.wreckRecommissionRulesVersion !== WRECK_RECOMMISSION_RULES_VERSION)
+      game.replayVersion = WRECK_RECOMMISSION_RULES_VERSION - 1;
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
+    game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -7441,6 +7698,14 @@ export class Game {
       typeof wreck.id === 'string' && Number.isFinite(wreck.x) && Number.isFinite(wreck.y) &&
       Number.isFinite(wreck.value) && ['aegis', 'vesper'].includes(wreck.faction) &&
       Number.isFinite(wreck.expiresAt) && wreck.expiresAt > (game.time || 0)).slice(-MAX_BATTLEFIELD_WRECKS) : [];
+    for (const wreck of game.wrecks) {
+      const restoreDef = UNIT_DEFS[wreck.restoreDefId];
+      const validRestoreDef = !!restoreDef?.weapon && !restoreDef.flying &&
+        restoreDef.armor !== 'infantry' && restoreDef.role !== 'transport';
+      if (!game._wreckRecommissionEnabled() || !validRestoreDef) delete wreck.restoreDefId;
+      if (game._wreckRecommissionEnabled() && validRestoreDef) wreck.restoreUsed = wreck.restoreUsed === true;
+      else delete wreck.restoreUsed;
+    }
     game._nextWreckId = Number.isSafeInteger(game._nextWreckId) && game._nextWreckId > 0
       ? game._nextWreckId : game.wrecks.reduce((next, wreck) => Math.max(next,
         Number(wreck.id.match(/^wreck([1-9][0-9]*)$/)?.[1] || 0) + 1), 1);
@@ -7483,7 +7748,30 @@ export class Game {
       player: Number.isFinite(salvageEarned.player) ? Math.max(0, salvageEarned.player) : 0,
       enemy: Number.isFinite(salvageEarned.enemy) ? Math.max(0, salvageEarned.enemy) : 0,
     };
+    const assignedRecommissionWrecks = new Set();
     for (const unit of game.units) {
+      unit._recommissioned = game._wreckRecommissionEnabled() && unit._recommissioned === true;
+      if (unit.order?.type === 'recommissionWreck') {
+        const target = game.wrecks.find(wreck => wreck.id === unit.order.wreckId);
+        const def = target && UNIT_DEFS[target.restoreDefId];
+        const valid = game._wreckRecommissionEnabled() && unit.defId === 'engineer' && unit.hp > 0 &&
+          !unit.embarkedIn && target && !target.restoreUsed && !!def?.weapon &&
+          !def.flying && def.armor !== 'infantry' && def.role !== 'transport' &&
+          !assignedRecommissionWrecks.has(target.id);
+        if (valid) {
+          assignedRecommissionWrecks.add(target.id);
+          unit._wreckRecommissionProgress = Number.isFinite(unit._wreckRecommissionProgress)
+            ? clamp(unit._wreckRecommissionProgress, 0, WRECK_RECOMMISSION_SECONDS) : 0;
+          unit._wreckRecommissionWaiting = [null, 'workshop', 'credits', 'space'].includes(unit._wreckRecommissionWaiting)
+            ? unit._wreckRecommissionWaiting : null;
+        } else {
+          unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+          unit._wreckRecommissionProgress = 0; unit._wreckRecommissionWaiting = null;
+        }
+      } else {
+        unit._wreckRecommissionProgress = 0;
+        unit._wreckRecommissionWaiting = null;
+      }
       const savedRaidTag = unit._aiEngineerRaid;
       if (game._aiEngineerRaidState.active && unit.owner === 'enemy' && unit.defId === 'engineer' &&
           savedRaidTag?.raidId === game._aiEngineerRaidState.active.raidId &&

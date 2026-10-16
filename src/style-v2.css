@@ -3838,7 +3838,31 @@ body:has(#end-modal:not(.hidden)),
 .selection-power-toggle { width: fit-content; max-width: 100%; min-height: 23px; margin-top: 5px; padding: 3px 8px; border: 1px solid rgba(194,229,151,.38); background: rgba(48,78,43,.42); color: #dff2cb; font: 700 9px/1 "Barlow Condensed", sans-serif; letter-spacing: .09em; }
 .selection-power-toggle:hover:not(:disabled) { border-color: #c9ff66; color: #fff; }
 .selection-power-toggle:disabled { opacity: .52; cursor: not-allowed; }
+.selection-card:has(.selection-recommission) { height: auto; min-height: 112px; overflow-y: auto; }
+.selection-recommission { display: block; width: fit-content; max-width: 100%; min-height: 32px; margin-top: 6px; padding: 5px 10px; border: 1px solid rgba(201,255,102,.52); background: linear-gradient(115deg, rgba(56,91,42,.72), rgba(29,58,41,.68)); color: #eaffd1; font: 700 11px/1 "Barlow Condensed", sans-serif; letter-spacing: .1em; }
+.selection-recommission:hover:not(:disabled), .selection-recommission:focus-visible { border-color: var(--lime); background: #294429; color: #fff; }
+.selection-recommission:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+.selection-recommission:disabled { border-color: rgba(180,194,175,.25); background: rgba(31,43,34,.56); color: #b4c0af; opacity: .85; }
+.selection-recommission-help { display: block; margin-top: 4px; color: #b7c9b5; font-size: 9px; line-height: 1.25; }
+.battlefield-object-option.is-recommission-target { border-color: rgba(201,255,102,.54); background: #1c3322; }
+.battlefield-object-option.is-recommission-target:hover, .battlefield-object-option.is-recommission-target:focus-visible { border-color: var(--lime); background: #294429; }
+.command-actions #cmd-deploy[data-recommission-wreck] {
+  background: linear-gradient(145deg, #36532b, #1d3828);
+  color: #efffd9;
+  box-shadow: inset 0 2px rgba(201, 255, 102, .5);
+}
+@media (pointer: coarse), (max-width: 670px) {
+  .selection-card:has(.selection-recommission) { min-height: 126px; }
+  .selection-recommission { min-height: 40px; font-size: 12px; }
+  .selection-recommission-help { font-size: 10px; }
+}
 @media (max-width: 670px) {
+  .selection-card:has(.selection-recommission) { height: 72px; min-height: 72px; overflow: hidden; }
+  .selection-card .selection-recommission,
+  .selection-card .selection-recommission-help { display: none; }
+  .command-actions #cmd-deploy[data-recommission-wreck] { grid-column: span 1; }
+  .command-actions #cmd-deploy[data-recommission-wreck]:not(:disabled) { border-color: rgba(201,255,102,.52); }
+  .command-actions #cmd-deploy[data-recommission-wreck] { font-size: 9px; letter-spacing: 0; }
   .power-grid-trigger { min-width: 0; gap: 5px; }
   .power-grid-trigger .stat-icon { font-size: 20px; }
   .power-grid-trigger .power-stat-values strong { font-size: 15px; }

@@ -6,7 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  POWER_STANDBY_RULES_VERSION,
+  WRECK_RECOMMISSION_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -29,7 +29,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 71;
+const RANKED_SEASON = 72;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -63,11 +63,12 @@ const RANKED_SEASON = 71;
 // skirmish-only economic recovery reserves, advancing only skirmish boards.
 // Version 70 adds engineer capture raids to normal/hard skirmish. Version 71
 // changes default ownership capture across solo modes, so all boards now share
-// the v71 comparison floor. Ranked multiplayer starts Season 71 for the same
-// strategic ruleset change.
-const CAMPAIGN_SCORE_FLOOR = POWER_STANDBY_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = POWER_STANDBY_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = POWER_STANDBY_RULES_VERSION;
+// the v71 comparison floor. Version 72 adds field vehicle recommissioning and
+// bounded skirmish AI use; all solo boards and ranked multiplayer advance for
+// this new strategic recovery option.
+const CAMPAIGN_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -1102,7 +1103,7 @@ function startMatch(lobby) {
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
-  'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
+  'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
   const game = lobby.game;
   if (!game || game.status !== 'playing') return { ok: false, reason: 'No active match.' };
@@ -1155,6 +1156,9 @@ function command(lobby, member, message) {
       case 'useUnitAbility': return game.useUnitAbility(message.unitId, message.abilityId);
       case 'issueEngineer': return game.issueEngineer(message.targetId);
       case 'issueRecoverWreck': return game.issueRecoverWreck(message.wreckId);
+      case 'issueRecommissionWreck': return typeof message.wreckId === 'string'
+        ? game.issueRecommissionWreck(message.wreckId)
+        : { ok: false, reason: 'Choose an available wreck.' };
       case 'issueServiceAtWorkshop': return game.issueServiceAtWorkshop(message.workshopId);
       case 'issueReturnCargo': return game.issueReturnCargo();
       case 'issueRearm': return game.issueRearm();

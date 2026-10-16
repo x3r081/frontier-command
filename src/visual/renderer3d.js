@@ -1350,27 +1350,50 @@ export class Renderer3D {
 
   _makeWreckBatch() {
     const group=new THREE.Group();
-    const capacity=96;
+    const capacity=32;
+    const joinUnindexed=parts=>joinedGeometry(parts.map(part=>({...part,geometry:part.geometry.index?part.geometry.toNonIndexed():part.geometry.clone()})));
     const parts=[
-      {geometry:new THREE.BoxGeometry(0.72,0.20,0.92),material:mat(0xffffff,{roughness:0.94,metalness:0.16})},
-      {geometry:new THREE.BoxGeometry(0.42,0.12,0.48),material:mat(0xffffff,{roughness:0.91,metalness:0.2})},
-      {geometry:new THREE.BoxGeometry(0.13,0.13,0.78),material:mat(0xffffff,{roughness:0.98,metalness:0.1})},
-      {geometry:new THREE.OctahedronGeometry(0.17,0),material:new THREE.MeshBasicMaterial({color:0xffdb84,transparent:true,opacity:0.96,depthTest:false,depthWrite:false,toneMapped:false})},
-      {geometry:new THREE.RingGeometry(0.64,0.72,28),material:new THREE.MeshBasicMaterial({color:0xffbd55,transparent:true,opacity:0.86,depthTest:false,depthWrite:false,side:THREE.DoubleSide,toneMapped:false})},
+      // Low, long armored hulls read clearly from the command zoom. A shared
+      // instanced silhouette keeps the hard cap at 32 wrecks inexpensive.
+      {geometry:new THREE.BoxGeometry(0.72,0.22,1.04),material:mat(0xffffff,{roughness:0.94,metalness:0.22})},
+      {geometry:new THREE.BoxGeometry(0.48,0.15,0.56),material:mat(0xffffff,{roughness:0.91,metalness:0.25})},
+      {geometry:joinUnindexed([
+        {geometry:new THREE.BoxGeometry(0.14,0.20,0.88),position:[-0.39,0.01,0]},
+        {geometry:new THREE.BoxGeometry(0.14,0.20,0.88),position:[0.39,0.01,0]},
+        ...[-0.31,0.31].flatMap(x=>[-0.31,-0.10,0.11,0.32].map(z=>({geometry:new THREE.CylinderGeometry(0.075,0.075,0.045,8),position:[x,-0.095,z],rotation:[0,0,Math.PI/2]}))),
+      ]),material:mat(0xffffff,{roughness:0.98,metalness:0.12})},
+      {geometry:joinUnindexed([
+        {geometry:new THREE.BoxGeometry(0.22,0.11,0.24),position:[0,0.035,0.10],rotation:[0,0,0.13]},
+        {geometry:new THREE.CylinderGeometry(0.038,0.045,0.47,7),position:[0,0.13,-0.25],rotation:[Math.PI/2,0,0]},
+      ]),material:mat(0xffffff,{roughness:0.9,metalness:0.24})},
+      {geometry:new THREE.OctahedronGeometry(0.075,0),material:new THREE.MeshBasicMaterial({color:0xffd080,transparent:true,opacity:0.72,depthTest:true,depthWrite:false,toneMapped:false})},
     ];
     this.wreckMeshes=parts.map(({geometry,material},part)=>{
       const mesh=new THREE.InstancedMesh(geometry,material,capacity);
-      mesh.count=0;mesh.frustumCulled=false;mesh.renderOrder=part>=3?7:4;mesh.userData.wreckPart=part;
+      mesh.count=0;mesh.frustumCulled=false;mesh.renderOrder=part>=4?7:4;mesh.userData.wreckPart=part;
       group.add(mesh);return mesh;
     });
     this.wreckCapacity=capacity;
     this.wreckGroup=group;
     this.terrainGroup.add(group);
+    // Two bounded instanced batches provide all recommissioning feedback.
+    const workRing=new THREE.InstancedMesh(new THREE.BoxGeometry(0.30,0.05,0.09),
+      new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.94,depthTest:false,depthWrite:false,side:THREE.DoubleSide,toneMapped:false}),capacity*12);
+    workRing.count=0;workRing.frustumCulled=false;workRing.renderOrder=8;workRing.name='Wreck recommission progress';
+    group.add(workRing);this.wreckWorkRing=workRing;
+    const weldGeometry=joinUnindexed([
+      {geometry:new THREE.CylinderGeometry(0.014,0.027,0.54,5),position:[0,0.2,0]},
+      {geometry:new THREE.OctahedronGeometry(0.085,0),position:[0,0.48,0]},
+      {geometry:new THREE.OctahedronGeometry(0.052,0),position:[0.12,0.38,0.045]},
+    ]);
+    const welding=new THREE.InstancedMesh(weldGeometry,new THREE.MeshBasicMaterial({color:0xffffff,transparent:true,opacity:0.96,depthTest:false,depthWrite:false,toneMapped:false}),capacity);
+    welding.count=0;welding.frustumCulled=false;welding.renderOrder=8;welding.name='Engineer wreck welding';
+    group.add(welding);this.wreckWelding=welding;
   }
 
   _syncWrecks(game,time) {
     if(!Array.isArray(game.wrecks)||game.wrecks.length===0) {
-      if(this.wreckMeshes&&this._wreckSignature!=='') for(const mesh of this.wreckMeshes) mesh.count=0;
+      if(this.wreckMeshes&&this._wreckSignature!=='') for(const mesh of [...this.wreckMeshes,this.wreckWorkRing,this.wreckWelding]) if(mesh) mesh.count=0;
       this.wreckVisuals.clear();this._wreckSignature='';return;
     }
     if(!this.wreckMeshes) this._makeWreckBatch();
@@ -1383,14 +1406,15 @@ export class Renderer3D {
       visible.push(wreck);
       if(visible.length>=this.wreckCapacity) break;
     }
-    const signature=visible.map(w=>`${w.id}:${w.x}:${w.y}:${w.value}:${w.faction}`).join('|');
+    const active=this._visibleWreckRecommissioners(game,visible);
+    const signature=visible.map(w=>`${w.id}:${w.x}:${w.y}:${w.value}:${w.faction}:${w.restoreDefId||''}`).join('|');
     if(signature===this._wreckSignature) {
-      this.wreckMeshes[4].material.opacity=0.72+0.23*(0.5+0.5*Math.sin(time*3.1));
+      this._syncWreckRecommissioning(active,time);
       return;
     }
     this._wreckSignature=signature;
     const offsets=[
-      [0,0.15,0], [0,0.30,-0.05], [-0.39,0.18,0], [0.13,0.62,-0.04], [0,0.075,0],
+      [0,0.13,0], [0,0.30,-0.035], [0,0.035,0], [0,0.43,0], [0.14,0.39,-0.12],
     ];
     const capacity=visible.length;
     for(let part=0;part<this.wreckMeshes.length;part++) {
@@ -1399,25 +1423,79 @@ export class Renderer3D {
         const wreck=visible[i];
         const seed=Number.parseInt(String(wreck.id).replace(/\D/g,''),10)||i+1;
         const yaw=hash(seed,3,55)*Math.PI*2;
-        const valueScale=clamp(0.82+(Number(wreck.value)||0)/140,0.82,1.3);
+        const kind=wreck.restoreDefId||'';
+        const compact=kind==='buggy';
+        const valueScale=clamp(kind==='guardian'?1.13:kind==='artillery'?1.08:
+          kind==='lightTank'?0.94:kind==='stealthTank'?1.02:compact?0.8:0.98,0.78,1.15);
         const [ox,oy,oz]=offsets[part];
         this._setGroundPosition(this.tmpObj,wreck.x+Math.cos(yaw)*ox-Math.sin(yaw)*oz,
           oy+(part===3?0.04*Math.sin(time*3.3+seed):0),wreck.y+Math.sin(yaw)*ox+Math.cos(yaw)*oz);
-        this.tmpObj.rotation.set(part===4?-Math.PI/2:part===0?0.09:0, yaw+(part===1?0.36:0)+(part===0?0.18:0), part===0?-0.10:0);
-        const s=valueScale*(0.9+hash(seed,4,57)*0.2);
-        this.tmpObj.scale.set(part===0?s:part===1?s:part===2?1:s,
-          part===3?0.82+(Number(wreck.value)||0)/300:part===0?s:part===1?s:part===4?1:0.82,
-          part===3?0.82:part===0?s:part===1?s:part===2?s:1);
+        this.tmpObj.rotation.set(0, yaw+(part===1?0.36:0), part===0?-0.08:0);
+        const s=valueScale*(0.94+hash(seed,4,57)*0.12);
+        this.tmpObj.scale.set(part===2?1:s,part===4?0.76:part===2?1:s,
+          part===2?(compact?0.72:1.05):part===3?(kind==='artillery'?1.18:compact?0.78:1):s);
         this.tmpObj.updateMatrix();mesh.setMatrixAt(i,this.tmpObj.matrix);
-        if(part<3) {
+        if(part<4) {
           const aegis=wreck.faction==='aegis';
           mesh.setColorAt(i,new THREE.Color(part===1?(aegis?0x667d75:0x8a5e50):
-            part===2?0x242b29:(aegis?0x3d5650:0x5d423b)));
+            part===2?0x242b29:part===3?(aegis?0x768d82:0xa16854):(aegis?0x3d5650:0x5d423b)));
         }
       }
       mesh.instanceMatrix.needsUpdate=true;if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;
     }
     this.wreckVisuals=new Map(visible.map(w=>[w.id,w]));
+    this._syncWreckRecommissioning(active,time);
+  }
+
+  _visibleWreckRecommissioners(game,wrecks) {
+    const targets=new Map(wrecks.map(w=>[w.id,w]));
+    const active=[];
+    for(const unit of game.units||[]) {
+      if(!unit||unit.hp<=0||unit.embarkedIn||unit.defId!=='engineer'||unit.order?.type!=='recommissionWreck') continue;
+      if(unit.owner==='enemy'&&typeof game.isVisible==='function'&&!game.isVisible(unit)) continue;
+      const wreck=targets.get(unit.order.wreckId);
+      if(!wreck) continue;
+      const tx=Math.floor(wreck.x),tz=Math.floor(wreck.y);
+      if((game.fog?.[tz]?.[tx]??2)!==2) continue;
+      if(unit._wreckRecommissionWaiting!=null) continue;
+      const progress=clamp(Number(unit._wreckRecommissionProgress)||0,0,12);
+      if(progress<=0||Math.hypot(unit.x-wreck.x,unit.y-wreck.y)>1.25) continue;
+      active.push({unit,wreck,progress:progress/12});
+    }
+    return active;
+  }
+
+  _syncWreckRecommissioning(active,time) {
+    if(!this.wreckWorkRing||!this.wreckWelding) return;
+    let ringIndex=0,weldIndex=0;
+    const colors={aegis:0x65dfc3,vesper:0xf09a73};
+    for(const work of active) {
+      if(weldIndex>=this.wreckCapacity) break;
+      const {unit,wreck,progress}=work;
+      const segments=Math.max(1,Math.ceil(progress*12));
+      const color=colors[unit.faction]||colors[unit.owner==='enemy'?'vesper':'aegis'];
+      for(let seg=0;seg<segments;seg++) {
+        const angle=seg*Math.PI*2/12-Math.PI/2;
+        const radius=0.73;
+        this._setGroundPosition(this.tmpObj,wreck.x+Math.cos(angle)*radius,0.10,wreck.y+Math.sin(angle)*radius);
+        this.tmpObj.rotation.set(0,-angle-Math.PI/2,0);
+        this.tmpObj.scale.set(1.5,1.5,1.5);this.tmpObj.updateMatrix();
+        this.wreckWorkRing.setMatrixAt(ringIndex,this.tmpObj.matrix);
+        this.wreckWorkRing.setColorAt(ringIndex,new THREE.Color(color));ringIndex++;
+      }
+      const sx=Number.isFinite(unit.x)?unit.x:wreck.x,sz=Number.isFinite(unit.y)?unit.y:wreck.y;
+      const mx=(sx+wreck.x)*0.5,mz=(sz+wreck.y)*0.5;
+      const dx=wreck.x-sx,dz=wreck.y-sz;
+      this._setGroundPosition(this.tmpObj,mx,0.28+this.visualHeightAt(wreck.x,wreck.y)-this.visualHeightAt(mx,mz),mz);
+      this.tmpObj.rotation.set(0,Math.atan2(dx,dz),Math.PI/2);
+      const weldPulse=1.35+0.25*Math.sin(time*18);
+      this.tmpObj.scale.set(weldPulse,weldPulse,1.2);
+      this.tmpObj.updateMatrix();this.wreckWelding.setMatrixAt(weldIndex,this.tmpObj.matrix);
+      this.wreckWelding.setColorAt(weldIndex,new THREE.Color(color));weldIndex++;
+    }
+    this.wreckWorkRing.count=ringIndex;this.wreckWelding.count=weldIndex;
+    if(ringIndex){this.wreckWorkRing.instanceMatrix.needsUpdate=true;this.wreckWorkRing.instanceColor.needsUpdate=true;}
+    if(weldIndex){this.wreckWelding.instanceMatrix.needsUpdate=true;this.wreckWelding.instanceColor.needsUpdate=true;}
   }
 
   _makeBuildingRuinBatches() {
@@ -1863,7 +1941,7 @@ export class Renderer3D {
     for(const [id,visual] of [...this.collapseVisuals]) this._removeBuildingCollapse(id,visual);
     this._disposeGroup(this.terrainGroup);
     this.crashSite=null;
-    this.wreckMeshes=null;this.wreckGroup=null;this.wreckVisuals.clear();this._wreckSignature='';
+    this.wreckMeshes=null;this.wreckGroup=null;this.wreckWorkRing=null;this.wreckWelding=null;this.wreckVisuals.clear();this._wreckSignature='';
     this.ruinBatches=null;this.ruinGroup=null;this.ruinVisuals.clear();this.ruinSignature='';
     this.fogTexture?.dispose();
     this.fogTexture=null;
@@ -5148,6 +5226,15 @@ export class Renderer3D {
       }));
       rays.geometry.setAttribute('position',new THREE.Float32BufferAttribute(spokes,3));
       rays.userData.interdictPart='spokes';rays.userData.interdictBaseOpacity=0.9;g.add(rays);
+    } else if(fx.type==='recommission') {
+      const color=fx.owner==='enemy'?0xf09a73:0x65dfc3;
+      const ring=addMesh(g,new THREE.RingGeometry(0.36,0.43,28),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.92,depthWrite:false,toneMapped:false}),0,0.07,0,false);
+      ring.rotation.x=-Math.PI/2;ring.userData.recommissionRing=true;
+      for(let i=0;i<4;i++) {
+        const angle=i*Math.PI/2+Math.PI/4;
+        const shard=addMesh(g,new THREE.OctahedronGeometry(0.085,0),new THREE.MeshBasicMaterial({color:0xffe1a0,transparent:true,opacity:0.96,depthWrite:false,toneMapped:false}),Math.cos(angle)*0.28,0.22,Math.sin(angle)*0.28,false);
+        shard.userData.recommissionShard=true;shard.userData.angle=angle;shard.userData.phase=i*0.8;
+      }
     } else if(fx.type==='salvage') {
       // A compact burst of recovered metal, kept low over the wreck so it
       // reads at the usual RTS camera distance without obscuring the unit.
@@ -5550,6 +5637,21 @@ export class Renderer3D {
           else if(kind==='spokes')object.scale.set(radius,1,radius);
           object.material.opacity=object.userData.interdictBaseOpacity*envelope*(kind==='field'?0.18:1);
         }
+      } else if(fx.type==='recommission') {
+        const age=1-life;
+        for(const object of g.children) {
+          if(object.userData.recommissionRing) {
+            object.scale.setScalar(0.55+age*1.9);
+            object.material.opacity=0.92*Math.max(0,1-age*1.25);
+          }
+          if(object.userData.recommissionShard) {
+            const a=object.userData.angle,phase=object.userData.phase;
+            const distance=0.28+age*(0.42+0.08*Math.sin(time*8+phase));
+            object.position.set(Math.cos(a)*distance,0.2+Math.sin(age*Math.PI)*0.5+0.1*Math.sin(time*7+phase),Math.sin(a)*distance);
+            object.rotation.set(time*1.8+phase,time*2.1+phase,time*1.3);
+            object.material.opacity=0.96*life;
+          }
+        }
       }
       g.traverse(o=>{
         if(o.isLine&&o.userData.projectileWake) o.material.opacity=(0.18+0.24*(g.userData.projectileProgress||0))*life;
@@ -5751,6 +5853,13 @@ export class Renderer3D {
       return {x:target.x+(target.w||0)/2,y:target.y+(target.h||0)/2,type:order.type};
     }
     if(order.type==='patrol') return {x:order.leg===0?order.ax:order.bx,y:order.leg===0?order.ay:order.by,type:order.type};
+    if(order.type==='recoverWreck'||order.type==='recommissionWreck') {
+      const wreck=(game.wrecks||[]).find(item=>item.id===order.wreckId);
+      if(!wreck||Number.isFinite(wreck.expiresAt)&&wreck.expiresAt<=(game.time||0)) return null;
+      const x=Math.floor(wreck.x),y=Math.floor(wreck.y);
+      if((game.fog?.[y]?.[x]??2)!==2) return null;
+      return {x:wreck.x,y:wreck.y,type:order.type};
+    }
     if(Number.isFinite(order.x)&&Number.isFinite(order.y)) return {x:order.x,y:order.y,type:order.type==='move'&&order.attackMove?'attackMove':order.type};
     return null;
   }

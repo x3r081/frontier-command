@@ -951,6 +951,19 @@ function updateBattlefieldPickerIntelBadge(contacts = lastSeenHostileContacts())
   toggle.setAttribute('aria-label', `${battlefieldPickerIsOpen() ? 'Close' : 'Open'} battlefield object list${count
     ? `. ${count} unconfirmed last-seen enemy ${count === 1 ? 'contact' : 'contacts'}.` : '.'}`);
 }
+function recommissionRulesAvailable() {
+  return !replayMode && (game?.replayVersion == null || game.replayVersion >= 72) &&
+    typeof game?.canRecommissionWreck === 'function' &&
+    typeof game?.issueRecommissionWreck === 'function';
+}
+function recommissionWreckCheck(wreck) {
+  if (!wreck || !game) return { ok: false, reason: 'Wreck unavailable.' };
+  if (replayMode || game.replayVersion != null && game.replayVersion < 72)
+    return { ok: false, reason: 'Start a new battle to recommission wrecks.' };
+  if (typeof game.canRecommissionWreck !== 'function')
+    return { ok: false, reason: 'Recommissioning is unavailable in this battle.' };
+  return game.canRecommissionWreck(wreck.id) || { ok: false, reason: 'Recommissioning unavailable.' };
+}
 function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
   if (!game) return [];
   const visible = entity => entity.owner === 'player' ||
@@ -978,9 +991,19 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
     const factionName = wreck.faction === 'vesper' ? 'Vesper' : 'Aegis';
     const sector = `${Math.floor(wreck.x)},${Math.floor(wreck.y)}`;
     const secondsLeft = Math.ceil(wreck.expiresAt - game.time);
+    const recommission = recommissionWreckCheck(wreck);
+    const restoreDefId = recommission.defId || wreck.restoreDefId;
+    const restoreName = UNIT_DEFS[restoreDefId]?.name || (restoreDefId ? keyName(restoreDefId) : 'UNKNOWN CHASSIS');
+    const legacyRules = replayMode || game.replayVersion != null && game.replayVersion < 72;
+    const restoreMeta = legacyRules
+      ? ' · recommission unavailable · start a new battle'
+      : restoreDefId
+        ? ` · ${restoreName} · ${fmt(recommission.cost)} credits · ${recommission.seconds}s · ${recommission.ok ? 'ready' : recommission.reason || 'unavailable'}`
+        : ' · chassis not eligible for recommission';
     entries.push({ key: `wreck:${wreck.id}`, wreck,
-      label: wreck.campaignFreightCache ? `Freight cache · ${wreck.value} credits · ${sector}` : `${factionName} wreck · ${wreck.value} salvage · ${secondsLeft}s left · ${sector}`,
-      ariaLabel: wreck.campaignFreightCache ? `Freight cache at sector ${sector}, worth ${wreck.value} credits. Center camera or order an Engineer to recover it.` : `Visible ${factionName} wreck at sector ${sector}, ${wreck.value} salvage credits, ${secondsLeft} seconds before it expires. Center camera or order an Engineer to recover it.` });
+      recommission,
+      label: wreck.campaignFreightCache ? `Freight cache · ${wreck.value} credits · ${sector}` : `${factionName} wreck · ${wreck.value} salvage${restoreMeta} · ${secondsLeft}s left · ${sector}`,
+      ariaLabel: wreck.campaignFreightCache ? `Freight cache at sector ${sector}, worth ${wreck.value} credits. Center camera or order an Engineer to recover it.` : `Visible ${factionName} wreck${restoreMeta}, at sector ${sector}, worth ${wreck.value} salvage credits, ${secondsLeft} seconds before it expires.` });
   }
   const intelEntries = [];
   for (const contact of contacts) {
@@ -1020,6 +1043,7 @@ function renderBattlefieldPicker() {
     button.textContent = entry.label;
     button.setAttribute('aria-label', entry.ariaLabel);
     button.classList.toggle('is-last-seen', !!entry.intel);
+    button.classList.toggle('is-recommission-target', attackMoveMode==='recommissionWreck'&&!!entry.wreck);
     const selected=!!entry.friendly&&game.selection?.includes(entry.entity?.id);
     if (selected) button.setAttribute('aria-current', 'true');
     else button.removeAttribute('aria-current');
@@ -1081,7 +1105,9 @@ function activateBattlefieldObject(key, { additive = false } = {}) {
   } else if (entry.intel) {
     $('#battlefield-picker-status').textContent = `Last sighting at sector ${Math.floor(entry.intel.x)},${Math.floor(entry.intel.y)}. Scout to confirm; the unit may have moved or been destroyed.`;
   } else if (entry.wreck) {
-    if (selectedObjects().some(object => object.defId === 'engineer')) {
+    if (attackMoveMode === 'recommissionWreck') {
+      issueRecommissionWreckTarget(entry.wreck);
+    } else if (selectedObjects().some(object => object.defId === 'engineer')) {
       const result = game.issueRecoverWreck(entry.wreck.id);
       const accepted = resultMessage(result, 'WRECK RECOVERY ORDERED');
       $('#battlefield-picker-status').textContent = accepted ? 'Engineer recovery order sent.' : result.reason;
@@ -2668,7 +2694,63 @@ function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   updateAttackMoveButton();
   $('#attack-hint').innerHTML=targetOrderHint(mode,label,prompt);
   show('#attack-hint');
+  if(mode==='recommissionWreck'&&battlefieldPickerIsOpen())
+    $('#battlefield-picker-status').textContent='Targeting active · choose a compatible visible vehicle wreck to recover its chassis.';
+  renderBattlefieldPicker();
   toast(`${label} TARGETING ACTIVE`);
+}
+function startRecommissionTarget() {
+  const selected = selectedObjects();
+  if (!selected.length || selected.length !== 1 || selected[0].owner !== 'player' || selected[0].defId !== 'engineer') {
+    toast('SELECT ONE ENGINEER TO RECOMMISSION A WRECK', true);
+    return;
+  }
+  if (!recommissionRulesAvailable()) {
+    toast('START A NEW BATTLE TO RECOMMISSION WRECKS', true);
+    return;
+  }
+  startTargetOrder('recommissionWreck', 'RECOMMISSION WRECK', 'SELECT A VISIBLE COMPATIBLE WRECK');
+}
+function issueRecommissionWreckTarget(wreck) {
+  if (!game || attackMoveMode !== 'recommissionWreck' || targetOrderPending) return false;
+  if (!wreck || !(game.wrecks || []).includes(wreck)) {
+    toast('SELECT A VISIBLE WRECK', true);
+    return false;
+  }
+  const check = recommissionWreckCheck(wreck);
+  if (!check.ok) {
+    toast(check.reason || 'WRECK CANNOT BE RECOMMISSIONED', true);
+    if (battlefieldPickerIsOpen()) $('#battlefield-picker-status').textContent = check.reason || 'Wreck cannot be recommissioned.';
+    renderBattlefieldPicker();
+    return false;
+  }
+  const token = targetOrderToken;
+  const result = game.issueRecommissionWreck(wreck.id);
+  if (result?.pending) {
+    targetOrderPending = true;
+    $('#attack-hint').innerHTML = 'RECOMMISSION WRECK · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL';
+    resultMessage(result, 'RECOMMISSION ORDERED · 12S', 'order', {
+      onAccepted: () => {
+        if (targetOrderToken !== token || attackMoveMode !== 'recommissionWreck') return;
+        targetOrderPending = false; attackMoveMode = false; hide('#attack-hint'); updateAttackMoveButton();
+        if (battlefieldPickerIsOpen()) $('#battlefield-picker-status').textContent = 'Recommission order accepted. Keep the Engineer alive through the 12 second repair.';
+        renderBattlefieldPicker();
+      },
+      onSettled: ack => {
+        if (targetOrderToken !== token || attackMoveMode !== 'recommissionWreck') return;
+        targetOrderPending = false;
+        if (!ack?.ok) $('#attack-hint').innerHTML = 'RECOMMISSION WRECK · ORDER REJECTED · SELECT WRECK <span>·</span> ESC TO CANCEL';
+      }
+    });
+    return true;
+  }
+  const accepted = resultMessage(result, 'RECOMMISSION ORDERED · 12S');
+  if (accepted && targetOrderToken === token && attackMoveMode === 'recommissionWreck') {
+    attackMoveMode = false; hide('#attack-hint'); updateAttackMoveButton();
+    if (battlefieldPickerIsOpen()) $('#battlefield-picker-status').textContent = 'Recommission order issued. Keep the Engineer alive through the 12 second repair.';
+  }
+  renderBattlefieldPicker();
+  return accepted;
 }
 function issueTargetOrder(wx,wy,queue=false){
   if(!game||!attackMoveMode||targetOrderPending)return;
@@ -2677,6 +2759,11 @@ function issueTargetOrder(wx,wy,queue=false){
   const routed=['attack','forceMove','reverseMove'].includes(mode)&&routePlanMode;
   queue ||= routed;
   let result, success='', cue='order';
+  if(mode==='recommissionWreck'){
+    const target=objectAt(wx,wy);
+    issueRecommissionWreckTarget(target&&game.wrecks?.includes(target)?target:null);
+    return;
+  }
   if(mode==='super'){result=game.useSuperweapon(wx,wy);success='STRATEGIC STRIKE ORDERED';}
   else if(mode==='engineer'){
     const target=objectAt(wx,wy);
@@ -3832,6 +3919,8 @@ function updateSelectionCard() {
   const fieldUnit=units.length===1&&selected.length===1&&units[0].owner==='player'&&
     (game.replayVersion==null||game.replayVersion>=36)&&
     ['guardian','stealthTank'].includes(units[0].defId)?units[0]:null;
+  const mobileRecommissionUnit=units.length===1&&selected.length===1&&units[0].owner==='player'&&
+    units[0].defId==='engineer'&&matchMedia('(max-width: 670px)').matches?units[0]:null;
   const fieldAbility=fieldUnit?.defId==='guardian'?'brace':fieldUnit?'ghostRun':null;
   const loadedHarvesters=units.filter(unit=>unit.owner==='player'&&unit.defId==='harvester'&&unit.cargo>0);
   const gunships=units.filter(unit=>unit.owner==='player'&&game.unitDefs?.[unit.defId]?.flying&&
@@ -3856,7 +3945,20 @@ function updateSelectionCard() {
   returnButton.classList.toggle('active',rearming);
   returnButton.setAttribute('aria-pressed',String(rearming));
   const fieldButton=$('#cmd-deploy');
-  if(fieldUnit){
+  if(mobileRecommissionUnit){
+    delete fieldButton.dataset.unitAbility;
+    delete fieldButton.dataset.unitId;
+    fieldButton.dataset.recommissionWreck='true';
+    fieldButton.querySelector('span').textContent='⛭';
+    fieldButton.lastChild.textContent='RESTORE';
+    fieldButton.disabled=!recommissionRulesAvailable();
+    fieldButton.classList.remove('active');
+    fieldButton.title=fieldButton.disabled
+      ?'Recommissioning unavailable in this archived or older battle. Start a new battle to enable it.'
+      :'Recommission wreck · choose a compatible visible wreck · powered Field Workshop within 6 tiles · 40% cost · 12 seconds';
+    fieldButton.setAttribute('aria-label',fieldButton.title);
+  }else if(fieldUnit){
+    delete fieldButton.dataset.recommissionWreck;
     const activeUntil=fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil;
     const active=Math.max(0,Math.ceil((activeUntil||0)-(game.time||0)));
     const cooldown=Math.max(0,Math.ceil(fieldUnit.abilityCooldown||0));
@@ -3878,6 +3980,7 @@ function updateSelectionCard() {
   }else{
     delete fieldButton.dataset.unitAbility;
     delete fieldButton.dataset.unitId;
+    delete fieldButton.dataset.recommissionWreck;
     fieldButton.querySelector('span').textContent='⌂';
     fieldButton.lastChild.textContent='DEPLOY';
     fieldButton.classList.remove('active');
@@ -3899,7 +4002,8 @@ function updateSelectionCard() {
   moveButton.lastChild.textContent=productionBuilding?'RALLY':'MOVE';
   moveButton.title=productionBuilding?'Set this building’s reinforcement rally point (M)':'Force move without engaging (M or Alt+click)';
   if(productionBuilding){$('#cmd-attack').disabled=false;moveButton.disabled=false;}
-  if(fieldUnit)fieldButton.disabled=!game.canUseUnitAbility?.(fieldUnit.id,fieldAbility)?.ok;
+  if(mobileRecommissionUnit)fieldButton.disabled=!recommissionRulesAvailable();
+  else if(fieldUnit)fieldButton.disabled=!game.canUseUnitAbility?.(fieldUnit.id,fieldAbility)?.ok;
   const armed=units.filter(unit=>unit.owner==='player'&&game.unitDefs?.[unit.defId]?.weapon);
   const stances=new Set(armed.map(unit=>unit.stance||'aggressive'));
   const stance=armed.length===0?'none':stances.size===1?[...stances][0]:'mixed';
@@ -3956,6 +4060,14 @@ function updateSelectionCard() {
     game._distanceToEntity(first.x,first.y,nextRefinery)<=0.95;
   const harvesterState=first.defId==='harvester'&&first._unloadRefineryId&&first._unloadRemaining>0
     ?`UNLOADING CARGO · ${Math.ceil(first._unloadRemaining)}S`:waitingForBay?'WAITING FOR UNLOAD BAY':first.defId==='harvester'&&first._harvestPhase==='return'?'RETURNING CARGO':null;
+  const recommissionWaiting=first._wreckRecommissionWaiting==='workshop'?'WAITING · POWERED FIELD WORKSHOP':
+    first._wreckRecommissionWaiting==='credits'?'WAITING · CREDITS':
+      first._wreckRecommissionWaiting==='space'?'WAITING · CLEAR NEARBY GROUND':null;
+  const recommissionTarget=first.order?.type==='recommissionWreck'&&
+    game.wrecks?.find(wreck=>wreck.id===first.order.wreckId);
+  const recommissionState=first.order?.type==='recommissionWreck'
+    ?recommissionWaiting||(recommissionTarget&&Math.hypot(first.x-recommissionTarget.x,first.y-recommissionTarget.y)>0.85
+      ?'APPROACHING WRECK':`RECOMMISSIONING · ${Math.min(12,Math.floor(first._wreckRecommissionProgress||0))}/12S`):null;
   const serviceOrderState=first.order?.type==='service'?first._serviceWaiting==='power'?'SERVICE PAUSED · NO POWER':
     first._serviceWaiting==='credits'?'SERVICE PAUSED · LOW CREDITS':`FIELD WORKSHOP SERVICE · ${unitOrder}`:null;
   const fieldActive=fieldUnit&&(fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)>(game.time||0)
@@ -3968,7 +4080,7 @@ function updateSelectionCard() {
     Math.hypot(first.x-rearmPad.x-rearmPad.w/2,first.y-rearmPad.y-rearmPad.h/2)>.5?'RETURNING TO HELIPAD':
       `REARMING · ${Math.ceil((unitDef.ammoMax-first.ammo)/unitDef.rearmRate)}S`:
     unitDef?.flying&&Number.isFinite(unitDef.ammoMax)&&first.ammo<1?`NO AMMUNITION · ${unitOrder}`:null;
-  const tacticalState=fieldActive|| (disrupted?`WEAPON DISRUPTED · ${Math.ceil(first.suppressedUntil-game.time)}S`:fieldHint||serviceOrderState||harvesterState||aircraftState|| (serviceSupported?`FIELD REPAIRS ACTIVE · ${unitOrder}`:refinerySupported?'NETWORK SUPPORTED · +20% EXTRACTION':first.defId==='stealthTank'&&first.revealedUntil<=(game?.time||0)?'CLOAKED · AMBUSH READY':isTroopCarrier(first)?`PASSENGERS ${first.passengerIds?.length||0}/${unitDef.capacity} · ${unitOrder}`:unitOrder));
+  const tacticalState=fieldActive|| (disrupted?`WEAPON DISRUPTED · ${Math.ceil(first.suppressedUntil-game.time)}S`:fieldHint||recommissionState||serviceOrderState||harvesterState||aircraftState|| (serviceSupported?`FIELD REPAIRS ACTIVE · ${unitOrder}`:refinerySupported?'NETWORK SUPPORTED · +20% EXTRACTION':first.defId==='stealthTank'&&first.revealedUntil<=(game?.time||0)?'CLOAKED · AMBUSH READY':isTroopCarrier(first)?`PASSENGERS ${first.passengerIds?.length||0}/${unitDef.capacity} · ${unitOrder}`:unitOrder));
   const workshopState=first.defId==='serviceBay'?(first.powered?'FIELD REPAIRS ONLINE':'FIELD REPAIRS OFFLINE'):null;
   const groupSummary=selected.length>1&&units.length?(()=>{
     const counts=new Map();
@@ -4017,7 +4129,11 @@ function updateSelectionCard() {
   const powerAction=first.powerStandby===true?'RESTORE POWER':'STANDBY';
   const archivedPowerUnavailable=/power routing is unavailable in this archived battle/i.test(powerToggleCheck?.reason||'');
   const powerControl=powerToggleEligible?`<button class="selection-power-toggle" type="button" data-selection-power="${String(first.id).replaceAll('"','&quot;')}" data-standby="${first.powerStandby===true?false:true}" ${powerCanToggle?'':'disabled'} aria-label="${archivedPowerUnavailable?`${def?.name||'Building'} controls unavailable in this archived battle. Start a new battle to enable them.`:`${first.powerStandby===true?'Restore power to':'Put'} ${def?.name||'building'} ${first.powerStandby===true?'online':'on standby'}`}" title="${archivedPowerUnavailable?'Start a new battle to enable power controls.':powerToggleCheck?.reason||''}">${pendingPowerCommands.has(first.id)?'WAITING FOR SERVER':powerAction}</button>`:'';
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${powerControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
+  const selectedEngineer=selected.length===1&&!isBuilding&&first.owner==='player'&&first.defId==='engineer';
+  const recommissionEnabled=selectedEngineer&&recommissionRulesAvailable();
+  const archivedRecommission=replayMode||game.replayVersion!=null&&game.replayVersion<72;
+  const recommissionControl=selectedEngineer?`<button class="selection-recommission" type="button" data-recommission-wreck ${recommissionEnabled?'':'disabled'} aria-label="${archivedRecommission?'Recommissioning unavailable in this archived battle. Start a new battle to enable it.':'Choose a compatible visible wreck to recommission. Requires a powered Field Workshop within 6 tiles and credits; takes 12 seconds.'}" title="${archivedRecommission?'Start a new battle to enable recommissioning.':!recommissionEnabled?'Recommissioning is unavailable in this battle.':'Select a compatible visible wreck · powered Field Workshop within 6 tiles · 40% unit cost · 12 seconds'}">${archivedRecommission?'NEW BATTLE REQUIRED':'RECOMMISSION WRECK'}</button><small class="selection-recommission-help">${archivedRecommission?'Unavailable in this archived battle · start a new battle.':'Restore a compatible visible vehicle at 40% health · 40% cost · 12s · powered Workshop within 6 tiles.'}</small>`:'';
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${powerControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
 }
 function placeSquadControlBar() {
   const bar=$('#mobile-squads');
@@ -4803,6 +4919,15 @@ function processEvents() {
       if(e.owner==='player'){
         toast(`FIELD SALVAGE SECURED · +${fmt(e.value)} CREDITS`);
         audio.play('salvage');
+      }
+      continue;
+    }
+    if(type==='wreckRecommissioned'){
+      if(e.owner==='player'){
+        const name=UNIT_DEFS[e.defId]?.name||keyName(e.defId||'vehicle');
+        toast(`${name.toUpperCase()} RECOMMISSIONED · 40% INTEGRITY`);
+        audio.play('unitReady');
+        updateSelectionCard();
       }
       continue;
     }
@@ -5821,7 +5946,7 @@ function installMultiplayerCommandAdapters(target){
   const commands={
     issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
     issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
-    issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
+    issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueRecommissionWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:(defId,producerId)=>({defId,...(producerId!==undefined?{producerId}:{})}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
     useUnitAbility:(unitId,abilityId)=>({unitId,abilityId}),
@@ -5838,6 +5963,9 @@ function hydrateMultiplayerState(state){
   const next=Game.deserialize(state);
   const priorPulseIds=new Set((game?.effects||[]).filter(effect=>effect.source==='stormcall').map(effect=>effect.id));
   const freshPulse=(next.effects||[]).find(effect=>effect.source==='stormcall'&&!priorPulseIds.has(effect.id));
+  const priorRecoveryIds=new Set((game?.effects||[]).filter(effect=>effect.type==='recommission').map(effect=>effect.id));
+  const freshRecovery=(next.effects||[]).some(effect=>effect.type==='recommission'&&
+    effect.owner==='player'&&!priorRecoveryIds.has(effect.id));
   if(game&&currentMode==='multiplayer'&&game.width===next.width&&game.height===next.height){
     for(let y=0;y<next.height;y++)for(let x=0;x<next.width;x++)Object.assign(game.terrain[y][x],next.terrain[y][x]);
     next.terrain=game.terrain;
@@ -5850,6 +5978,10 @@ function hydrateMultiplayerState(state){
   if(freshPulse&&playing){
     audio.play('ionpulse');
     toast(freshPulse.owner==='player'?'RELAY PULSE DISCHARGED':'ENEMY RELAY PULSE');
+  }
+  if(freshRecovery&&playing){
+    audio.play('unitReady');
+    toast('FIELD VEHICLE RECOMMISSIONED');
   }
   if(playing)updateUI(true);
 }
@@ -6233,6 +6365,8 @@ $('#power-grid-list').addEventListener('click',event=>{
   setBuildingStandby(button.dataset.powerBuilding,standby);
 });
 $('#selection-card').addEventListener('click',event=>{
+  const recommission=event.target.closest('[data-recommission-wreck]');
+  if(recommission&&!recommission.disabled){startRecommissionTarget();return;}
   const button=event.target.closest('[data-selection-power]');
   if(!button||button.disabled)return;
   setBuildingStandby(button.dataset.selectionPower,button.dataset.standby==='true');
@@ -6610,6 +6744,10 @@ $('#cmd-stance').addEventListener('click',cycleStance);
 function activateFieldAbilityOrDeploy(){
   if(!game)return;
   const button=$('#cmd-deploy');
+  if(button.dataset.recommissionWreck==='true'){
+    startRecommissionTarget();
+    return;
+  }
   const abilityId=button.dataset.unitAbility,unitId=button.dataset.unitId;
   if(abilityId&&unitId){
     const label=abilityId==='brace'?'GUARDIAN BRACED':'SPECTER GHOST RUN';

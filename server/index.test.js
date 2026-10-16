@@ -9,7 +9,7 @@ import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import WebSocket from 'ws';
 import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESERVE_RULES_VERSION,
-  AI_ENGINEER_RAID_RULES_VERSION, POWER_STANDBY_RULES_VERSION,
+  AI_ENGINEER_RAID_RULES_VERSION, POWER_STANDBY_RULES_VERSION, WRECK_RECOMMISSION_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
 import { deriveCampaignVeteran } from '../src/game/campaignVeteran.js';
@@ -480,42 +480,43 @@ test('leaderboard validates filters and ranks only compatible verified scores', 
   assert.equal(history[1].score, 7410);
 });
 
-test('v71 power standby floor applies across campaign and every skirmish difficulty', async () => {
+test('v72 vehicle recommission floor applies across campaign and every skirmish difficulty', async () => {
   const profile = await createProfile('Assembly Floor');
   const base = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis',
     seconds: 42, kills: 2, completedAt: 900, verified: true };
   const rows = [
-    { ...base, id: 'assembly-campaign-v70', mode: 'campaign', scenarioId: 'first-harvest',
-      scoreVersion: 70 },
     { ...base, id: 'assembly-campaign-v71', mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: 71 },
+    { ...base, id: 'assembly-campaign-v72', mode: 'campaign', scenarioId: 'first-harvest',
+      scoreVersion: 72 },
     ...['easy', 'normal', 'hard'].flatMap(difficulty => [
-      { ...base, id: `assembly-skirmish-${difficulty}-v70`, mode: 'skirmish', difficulty,
-        scenarioId: 'shard-valley', scoreVersion: 70, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
       { ...base, id: `assembly-skirmish-${difficulty}-v71`, mode: 'skirmish', difficulty,
         scenarioId: 'shard-valley', scoreVersion: 71, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+      { ...base, id: `assembly-skirmish-${difficulty}-v72`, mode: 'skirmish', difficulty,
+        scenarioId: 'shard-valley', scoreVersion: 72, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
     ]),
   ];
-  const history = { id: 'history-assembly-skirmish-v70', profileId: profile.profile.id,
+  const history = { id: 'history-assembly-skirmish-v71', profileId: profile.profile.id,
     mode: 'skirmish', scenarioId: 'shard-valley', scenarioName: 'Shard Valley',
     difficulty: 'normal', faction: 'aegis', seconds: 42, kills: 2,
-    result: 'victory', completedAt: 901, scoreId: 'assembly-skirmish-normal-v70' };
+    result: 'victory', completedAt: 901, scoreId: 'assembly-skirmish-normal-v71' };
   store.scores.push(...rows);
   store.history.push(history);
   try {
     const campaign = await api('/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token);
-    assert.deepEqual((await campaign.json()).entries.map(entry => entry.id), ['assembly-campaign-v71']);
+    assert.deepEqual((await campaign.json()).entries.map(entry => entry.id), ['assembly-campaign-v72']);
     for (const difficulty of ['easy', 'normal', 'hard']) {
       const response = await api(`/api/leaderboard?mode=skirmish&difficulty=${difficulty}&scenarioId=shard-valley`, profile.token);
-      assert.deepEqual((await response.json()).entries.map(entry => entry.id), [`assembly-skirmish-${difficulty}-v71`]);
+      assert.deepEqual((await response.json()).entries.map(entry => entry.id), [`assembly-skirmish-${difficulty}-v72`]);
     }
-    assert.ok(SOLO_REPLAY_VERSION >= POWER_STANDBY_RULES_VERSION,
+    assert.ok(SOLO_REPLAY_VERSION >= WRECK_RECOMMISSION_RULES_VERSION,
       'the current replay version includes the global solo comparison floor');
     assert.equal(POWER_STANDBY_RULES_VERSION, 71);
+    assert.equal(WRECK_RECOMMISSION_RULES_VERSION, 72);
     assert.equal(AI_ENGINEER_RAID_RULES_VERSION, 70);
     assert.equal(AI_ECONOMY_RESERVE_RULES_VERSION, 69);
     assert.ok((await (await api('/api/records/history', profile.token)).json()).entries
-      .some(entry => entry.id === history.id), 'the retired v70 result stays visible in private battle history');
+      .some(entry => entry.id === history.id), 'the retired v71 result stays visible in private battle history');
   } finally {
     for (const row of rows) {
       const index = store.scores.indexOf(row);
@@ -526,7 +527,7 @@ test('v71 power standby floor applies across campaign and every skirmish difficu
   }
 });
 
-test('v71 skirmish boards require power standby across difficulties and profiles', async () => {
+test('v72 skirmish boards require vehicle recommission across difficulties and profiles', async () => {
   const profile = await createProfile('Route Compatibility');
   const base = { profileId: profile.profile.id, mode: 'skirmish', difficulty: 'normal',
     faction: 'aegis', skirmishOpening: 'established', victoryMode: 'dominion',
@@ -644,9 +645,9 @@ test('v71 skirmish boards require power standby across difficulties and profiles
       aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
     { ...base, id: 'route-v70-canyon', scenarioId: 'canyon-ring', scoreVersion: 70,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
-    { ...base, id: 'route-v71-shard', scenarioId: 'shard-valley', scoreVersion: 71,
+    { ...base, id: 'route-v72-shard', scenarioId: 'shard-valley', scoreVersion: 72,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
-    { ...base, id: 'route-v71-canyon', scenarioId: 'canyon-ring', scoreVersion: 71,
+    { ...base, id: 'route-v72-canyon', scenarioId: 'canyon-ring', scoreVersion: 72,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
   );
   for (const difficulty of ['easy', 'normal', 'hard']) for (const commander of AI_COMMANDER_PROFILES) {
@@ -658,7 +659,7 @@ test('v71 skirmish boards require power standby across difficulties and profiles
         aiCommanderProfileId: commander.id },
       { ...base, id: `siege-v70-${key}`, difficulty, scenarioId: 'twin-passes', scoreVersion: 70,
         aiCommanderProfileId: commander.id },
-      { ...base, id: `siege-v71-${key}`, difficulty, scenarioId: 'twin-passes', scoreVersion: 71,
+      { ...base, id: `siege-v72-${key}`, difficulty, scenarioId: 'twin-passes', scoreVersion: 72,
         aiCommanderProfileId: commander.id },
     );
   }
@@ -674,27 +675,27 @@ test('v71 skirmish boards require power standby across difficulties and profiles
   try {
     const shard = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=shard-valley', profile.token)).json()).entries;
     const canyon = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=canyon-ring', profile.token)).json()).entries;
-    assert.deepEqual(shard.map(entry => entry.id), ['route-v71-shard']);
-    assert.deepEqual(canyon.map(entry => entry.id), ['route-v71-canyon']);
+    assert.deepEqual(shard.map(entry => entry.id), ['route-v72-shard']);
+    assert.deepEqual(canyon.map(entry => entry.id), ['route-v72-canyon']);
     for (const difficulty of ['easy', 'normal', 'hard']) for (const commander of AI_COMMANDER_PROFILES) {
       const entries = (await (await api(`/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=${commander.id}&difficulty=${difficulty}`,
         profile.token)).json()).entries;
-      const currentVersion = 71;
+      const currentVersion = 72;
       assert.deepEqual(entries.map(entry => entry.id), [`siege-v${currentVersion}-${difficulty}-${commander.id}`],
         `${difficulty} ${commander.id} scores use the v${currentVersion} comparison floor`);
     }
     assert.equal(shard[0].aiCommanderProfileId, AI_COMMANDER_PROFILES[1].id);
     assert.deepEqual((await (await api(`/api/leaderboard?mode=skirmish&scenarioId=canyon-ring&aiCommanderProfileId=${AI_COMMANDER_PROFILES[0].id}`,
-      profile.token)).json()).entries.map(entry => entry.id), ['route-v71-canyon']);
+      profile.token)).json()).entries.map(entry => entry.id), ['route-v72-canyon']);
     assert.equal((await api('/api/leaderboard?mode=skirmish&aiCommanderProfileId=unknown', profile.token)).status, 400);
     assert.ok(store.scores.some(score => score.id === 'route-v44-canyon'),
       'retiring an old result from comparable rankings does not erase it');
     assert.ok(store.scores.some(score => score.id === 'route-v49-shard'),
       'v49 results stay stored after leaving the current skirmish board');
     assert.ok(store.scores.some(score => score.id === 'route-v59-shard'),
-      'v59 runs remain stored after leaving the v71 board');
+      'v59 runs remain stored after leaving the v72 board');
     assert.ok(store.scores.includes(rows.find(row => row.id === 'route-v68-shard')),
-      'v68 results remain stored after leaving the v71 board');
+      'v68 results remain stored after leaving the v72 board');
     assert.ok(rows.filter(row => row.scoreVersion < 48).every(row => store.scores.includes(row)),
       'older results remain in storage for private history');
     assert.ok((await (await api('/api/records/history', profile.token)).json()).entries
@@ -729,10 +730,10 @@ test('campaign boards require current solo rules across missions and preserve ol
       scenarioName: 'Dawn of the Free', scoreVersion: 70 },
     { ...base, id: 'harvest-v70', scenarioId: 'first-harvest',
       scenarioName: 'First Harvest', scoreVersion: 70 },
-    { ...base, id: 'finale-v71', scenarioId: 'dawn-of-the-free',
-      scenarioName: 'Dawn of the Free', scoreVersion: 71 },
-    { ...base, id: 'harvest-v71', scenarioId: 'first-harvest',
-      scenarioName: 'First Harvest', scoreVersion: 71 },
+    { ...base, id: 'finale-v72', scenarioId: 'dawn-of-the-free',
+      scenarioName: 'Dawn of the Free', scoreVersion: 72 },
+    { ...base, id: 'harvest-v72', scenarioId: 'first-harvest',
+      scenarioName: 'First Harvest', scoreVersion: 72 },
   ];
   store.scores.push(...rows);
   try {
@@ -740,8 +741,8 @@ test('campaign boards require current solo rules across missions and preserve ol
       profile.token)).json()).entries;
     const harvest = (await (await api('/api/leaderboard?mode=campaign&scenarioId=first-harvest',
       profile.token)).json()).entries;
-    assert.deepEqual(finale.map(entry => entry.id), ['finale-v71']);
-    assert.deepEqual(harvest.map(entry => entry.id), ['harvest-v71']);
+    assert.deepEqual(finale.map(entry => entry.id), ['finale-v72']);
+    assert.deepEqual(harvest.map(entry => entry.id), ['harvest-v72']);
     assert.ok(store.scores.includes(rows[0]), 'older finale results are preserved');
   } finally {
     for (const row of rows) {
@@ -797,12 +798,12 @@ test('leaderboard campaign filters expose field order and carryover only for cam
   assert.equal(response.status, 200);
   const campaignEntries = (await response.json()).entries;
   assert.deepEqual(campaignEntries.map(entry => entry.id), ['campaign-ranked'],
-    'First Harvest entries require the v71 power standby rules');
+    'First Harvest entries require the v72 vehicle recommission rules');
   store.scores.push(
     { ...score, id: 'black-shard-v57', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 57 },
     { ...score, id: 'black-shard-v68', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 68 },
     { ...score, id: 'black-shard-v70', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 70 },
-    { ...score, id: 'black-shard-v71', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 71 },
+    { ...score, id: 'black-shard-v72', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 72 },
     { ...score, id: 'black-shard-v49', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 49 },
     { ...score, id: 'black-shard-v37', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 37 },
     { ...score, id: 'black-shard-v34', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 34 },
@@ -810,13 +811,13 @@ test('leaderboard campaign filters expose field order and carryover only for cam
     { ...score, id: 'black-shard-v36', scenarioId: 'black-shard', fieldOrderId: 'none', scoreVersion: 36 });
   const blackShardEntries = (await (await api('/api/leaderboard?mode=campaign&scenarioId=black-shard',
     profile.token)).json()).entries;
-  assert.deepEqual(blackShardEntries.map(entry => entry.id), ['black-shard-v71'],
-    'power standby resets economic campaign comparison');
+  assert.deepEqual(blackShardEntries.map(entry => entry.id), ['black-shard-v72'],
+    'vehicle recommission resets economic campaign comparison');
   store.scores.push(
     { ...score, id: 'dawnfall-v57', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 57 },
     { ...score, id: 'dawnfall-v68', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 68 },
     { ...score, id: 'dawnfall-v70', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 70 },
-    { ...score, id: 'dawnfall-v71', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 71 },
+    { ...score, id: 'dawnfall-v72', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 72 },
     { ...score, id: 'dawnfall-v49', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 49 },
     { ...score, id: 'dawnfall-v37', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 37 },
     { ...score, id: 'dawnfall-v32', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 32 },
@@ -826,13 +827,13 @@ test('leaderboard campaign filters expose field order and carryover only for cam
     { ...score, id: 'dawnfall-v36', scenarioId: 'dawnfall', fieldOrderId: 'none', scoreVersion: 36 });
   const dawnfallEntries = (await (await api('/api/leaderboard?mode=campaign&scenarioId=dawnfall',
     profile.token)).json()).entries;
-  assert.deepEqual(dawnfallEntries.map(entry => entry.id), ['dawnfall-v71'],
-    'power standby resets the Dawnfall comparison');
+  assert.deepEqual(dawnfallEntries.map(entry => entry.id), ['dawnfall-v72'],
+    'vehicle recommission resets the Dawnfall comparison');
   store.scores.push(
     { ...score, id: 'quiet-knife-v57', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 57 },
     { ...score, id: 'quiet-knife-v68', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 68 },
     { ...score, id: 'quiet-knife-v70', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 70 },
-    { ...score, id: 'quiet-knife-v71', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 71 },
+    { ...score, id: 'quiet-knife-v72', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 72 },
     { ...score, id: 'quiet-knife-v49', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 49 },
     { ...score, id: 'quiet-knife-v37', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 37 },
     { ...score, id: 'quiet-knife-v33', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 33 },
@@ -841,8 +842,8 @@ test('leaderboard campaign filters expose field order and carryover only for cam
     { ...score, id: 'quiet-knife-v36', scenarioId: 'quiet-knife', fieldOrderId: 'none', scoreVersion: 36 });
   const quietKnifeEntries = (await (await api('/api/leaderboard?mode=campaign&scenarioId=quiet-knife',
     profile.token)).json()).entries;
-  assert.deepEqual(quietKnifeEntries.map(entry => entry.id), ['quiet-knife-v71'],
-    'power standby resets the Quiet Knife comparison');
+  assert.deepEqual(quietKnifeEntries.map(entry => entry.id), ['quiet-knife-v72'],
+    'vehicle recommission resets the Quiet Knife comparison');
   assert.equal(campaignEntries[0].fieldOrderStatus, 'completed');
   const history = (await (await api('/api/records/history', profile.token)).json()).entries;
   assert.deepEqual(history.map(entry => entry.id), ['history-campaign-version48', 'history-campaign-version17'],
@@ -853,7 +854,7 @@ test('leaderboard campaign filters expose field order and carryover only for cam
   assert.equal((await api('/api/leaderboard?mode=skirmish&supplyId=none', profile.token)).status, 400);
 });
 
-test('v71 power standby resets economic and fixed-force campaign boards while retaining history', async () => {
+test('v72 vehicle recommission resets economic and fixed-force campaign boards while retaining history', async () => {
   const profile = await createProfile('Last Light comparison');
   const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
     faction: 'aegis', fieldOrderId: 'none', fieldOrderStatus: 'skipped', carryoverId: 'none',
@@ -862,7 +863,7 @@ test('v71 power standby resets economic and fixed-force campaign boards while re
     { ...base, id: 'last-light-v57', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 57 },
     { ...base, id: 'last-light-v68', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 68 },
     { ...base, id: 'last-light-v70', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 70 },
-    { ...base, id: 'last-light-v71', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 71 },
+    { ...base, id: 'last-light-v72', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 72 },
     { ...base, id: 'last-light-v41', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 41 },
     { ...base, id: 'last-light-v42', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 42 },
     { ...base, id: 'last-light-v43', scenarioId: 'last-light', scenarioName: 'Mission 3: Last Light', scoreVersion: 43 },
@@ -880,7 +881,7 @@ test('v71 power standby resets economic and fixed-force campaign boards while re
     { ...base, id: 'first-harvest-v57', scenarioId: 'first-harvest', scenarioName: 'Mission 1: First Harvest', scoreVersion: 57 },
     { ...base, id: 'first-harvest-v68', scenarioId: 'first-harvest', scenarioName: 'Mission 1: First Harvest', scoreVersion: 68 },
     { ...base, id: 'first-harvest-v70', scenarioId: 'first-harvest', scenarioName: 'Mission 1: First Harvest', scoreVersion: 70 },
-    { ...base, id: 'first-harvest-v71', scenarioId: 'first-harvest', scenarioName: 'Mission 1: First Harvest', scoreVersion: 71 },
+    { ...base, id: 'first-harvest-v72', scenarioId: 'first-harvest', scenarioName: 'Mission 1: First Harvest', scoreVersion: 72 },
     { ...base, faction: 'vesper', id: 'ashes-v42', scenarioId: 'ashes-in-transit',
       scenarioName: 'Mission 6: Ashes in Transit', scoreVersion: 42 },
     { ...base, faction: 'vesper', id: 'ashes-v43', scenarioId: 'ashes-in-transit',
@@ -901,8 +902,8 @@ test('v71 power standby resets economic and fixed-force campaign boards while re
       scenarioName: 'Mission 6: Ashes in Transit', scoreVersion: 68, routePayoffId: 'iron-current' },
     { ...base, faction: 'vesper', id: 'ashes-v70', scenarioId: 'ashes-in-transit',
       scenarioName: 'Mission 6: Ashes in Transit', scoreVersion: 70, routePayoffId: 'iron-current' },
-    { ...base, faction: 'vesper', id: 'ashes-v71', scenarioId: 'ashes-in-transit',
-      scenarioName: 'Mission 6: Ashes in Transit', scoreVersion: 71, routePayoffId: 'iron-current' },
+    { ...base, faction: 'vesper', id: 'ashes-v72', scenarioId: 'ashes-in-transit',
+      scenarioName: 'Mission 6: Ashes in Transit', scoreVersion: 72, routePayoffId: 'iron-current' },
     { ...base, id: 'ghost-v35', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 35 },
     { ...base, id: 'ghost-v36', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 36 },
     { ...base, id: 'ghost-v48', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 48 },
@@ -911,7 +912,7 @@ test('v71 power standby resets economic and fixed-force campaign boards while re
     { ...base, id: 'ghost-v57', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 57 },
     { ...base, id: 'ghost-v68', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 68 },
     { ...base, id: 'ghost-v70', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 70 },
-    { ...base, id: 'ghost-v71', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 71 },
+    { ...base, id: 'ghost-v72', scenarioId: 'ghost-channel', scenarioName: 'Ghost Channel', scoreVersion: 72 },
     { ...base, id: 'dawn-v35', scenarioId: 'after-the-dawn', scenarioName: 'After the Dawn', scoreVersion: 35 },
     { ...base, id: 'dawn-v36', scenarioId: 'after-the-dawn', scenarioName: 'After the Dawn', scoreVersion: 36 },
     { ...base, id: 'dawn-v48', scenarioId: 'after-the-dawn', scenarioName: 'After the Dawn', scoreVersion: 48 },
@@ -921,7 +922,7 @@ test('v71 power standby resets economic and fixed-force campaign boards while re
     { ...base, id: 'dawn-v68', scenarioId: 'after-the-dawn', scenarioName: 'After the Dawn', scoreVersion: 68 });
   store.scores.push(
     { ...base, id: 'dawn-v70', scenarioId: 'after-the-dawn', scenarioName: 'After the Dawn', scoreVersion: 70 },
-    { ...base, id: 'dawn-v71', scenarioId: 'after-the-dawn', scenarioName: 'After the Dawn', scoreVersion: 71 });
+    { ...base, id: 'dawn-v72', scenarioId: 'after-the-dawn', scenarioName: 'After the Dawn', scoreVersion: 72 });
   store.history.push({ id: 'history-first-harvest-v48', profileId: profile.profile.id, mode: 'campaign',
     scenarioId: 'first-harvest', scenarioName: 'Mission 1: First Harvest', difficulty: 'normal', faction: 'aegis',
     seconds: 160, kills: 4, result: 'victory', completedAt: 480, scoreId: 'first-harvest-v48' });
@@ -931,24 +932,24 @@ test('v71 power standby resets economic and fixed-force campaign boards while re
   const lastLight = await api('/api/leaderboard?mode=campaign&scenarioId=last-light', profile.token);
   assert.equal(lastLight.status, 200);
   assert.deepEqual((await lastLight.json()).entries.map(entry => entry.id)
-    .filter(id => id.startsWith('last-light-v')).sort(), ['last-light-v71']);
+    .filter(id => id.startsWith('last-light-v')).sort(), ['last-light-v72']);
   const firstHarvest = await api('/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token);
   assert.equal(firstHarvest.status, 200);
   assert.deepEqual((await firstHarvest.json()).entries.map(entry => entry.id)
     .filter(id => id.startsWith('first-harvest-v')).sort(),
-    ['first-harvest-v71']);
+    ['first-harvest-v72']);
   const ashes = await api('/api/leaderboard?mode=campaign&scenarioId=ashes-in-transit', profile.token);
   assert.equal(ashes.status, 200);
   assert.deepEqual((await ashes.json()).entries.map(entry => entry.id)
-    .filter(id => id.startsWith('ashes-v')).sort(), ['ashes-v71']);
+    .filter(id => id.startsWith('ashes-v')).sort(), ['ashes-v72']);
   const ashRouteEntries = (await (await api('/api/leaderboard?mode=campaign&scenarioId=ashes-in-transit&routePayoffId=iron-current', profile.token)).json()).entries;
-  assert.deepEqual(ashRouteEntries.map(entry => entry.id), ['ashes-v71']);
+  assert.deepEqual(ashRouteEntries.map(entry => entry.id), ['ashes-v72']);
   assert.equal(ashRouteEntries[0].routePayoffId, 'iron-current');
   for (const [scenarioId, prefix] of [['ghost-channel', 'ghost'], ['after-the-dawn', 'dawn']]) {
     const fixedForce = await api(`/api/leaderboard?mode=campaign&scenarioId=${scenarioId}`, profile.token);
     assert.deepEqual((await fixedForce.json()).entries.map(entry => entry.id)
-      .filter(id => id.startsWith(`${prefix}-v`)).sort(), [`${prefix}-v71`],
-    `${scenarioId} now compares v71 power standby rules`);
+      .filter(id => id.startsWith(`${prefix}-v`)).sort(), [`${prefix}-v72`],
+    `${scenarioId} now compares v72 vehicle recommission rules`);
   }
   assert.ok((await (await api('/api/records/history', profile.token)).json()).entries
     .some(entry => entry.id === 'history-first-harvest-v48'), 'v48 economic scores remain in personal history');
@@ -984,7 +985,7 @@ test('Red Ledger route payoffs are filtered and exposed in public and personal r
   assert.deepEqual(new Set(ghostRows.map(entry => entry.id)), new Set(['route-ghost', 'ashes-route-ghost']));
   const ironRows = await rows('iron-current');
   assert.deepEqual(new Set(ironRows.map(entry => entry.id)),
-    new Set(['route-iron', 'ashes-route-iron', 'ashes-v71']));
+    new Set(['route-iron', 'ashes-route-iron', 'ashes-v72']));
   const neutralRows = await rows('none');
   assert.deepEqual(new Set(neutralRows.map(entry => entry.id)), new Set(['ashes-route-none']));
   assert.match((await (await api('/api/leaderboard?mode=campaign&routePayoffId=iron-current', profile.token)).json()).note,
@@ -999,21 +1000,21 @@ test('Red Ledger route payoffs are filtered and exposed in public and personal r
   assert.equal(history[0].routePayoffId, 'iron-current');
 });
 
-test('Iron Current ranks only v71 results after power standby', async () => {
+test('Iron Current ranks only v72 results after vehicle recommission', async () => {
   const profile = await createProfile('Freight Rank');
   const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
     faction: 'aegis', scenarioId: 'iron-current', scenarioName: 'Branch Operation: Iron Current',
     fieldOrderId: 'none', fieldOrderStatus: 'none', carryoverId: 'none', supplyId: 'none',
     doctrineId: 'standard', seconds: 140, kills: 5, completedAt: 99, verified: true };
   store.scores.push({ ...base, id: 'freight-v70', scoreVersion: 70 },
-    { ...base, id: 'freight-v71', scoreVersion: SOLO_REPLAY_VERSION },
+    { ...base, id: 'freight-v72', scoreVersion: SOLO_REPLAY_VERSION },
     { ...base, id: 'freight-v57', scoreVersion: 57 },
     { ...base, id: 'freight-v55', scoreVersion: 55 },
     { ...base, id: 'freight-v54', scoreVersion: 54 },
     { ...base, id: 'freight-v49', scoreVersion: 49 },
     { ...base, id: 'freight-v18', scoreVersion: 18 });
   const entries = (await (await api('/api/leaderboard?mode=campaign&scenarioId=iron-current', profile.token)).json()).entries;
-  assert.deepEqual(entries.map(entry => entry.id), ['freight-v71']);
+  assert.deepEqual(entries.map(entry => entry.id), ['freight-v72']);
 });
 
 test('campaign run tickets lock field orders to their own mission and invalidate an older active run', async () => {
@@ -2123,6 +2124,62 @@ test('authenticated websocket building power command validates ownership and sta
   }
 });
 
+test('authenticated websocket recommission validates the Engineer and preserves visible wreck metadata', async () => {
+  const a = await createProfile('Recovery Host'); const b = await createProfile('Recovery Guest');
+  const host = await openSocket(a.token); const guest = await openSocket(b.token);
+  try {
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'hello')));
+    sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+    const room = await nextMessage(host, message => message.type === 'lobby');
+    sendSocket(guest, { type: 'join_lobby', code: room.code });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.length === 2);
+    await nextMessage(guest, message => message.type === 'lobby');
+    sendSocket(host, { type: 'set_ready', ready: true }); sendSocket(guest, { type: 'set_ready', ready: true });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.every(player => player.ready));
+    sendSocket(host, { type: 'start_match' });
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'match_start')));
+
+    const lobby = lobbies.get(room.code), game = lobby.game;
+    game._createBuilding('player', 'serviceBay', 13, 37);
+    const engineer = game._createUnit('player', 'engineer', 17.5, 39.5);
+    const foreign = game._createUnit('enemy', 'engineer', 45.5, 13.5);
+    const lost = game._createUnit('player', 'buggy', 17.5, 39.5);
+    game._applyDamage(lost, lost.maxHp * 10, 'ion', 'enemy');
+    const wreck = game.wrecks.at(-1);
+    game.credits.player = 1000;
+    game._refreshPower(); game._updateFog();
+    assert.equal(wreck.restoreDefId, 'buggy');
+    const member = lobby.members.find(member => member.side === 'player');
+    const visibleWreck = projectedState(lobby, member).wrecks.find(item => item.id === wreck.id);
+    assert.equal(visibleWreck.restoreDefId, 'buggy', 'the client receives the observed chassis');
+    assert.equal(visibleWreck.restoreUsed, false);
+
+    for (const [requestId, ids, wreckId] of [
+      ['restore-foreign', [foreign.id], wreck.id],
+      ['restore-malformed', [engineer.id], { id: wreck.id }],
+    ]) {
+      sendSocket(host, { type: 'command', requestId, command: 'issueRecommissionWreck', ids, wreckId });
+      assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
+        message.requestId === requestId)).ok, false);
+    }
+    sendSocket(host, { type: 'command', requestId: 'restore-own', command: 'issueRecommissionWreck',
+      ids: [engineer.id], wreckId: wreck.id });
+    assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'restore-own')).ok, true);
+    assert.deepEqual(engineer.order, { type: 'recommissionWreck', wreckId: wreck.id });
+    assert.equal(game.credits.player, 1000, 'ordering restoration does not charge a deposit');
+    for (let tick = 0; tick < 365; tick++) game.update(1 / 30);
+    const completion = game.events.find(event => event.type === 'wreckRecommissioned' && event.id === wreck.id);
+    assert.ok(completion, 'the authoritative simulation completes the dispatched order');
+    assert.equal(game.getEntity(completion.vehicleId).owner, 'player');
+    assert.equal(game.getEntity(completion.vehicleId)._recommissioned, true);
+    assert.equal(game.wrecks.some(item => item.id === wreck.id), false);
+  } finally {
+    sendSocket(host, { type: 'leave_lobby' });
+    host.close(); guest.close();
+  }
+});
+
 test('websocket movement dispatch enforces ownership, queues, and matched pace options', async () => {
   const hostProfile = await createProfile('Reverse Move Host');
   const guestProfile = await createProfile('Reverse Move Guest');
@@ -2477,7 +2534,7 @@ test('ranked match terminal results update both ratings once; casual and private
   const ratingAResponse = await api('/api/multiplayer/rating', a.token);
   const ratingBResponse = await api('/api/multiplayer/rating', b.token);
   const ratingA = await ratingAResponse.json(); const ratingB = await ratingBResponse.json();
-  assert.equal(ratingA.season, 71, 'the ranked rating reset follows the power standby rules');
+  assert.equal(ratingA.season, 72, 'the ranked rating reset follows the vehicle recommission rules');
   assert.equal(ratingA.games, 1); assert.equal(ratingB.games, 1);
   assert.equal(ratingA.rating + ratingB.rating, 2400);
   assert.equal(ratingA.wins + ratingB.wins, 1);
