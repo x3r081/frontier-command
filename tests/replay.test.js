@@ -9,6 +9,34 @@ import { createSoloRecorder, createSoloPlayback, replaySoloRun, validateSoloEnve
 const skirmish = { mode: 'skirmish', difficulty: 'normal', faction: 'aegis', seed: 12345,
   scenarioId: SKIRMISH_MAPS[0].id };
 
+test('v63 matched pace records movement options and rejects older or malformed recordings', () => {
+  const game = new Game({ mode: 'skirmish', difficulty: skirmish.difficulty, faction: skirmish.faction,
+    seed: skirmish.seed, mapId: skirmish.scenarioId });
+  const squad = game.units.filter(unit => unit.owner === 'player' && ['scout', 'lightTank'].includes(unit.defId));
+  assert.equal(squad.length, 2);
+  const clock = { completedTicks: 0 };
+  const recorder = createSoloRecorder(game, clock);
+  game.select(squad.map(unit => unit.id));
+  assert.equal(game.issueMove(23.5, 29.5, false, false, true).ok, true);
+  assert.ok(squad.every(unit => unit.order.pace > 0));
+  assert.equal(game.issueForceMove(25.5, 29.5, true, true).ok, true);
+  assert.equal(game.issueReverseMove(24.5, 31.5, true, true).ok, true);
+  for (let tick = 0; tick < 90; tick++) { game.update(SOLO_STEP_SECONDS); clock.completedTicks++; }
+  recorder.dispose();
+  assert.equal(validateSoloReplay(skirmish, recorder.commands, clock.completedTicks), true);
+  assert.throws(() => createSoloPlayback(skirmish, recorder.commands, clock.completedTicks, 62), /matched pace requires replay version 63/i);
+  const malformed = structuredClone(recorder.commands);
+  malformed[0].args[4] = 'true';
+  assert.throws(() => validateSoloReplay(skirmish, malformed, clock.completedTicks), /invalid solo command/i);
+  const playback = createSoloPlayback(skirmish, recorder.commands, clock.completedTicks);
+  playback.step(clock.completedTicks);
+  for (const unit of squad) {
+    const replayed = playback.game.getEntity(unit.id);
+    assert.deepEqual({ x: replayed.x, y: replayed.y, facing: replayed.facing, order: replayed.order },
+      { x: unit.x, y: unit.y, facing: unit.facing, order: unit.order });
+  }
+});
+
 test('v61 reverse movement records facing and rejects older replay rules', () => {
   const game=new Game({mode:'skirmish',difficulty:skirmish.difficulty,faction:skirmish.faction,
     seed:skirmish.seed,mapId:skirmish.scenarioId});

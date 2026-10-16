@@ -1759,7 +1759,7 @@ test('websocket multiplayer requires a bearer token and projects an oriented lob
   host.close(); guest.close(); other.close();
 });
 
-test('websocket reverse move dispatch enforces ownership and queue booleans', async () => {
+test('websocket movement dispatch enforces ownership, queues, and matched pace options', async () => {
   const hostProfile = await createProfile('Reverse Move Host');
   const guestProfile = await createProfile('Reverse Move Guest');
   const host = await openSocket(hostProfile.token);
@@ -1813,6 +1813,39 @@ test('websocket reverse move dispatch enforces ownership and queue booleans', as
       message.requestId === 'reverse-bad-queue');
     assert.equal(badQueue.ok, false, 'the queue flag must be a boolean');
     assert.equal(ownTank.order.queue.length, 1, 'a malformed flag cannot append a reverse order');
+
+    const ownScout = liveLobby.game.units.find(unit => unit.owner === 'player' && unit.defId === 'scout');
+    assert.ok(ownScout);
+    sendSocket(host, { type: 'command', requestId: 'pace-move', command: 'issueMove',
+      ids: [ownTank.id, ownScout.id, foreignTank.id], ...destination, matchPace: true });
+    assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'pace-move')).ok, true);
+    assert.equal(ownScout.order.pace, ownTank.order.pace);
+    assert.ok(ownScout.order.pace > 0 && ownScout.order.pace < liveLobby.game.unitDefs.scout.speed);
+    assert.deepEqual(foreignTank.order, foreignOrder, 'foreign units cannot influence or receive the paced order');
+    sendSocket(host, { type: 'command', requestId: 'pace-force', command: 'issueForceMove',
+      ids: [ownTank.id, ownScout.id], x: destination.x + 2, y: destination.y, queue: true, matchPace: true });
+    assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'pace-force')).ok, true);
+    assert.equal(ownScout.order.queue.at(-1).pace, ownTank.order.queue.at(-1).pace);
+
+    const ownBuggy = liveLobby.game._createUnit('player', 'buggy', ownTank.x + 1.5, ownTank.y);
+    sendSocket(host, { type: 'command', requestId: 'pace-reverse', command: 'issueReverseMove',
+      ids: [ownTank.id, ownBuggy.id], ...destination, matchPace: true });
+    assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'pace-reverse')).ok, true);
+    assert.equal(ownBuggy.order.pace, ownTank.order.pace);
+    assert.ok(ownTank.order.reverse && ownBuggy.order.reverse);
+    assert.ok(Math.abs(ownTank.order.pace - liveLobby.game.unitDefs.lightTank.speed * 0.65) < 1e-9);
+
+    sendSocket(host, { type: 'command', requestId: 'pace-malformed', command: 'issueMove',
+      ids: [ownScout.id], ...destination, matchPace: 'true' });
+    assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'pace-malformed')).ok, false, 'matched pace must be a boolean');
+    sendSocket(host, { type: 'command', requestId: 'pace-wrong-command', command: 'issueStop',
+      ids: [ownScout.id], matchPace: true });
+    assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'pace-wrong-command')).ok, false, 'the option belongs only to movement commands');
 
     const hostEnded = nextMessage(host, message => message.type === 'match_end');
     const guestEnded = nextMessage(guest, message => message.type === 'match_end');

@@ -51,6 +51,7 @@ export const AI_COUNTER_PLAN_RULES_VERSION = 59;
 export const AI_COMMAND_RECOVERY_RULES_VERSION = 62;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const REVERSE_MOVE_RULES_VERSION = 61;
+export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
@@ -358,6 +359,7 @@ export class Game {
     this.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     this.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     this.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     this._aiCommandRecovery = null;
     this.salvageDrop = null;
     this.skirmishOpening = mode === 'skirmish' && skirmishOpening === 'command-rig' ? 'command-rig' : 'established';
@@ -1247,8 +1249,35 @@ export class Game {
       (unit.order?.queue?.length || 0) < MAX_QUEUED_ORDERS);
   }
 
-  issueMove(x, y, attackMove = false, queue = false) {
+  _matchedPace(units, reverse = false) {
+    const groundMovers = units.filter(unit => {
+      const def = UNIT_DEFS[unit.defId];
+      return def && !def.flying && !unit.embarkedIn && Number.isFinite(def.speed) && def.speed > 0;
+    });
+    if (groundMovers.length < 2) return null;
+    let pace = Infinity;
+    for (const unit of groundMovers) {
+      const def = UNIT_DEFS[unit.defId];
+      const damagePenalty = unit.hp < unit.maxHp * 0.4 && def.armor !== 'infantry' ? 0.72 : 1;
+      const effectiveSpeed = def.speed * this._campaignUnitMultiplier(unit.owner, 'rapid', 1.12) *
+        damagePenalty * (reverse ? 0.65 : 1);
+      pace = Math.min(pace, effectiveSpeed);
+    }
+    return Number.isFinite(pace) ? pace : null;
+  }
+
+  _validateMatchPace(matchPace) {
+    if (typeof matchPace !== 'boolean')
+      return { ok: false, reason: 'Match Pace must be enabled or disabled.' };
+    if (matchPace && this.replayVersion != null && this.replayVersion < MATCHED_PACE_RULES_VERSION)
+      return { ok: false, reason: `Match Pace requires replay version ${MATCHED_PACE_RULES_VERSION}.` };
+    return null;
+  }
+
+  issueMove(x, y, attackMove = false, queue = false, matchPace = false) {
     if (!this._validatePoint(x, y)) return { ok: false, reason: 'Destination is outside the map.' };
+    const paceError = this._validateMatchPace(matchPace);
+    if (paceError) return paceError;
     if (queue && this.replayVersion != null && this.replayVersion < QUEUED_ORDERS_RULES_VERSION)
       return { ok: false, reason: 'Queued orders are unavailable in this replay.' };
     const units = this._selectedCommandUnits();
@@ -1258,6 +1287,7 @@ export class Game {
     const tile = this._tile(Math.floor(x), Math.floor(y));
     const movers = units.filter(u => !(u.defId === 'harvester' && tile?.resource > 0 && !attackMove && !queue));
     const destinations = this._formationDestinations(movers, x, y);
+    const pace = matchPace ? this._matchedPace(movers) : null;
     for (const u of units) {
       if (this.mode === 'campaign' && this.campaignMission === 1 && u.owner === 'player' && u.defId === 'mcv' &&
         !this.hasBuilding('player', 'command') && !this.hasBuilding('player', 'barracks') &&
@@ -1272,17 +1302,20 @@ export class Game {
         u._harvestTile = { x: Math.floor(x), y: Math.floor(y) };
       } else {
         const point = destinations.get(u.id) || { x, y };
-        this._queueOrIssueUnitOrder(u, { type: 'move', ...point, attackMove: !!attackMove }, queue);
+        const paceOrder = pace && !UNIT_DEFS[u.defId]?.flying && !u.embarkedIn ? { pace } : {};
+        this._queueOrIssueUnitOrder(u, { type: 'move', ...point, attackMove: !!attackMove, ...paceOrder }, queue);
       }
       if (!queue) { u.path = []; u._pathGoal = null; }
     }
     this._event('order', { order: attackMove ? 'attackMove' : 'move', queued: !!queue,
-      ids: units.map(u => u.id), x, y });
+      ids: units.map(u => u.id), x, y, ...(matchPace ? { matchPace: true } : {}) });
     return { ok: true };
   }
 
-  issueReverseMove(x, y, queue = false) {
+  issueReverseMove(x, y, queue = false, matchPace = false) {
     if (!this._validatePoint(x, y)) return { ok: false, reason: 'Destination is outside the map.' };
+    const paceError = this._validateMatchPace(matchPace);
+    if (paceError) return paceError;
     if (this.replayVersion != null && this.replayVersion < REVERSE_MOVE_RULES_VERSION)
       return { ok: false, reason: 'Reverse movement is unavailable in this replay.' };
     if (queue && this.replayVersion != null && this.replayVersion < QUEUED_ORDERS_RULES_VERSION)
@@ -1295,17 +1328,22 @@ export class Game {
     if (queue && !this._canQueueUnitOrders(units))
       return { ok: false, reason: `A squad can queue at most ${MAX_QUEUED_ORDERS} orders.` };
     const destinations = this._formationDestinations(units, x, y);
+    const pace = matchPace ? this._matchedPace(units, true) : null;
     for (const unit of units) {
       this._queueOrIssueUnitOrder(unit, {
         type: 'move', ...(destinations.get(unit.id) || { x, y }), reverse: true, attackMove: false,
+        ...(pace ? { pace } : {}),
       }, queue);
     }
-    this._event('order', { order: 'reverseMove', queued: !!queue, ids: units.map(unit => unit.id), x, y });
+    this._event('order', { order: 'reverseMove', queued: !!queue, ids: units.map(unit => unit.id), x, y,
+      ...(matchPace ? { matchPace: true } : {}) });
     return { ok: true };
   }
 
-  issueForceMove(x, y, queue = false) {
+  issueForceMove(x, y, queue = false, matchPace = false) {
     if (!this._validatePoint(x, y)) return { ok: false, reason: 'Destination is outside the map.' };
+    const paceError = this._validateMatchPace(matchPace);
+    if (paceError) return paceError;
     if (queue && this.replayVersion != null && this.replayVersion < QUEUED_ORDERS_RULES_VERSION)
       return { ok: false, reason: 'Queued orders are unavailable in this replay.' };
     const units = this._selectedCommandUnits();
@@ -1313,10 +1351,14 @@ export class Game {
     if (queue && !this._canQueueUnitOrders(units))
       return { ok: false, reason: `A squad can queue at most ${MAX_QUEUED_ORDERS} orders.` };
     const destinations = this._formationDestinations(units, x, y);
+    const pace = matchPace ? this._matchedPace(units) : null;
     for (const u of units) {
-      this._queueOrIssueUnitOrder(u, { type: 'forceMove', ...(destinations.get(u.id) || { x, y }) }, queue);
+      const paceOrder = pace && !UNIT_DEFS[u.defId]?.flying && !u.embarkedIn ? { pace } : {};
+      this._queueOrIssueUnitOrder(u, { type: 'forceMove', ...(destinations.get(u.id) || { x, y }),
+        ...paceOrder }, queue);
     }
-    this._event('order', { order: 'forceMove', queued: !!queue, ids: units.map(u => u.id), x, y });
+    this._event('order', { order: 'forceMove', queued: !!queue, ids: units.map(u => u.id), x, y,
+      ...(matchPace ? { matchPace: true } : {}) });
     return { ok: true };
   }
 
@@ -2490,6 +2532,10 @@ export class Game {
       unit._repath = 1.2 + this._rand() * 0.4;
     }
     let remaining = dt * speed * (unit.hp < unit.maxHp * 0.4 && d.armor !== 'infantry' ? 0.72 : 1);
+    const pace = unit.order?.pace;
+    if (!ghostRun && (this.replayVersion == null || this.replayVersion >= MATCHED_PACE_RULES_VERSION) &&
+      Number.isFinite(pace) && pace > 0 && ['move', 'forceMove'].includes(unit.order?.type))
+      remaining = Math.min(remaining, dt * pace);
     while (remaining > 0 && unit.path.length) {
       const next = unit.path[0];
       const distance = dist(unit.x, unit.y, next.x, next.y);
@@ -6687,6 +6733,9 @@ export class Game {
     if (game.mode === 'skirmish' && game.replayVersion == null &&
         data.aiCommandRecoveryRulesVersion !== AI_COMMAND_RECOVERY_RULES_VERSION)
       game.replayVersion = AI_COMMAND_RECOVERY_RULES_VERSION - 1;
+    // Unversioned saves written before Match Pace retain their old movement rules.
+    if (game.replayVersion == null && data.matchedPaceRulesVersion !== MATCHED_PACE_RULES_VERSION)
+      game.replayVersion = MATCHED_PACE_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6707,6 +6756,7 @@ export class Game {
     game.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     game.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     game.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    game.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     const savedRecovery = game._aiCommandRecovery;
     game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)
       ? {
@@ -6827,6 +6877,11 @@ export class Game {
         Math.min(unit.ghostRunUntil, game.time + SPECTER_GHOST_RUN_SECONDS) : 0;
       unit.embarkedIn ??= null;
       unit.passengerIds = Array.isArray(unit.passengerIds) ? unit.passengerIds : [];
+      if (unit.order && Object.hasOwn(unit.order, 'pace') &&
+          (!['move', 'forceMove'].includes(unit.order.type) ||
+           !Number.isFinite(unit.order.pace) || unit.order.pace <= 0 || unit.order.pace > 10 ||
+           (game.replayVersion != null && game.replayVersion < MATCHED_PACE_RULES_VERSION)))
+        delete unit.order.pace;
       if (unit.order && Object.hasOwn(unit.order, 'queue')) {
         const raw = game.replayVersion != null && game.replayVersion < QUEUED_ORDERS_RULES_VERSION
           ? [] : Array.isArray(unit.order.queue) ? unit.order.queue.slice(0, MAX_QUEUED_ORDERS) : [];
@@ -6836,6 +6891,9 @@ export class Game {
             return [{ type: 'attack', targetId: order.targetId }];
           if (['move', 'forceMove'].includes(order.type) && game._validatePoint(order.x, order.y))
             return [{ type: order.type, x: order.x, y: order.y,
+              ...(game.replayVersion == null || game.replayVersion >= MATCHED_PACE_RULES_VERSION
+                ? Number.isFinite(order.pace) && order.pace > 0 && order.pace <= 10 ? { pace: order.pace } : {}
+                : {}),
               ...(order.type === 'move' ? {
                 attackMove: order.attackMove === true,
                 ...(order.reverse === true &&

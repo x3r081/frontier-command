@@ -5,7 +5,7 @@ import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 62;
+export const SOLO_REPLAY_VERSION = 63;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -24,13 +24,16 @@ const wreckId = value => typeof value === 'string' && /^wreck[1-9][0-9]{0,8}$/.t
 // Only public, player-issued gameplay commands belong in a replay. Selection is
 // captured as command context rather than recorded as a separate command.
 export const SOLO_COMMAND_METHODS = Object.freeze({
-  issueMove: args => args.length >= 2 && args.length <= 4 && xPoint(args[0]) && yPoint(args[1]) &&
+  issueMove: args => args.length >= 2 && args.length <= 5 && xPoint(args[0]) && yPoint(args[1]) &&
     (args.length < 3 || typeof args[2] === 'boolean') &&
+    (args.length < 4 || typeof args[3] === 'boolean') &&
+    (args.length < 5 || typeof args[4] === 'boolean'),
+  issueForceMove: args => args.length >= 2 && args.length <= 4 &&
+    xPoint(args[0]) && yPoint(args[1]) && (args.length < 3 || typeof args[2] === 'boolean') &&
     (args.length < 4 || typeof args[3] === 'boolean'),
-  issueForceMove: args => (args.length === 2 || args.length === 3) &&
-    xPoint(args[0]) && yPoint(args[1]) && (args.length < 3 || typeof args[2] === 'boolean'),
-  issueReverseMove: args => (args.length === 2 || args.length === 3) &&
-    xPoint(args[0]) && yPoint(args[1]) && (args.length < 3 || typeof args[2] === 'boolean'),
+  issueReverseMove: args => args.length >= 2 && args.length <= 4 &&
+    xPoint(args[0]) && yPoint(args[1]) && (args.length < 3 || typeof args[2] === 'boolean') &&
+    (args.length < 4 || typeof args[3] === 'boolean'),
   issueAttack: args => (args.length === 1 || args.length === 2) &&
     entityId(args[0]) && (args.length < 2 || typeof args[1] === 'boolean'),
   issueFollow: oneId,
@@ -216,6 +219,10 @@ export function createSoloPlayback(envelope, commands, completedTicks, replayVer
   if (replayVersion < 61 && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueReverseMove'))
     throw new TypeError('Reverse movement requires replay version 61.');
+  if (replayVersion < 63 && Array.isArray(commands) && commands.some(command =>
+      command?.method === 'issueMove' && command.args?.length === 5 ||
+      ['issueForceMove', 'issueReverseMove'].includes(command?.method) && command.args?.length === 4))
+    throw new TypeError('Matched pace requires replay version 63.');
   if (replayVersion < 9 && envelope?.supplyId !== undefined && envelope.supplyId !== 'none')
     throw new TypeError('Campaign supply packages require replay version 9.');
   if (replayVersion < 10 && Array.isArray(commands) &&

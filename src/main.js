@@ -70,6 +70,7 @@ let missionIndex = 0;
 let campaignDifficulty = 'normal';
 let dominionDisplayKey = '';
 let relayScoutIndex = 0;
+let battlefieldPickerAddSquadMode = false;
 let lastPublicSalvagePhase = null;
 let lastPublicBloomUntil = null;
 let campaignGuidanceKey = '';
@@ -121,6 +122,7 @@ let placeId = null;
 let placementToken = 0;
 let attackMoveMode = false;
 let routePlanMode = false;
+let matchPaceMode = false;
 let routePlanSelectionKey = '';
 let commandAbilityMode = null;
 let commandAbilityToken = 0;
@@ -816,6 +818,7 @@ async function watchLastReplay() {
 async function watchReplayRecord(record, metadata = null) {
   if (gameStarting) return;
   gameStarting = true;
+  setBattlefieldPickerOpen(false);
   try {
     const playback = createSoloPlayback(record.envelope, record.commands, record.completedTicks, record.version);
     abandonActiveRun();
@@ -910,6 +913,16 @@ function reverseMoveUnits(units=selectedObjects()) {
   });
 }
 function battlefieldPickerIsOpen() { return !$('#battlefield-picker-panel').classList.contains('hidden'); }
+function updateBattlefieldPickerAddSquadControl() {
+  const button=$('#battlefield-picker-add-squad');
+  button.classList.toggle('active',battlefieldPickerAddSquadMode);
+  button.setAttribute('aria-pressed',String(battlefieldPickerAddSquadMode));
+  button.disabled=!game||!playing||paused||replayMode;
+}
+function setBattlefieldPickerAddSquadMode(enabled) {
+  battlefieldPickerAddSquadMode=!!enabled&&!!game&&playing&&!paused&&!replayMode&&battlefieldPickerIsOpen();
+  updateBattlefieldPickerAddSquadControl();
+}
 function lastSeenHostileContacts() {
   return currentMode === 'skirmish' && game?.victoryMode === 'elimination'
     ? game.getLastSeenHostileUnits?.() || [] : [];
@@ -969,6 +982,7 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
 }
 function renderBattlefieldPicker() {
   if (!battlefieldPickerIsOpen()) return;
+  updateBattlefieldPickerAddSquadControl();
   const list = $('#battlefield-picker-list');
   const contacts = lastSeenHostileContacts();
   const entries = battlefieldPickerObjects(contacts);
@@ -993,8 +1007,11 @@ function renderBattlefieldPicker() {
     button.textContent = entry.label;
     button.setAttribute('aria-label', entry.ariaLabel);
     button.classList.toggle('is-last-seen', !!entry.intel);
-    if (entry.friendly && game.selection?.includes(entry.entity?.id)) button.setAttribute('aria-current', 'true');
+    const selected=!!entry.friendly&&game.selection?.includes(entry.entity?.id);
+    if (selected) button.setAttribute('aria-current', 'true');
     else button.removeAttribute('aria-current');
+    if(entry.friendly)button.setAttribute('aria-pressed',String(selected));
+    else button.removeAttribute('aria-pressed');
     desired.push(button);
   }
   desired.forEach((button, index) => {
@@ -1009,6 +1026,7 @@ function renderBattlefieldPicker() {
 }
 function setBattlefieldPickerOpen(open, { focusFirst = false, restoreFocus = false } = {}) {
   const panel = $('#battlefield-picker-panel'), toggle = $('#battlefield-picker-toggle');
+  if(!open)setBattlefieldPickerAddSquadMode(false);
   panel.classList.toggle('hidden', !open);
   toggle.setAttribute('aria-expanded', String(open));
   updateBattlefieldPickerIntelBadge();
@@ -1018,7 +1036,7 @@ function setBattlefieldPickerOpen(open, { focusFirst = false, restoreFocus = fal
     if (focusFirst) ($('#battlefield-picker-list').querySelector('button') || toggle).focus();
   } else if (restoreFocus) toggle.focus();
 }
-function activateBattlefieldObject(key) {
+function activateBattlefieldObject(key, { additive = false } = {}) {
   const entry = battlefieldPickerObjects().find(item => item.key === key);
   if (!entry) { renderBattlefieldPicker(); return; }
   const x = entry.intel?.x ?? (entry.wreck ? entry.wreck.x : entry.entity.x + (entry.entity.w || 0) / 2);
@@ -1030,9 +1048,23 @@ function activateBattlefieldObject(key) {
     return;
   }
   if (entry.friendly) {
-    game.select([entry.entity.id]);
+    const additiveUnit=additive||battlefieldPickerAddSquadMode;
+    if(additiveUnit&&entry.entity&&!('w' in entry.entity)){
+      const selectable=(game.selection||[]).filter(id=>{
+        const selected=game.getEntity(id);
+        return selected?.owner==='player'&&selected.hp>0&&!selected.embarkedIn&&!('w' in selected);
+      });
+      const selected=new Set(selectable);
+      const wasSelected=selected.has(entry.entity.id);
+      if(wasSelected)selected.delete(entry.entity.id);
+      else selected.add(entry.entity.id);
+      game.select([...selected]);
+      $('#battlefield-picker-status').textContent=`${entry.label} ${wasSelected?'removed from':'added to'} the squad selection.`;
+    }else{
+      game.select([entry.entity.id]);
+      $('#battlefield-picker-status').textContent = `${entry.label} selected and centered.`;
+    }
     updateSelectionCard();
-    $('#battlefield-picker-status').textContent = `${entry.label} selected and centered.`;
   } else if (entry.intel) {
     $('#battlefield-picker-status').textContent = `Last sighting at sector ${Math.floor(entry.intel.x)},${Math.floor(entry.intel.y)}. Scout to confirm; the unit may have moved or been destroyed.`;
   } else if (entry.wreck) {
@@ -1791,6 +1823,9 @@ function resetCommandDeckForOperation() {
 async function beginGame(options = {}) {
   if(gameStarting)return;
   relayScoutIndex=0;
+  matchPaceMode=false;
+  battlefieldPickerAddSquadMode=false;
+  setBattlefieldPickerOpen(false);
   finishDeploymentIntro();
   gameStarting=true;
   $('#launch-status').lastChild.textContent=' CONNECTING TO COMMAND RECORDS…';
@@ -2119,6 +2154,8 @@ function abandonActiveRun() {
   network.finishRun(runId,{abandon:true}).catch(()=>{});
 }
 function returnToMenu({preserveLobby=false}={}) {
+  battlefieldPickerAddSquadMode=false;
+  setBattlefieldPickerOpen(false);
   setRoutePlanMode(false);
   closeBlueprintDetails();
   finishDeploymentIntro();
@@ -2367,7 +2404,7 @@ function issueContext(wx, wy, queue = false) {
   const own = selectedObjects();
   if (!own.length) return;
   if(queue){
-    const result=hit?.owner==='enemy'?game.issueAttack(hit.id,true):game.issueMove(wx,wy,false,true);
+    const result=hit?.owner==='enemy'?game.issueAttack(hit.id,true):issueMoveCommand(wx,wy,false,true);
     resultMessage(result,hit?.owner==='enemy'?'ATTACK QUEUED':'WAYPOINT QUEUED','order',{
       onSettled:ack=>{if(ack?.transportFailure)setRoutePlanMode(false);}
     });
@@ -2383,7 +2420,7 @@ function issueContext(wx, wy, queue = false) {
   }
   if(hit&&game.wrecks?.includes(hit)){
     if(own.some(o=>o.defId==='engineer'))resultMessage(game.issueRecoverWreck(hit.id),'WRECK RECOVERY ORDERED');
-    else resultMessage(game.issueMove(wx,wy));
+    else resultMessage(issueMoveCommand(wx,wy));
     return;
   }
   if (hit && game.bridges?.includes(hit)) {
@@ -2395,7 +2432,7 @@ function issueContext(wx, wy, queue = false) {
     }
     else if (engineers.length) resultMessage(game.issueEngineer(hit.id),'BRIDGE REPAIR ORDERED');
     else if (own.some(o => game.unitDefs?.[o.defId]?.weapon)) resultMessage(game.issueAttack(hit.id),'BRIDGE DEMOLITION ORDERED');
-    else resultMessage(game.issueMove(wx, wy));
+    else resultMessage(issueMoveCommand(wx, wy));
     return;
   }
   if(hit?.owner==='player'&&isTroopCarrier(hit)&&own.some(o=>game.unitDefs?.[o.defId]?.armor==='infantry'))
@@ -2408,10 +2445,10 @@ function issueContext(wx, wy, queue = false) {
     }else resultMessage(game.issueEngineer(hit.id));
   }
   else if (hit && hit.owner === 'enemy') resultMessage(game.issueAttack(hit.id));
-  else if (getCell(wx, wy)?.resource > 0 && own.some(o => /harvester/.test(o.defId))) resultMessage(game.issueMove(wx, wy));
+  else if (getCell(wx, wy)?.resource > 0 && own.some(o => /harvester/.test(o.defId))) resultMessage(issueMoveCommand(wx, wy));
   else if (own.some(o => 'w' in o) && !own.some(o => !('w' in o))) {
     const b = own.find(o=>['barracks','factory'].includes(o.defId)); if (b&&game.setRally) resultMessage(game.setRally(b.id, wx, wy),'RALLY POINT SET');
-  } else resultMessage(game.issueMove(wx, wy));
+  } else resultMessage(issueMoveCommand(wx, wy));
 }
 function attemptPlacement(wx, wy) {
   if(placementPending)return;
@@ -2515,13 +2552,13 @@ function issueTargetOrder(wx,wy,queue=false){
   }
   else if(mode==='unload'){result=game.issueUnload(wx,wy);success='CARRIER MOVING TO UNLOAD';}
   else if(mode==='force'){result=game.issueForceFire(wx,wy);success='FORCE FIRE ORDERED';}
-  else if(mode==='forceMove'){result=game.issueForceMove(wx,wy,queue);success=queue?'FORCE MOVE QUEUED':'FORCE MOVE ORDERED';}
-  else if(mode==='reverseMove'){result=game.issueReverseMove(wx,wy,queue);success=queue?'REVERSE MOVE QUEUED':'ARMOR REVERSING · 65% SPEED';}
+  else if(mode==='forceMove'){result=issueForceMoveCommand(wx,wy,queue);success=queue?'FORCE MOVE QUEUED':'FORCE MOVE ORDERED';}
+  else if(mode==='reverseMove'){result=issueReverseMoveCommand(wx,wy,queue);success=queue?'REVERSE MOVE QUEUED':'ARMOR REVERSING · 65% SPEED';}
   else if(mode==='attack'&&game.bridges?.includes(objectAt(wx,wy))) {
     const bridge=objectAt(wx,wy);
     result=game.issueAttack(bridge.id,queue);success=queue?'BRIDGE DEMOLITION QUEUED':'BRIDGE DEMOLITION ORDERED';
   }
-  else {result=game.issueMove(wx,wy,true,queue);success=queue?'ATTACK MOVE QUEUED':'ATTACK MOVE ORDERED';}
+  else {result=issueMoveCommand(wx,wy,true,queue);success=queue?'ATTACK MOVE QUEUED':'ATTACK MOVE ORDERED';}
   if(result?.pending){
     targetOrderPending=true;
     $('#attack-hint').innerHTML=`${label} · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL`;
@@ -3477,11 +3514,42 @@ function updateAttackMoveButton(units=selectedObjects().filter(o=>!('w' in o))) 
   button.classList.toggle('active',active);
   button.setAttribute('aria-pressed',String(active));
 }
+function matchPaceGroundUnits(units=selectedObjects().filter(object=>!('w' in object))) {
+  return units.filter(unit=>unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
+    !game.unitDefs?.[unit.defId]?.flying&&game.unitDefs?.[unit.defId]?.speed>0&&
+    !(unit.defId==='stealthTank'&&(unit.ghostRunUntil||0)>game.time));
+}
+function matchPaceAvailable(units=selectedObjects().filter(object=>!('w' in object))) {
+  return !!game&&!replayMode&&(game.replayVersion==null||game.replayVersion>=63)&&
+    matchPaceGroundUnits(units).length>=2;
+}
+function updateMatchPaceControl(units) {
+  const button=$('#match-pace-toggle');
+  const available=!!game&&matchPaceAvailable(units);
+  if(!available)matchPaceMode=false;
+  button.classList.toggle('hidden',!available);
+  button.classList.toggle('active',available&&matchPaceMode);
+  button.disabled=!available;
+  button.setAttribute('aria-pressed',String(available&&matchPaceMode));
+  button.setAttribute('aria-label','Match the speed of the slowest selected ground unit. Air units keep their own speed; obstacles and combat can split the group.');
+  button.title='Match the speed of the slowest selected ground unit. Air units keep their own speed; obstacles and combat can split the group.';
+}
+function matchPaceOrder(method,args,minimumArgs) {
+  if(!matchPaceMode||!matchPaceAvailable())return game[method](...args);
+  const normalized=[...args];
+  while(normalized.length<minimumArgs)normalized.push(false);
+  normalized.push(true);
+  return game[method](...normalized);
+}
+function issueMoveCommand(...args) { return matchPaceOrder('issueMove',args,4); }
+function issueForceMoveCommand(...args) { return matchPaceOrder('issueForceMove',args,3); }
+function issueReverseMoveCommand(...args) { return matchPaceOrder('issueReverseMove',args,3); }
 function updateSelectionCard() {
   const selected=selectedObjects();
   $('#selection-count').textContent=`${String(selected.length).padStart(2,'0')} ACTIVE`;
   $('#mobile-deck-peek').textContent=`COMMAND DECK · ${String(selected.length).padStart(2,'0')} ACTIVE`;
   const units=selected.filter(o=>!('w' in o));
+  updateMatchPaceControl(units);
   updateRoutePlanControl(units);
   const bloomHarvesters=units.filter(unit=>unit.owner==='player'&&unit.hp>0&&unit.defId==='harvester'&&
     unit._harvestPhase!=='return'&&unit.cargo<(game.unitDefs?.harvester?.capacity||700));
@@ -3589,9 +3657,12 @@ function updateSelectionCard() {
   const hp=selected.length===1?first.hp:selected.reduce((n,u)=>n+u.hp,0),maxHp=selected.length===1?first.maxHp:selected.reduce((n,u)=>n+u.maxHp,0),pct=Math.max(0,Math.round(hp/maxHp*100));
   const critical=selected.some(o=>o.owner==='player')&&pct<=25;
   $('#selection-card').classList.toggle('is-critical',critical);
-  const unitOrder=first.order?.type==='move'&&first.order.reverse?'REVERSING · 65% SPEED':first.order?.bloomExpedition?'BLOOM EXPEDITION':first.order?.bloomExpeditionEscort
+  const baseUnitOrder=first.order?.type==='move'&&first.order.reverse?'REVERSING · 65% SPEED':first.order?.bloomExpedition?'BLOOM EXPEDITION':first.order?.bloomExpeditionEscort
     ?'BLOOM ESCORT':first.order?.type==='move'&&first.order.attackMove?'ATTACK MOVE':
       keyName(first.order?.type||'ready').toUpperCase();
+  const orderPace=Number.isFinite(first.order?.pace)&&first.order.pace>0?first.order.pace:null;
+  const unitOrder=orderPace&&!(first.ghostRunUntil>game.time)
+    ?`${baseUnitOrder} · MATCHED PACE ${orderPace.toFixed(2)} T/S`:baseUnitOrder;
   const queuedOrders=!isBuilding&&Array.isArray(first.order?.queue)?first.order.queue.length:0;
   const field=first._harvestTile||first.order?.type==='harvest'&&Number.isFinite(first.order.x)&&Number.isFinite(first.order.y)?first._harvestTile||{x:first.order.x,y:first.order.y}:null;
   const refinerySupported=!isBuilding&&first.owner==='player'&&first.defId==='harvester'&&faction==='aegis'&&field&&game.buildings.some(b=>b.owner==='player'&&b.defId==='refinery'&&b.hp>0&&b.progress>=1&&b.powered&&Math.hypot(field.x+.5-(b.x+b.w/2),field.y+.5-(b.y+b.h/2))<=6);
@@ -3632,7 +3703,11 @@ function updateSelectionCard() {
     const orders=new Set(units.map(unit=>unit.order?.type==='move'&&unit.order.reverse?'reverseMove':
       unit.order?.type==='move'&&unit.order.attackMove?'attackMove':unit.order?.type||'ready'));
     const routed=units.filter(unit=>unit.order?.queue?.length).length;
-    return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${routed?` · ${routed} ROUTED`:''}`;
+    const paceValues=units.map(unit=>unit.order?.pace).filter(value=>Number.isFinite(value)&&value>0);
+    const paceLabel=units.some(unit=>unit.ghostRunUntil>game.time)?'GHOST RUN ACTIVE':
+      paceValues.length?paceValues.every(value=>Math.abs(value-paceValues[0])<0.005)
+        ?`MATCHED PACE ${paceValues[0].toFixed(2)} T/S`:'MATCHED PACE':'';
+    return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${paceLabel?` · ${paceLabel}`:''}${routed?` · ${routed} ROUTED`:''}`;
   })():'';
   const subtitle=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
   const rank=!isBuilding&&selected.length===1?VETERANCY_RANKS[Math.min(VETERANCY_RANKS.length-1,first.veterancy||0)]:null;
@@ -5405,7 +5480,7 @@ function sendMatchCommand(command,data={}){
 }
 function installMultiplayerCommandAdapters(target){
   const commands={
-    issueMove:(x,y,attackMove=false,queue=false)=>({x,y,attackMove,queue}),issueForceMove:(x,y,queue=false)=>({x,y,queue}),issueReverseMove:(x,y,queue=false)=>({x,y,queue}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
+    issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
     issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
     issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:defId=>({defId}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
@@ -5440,6 +5515,9 @@ function hydrateMultiplayerState(state){
 }
 async function startMultiplayerGame(message){
   finishDeploymentIntro();
+  matchPaceMode=false;
+  battlefieldPickerAddSquadMode=false;
+  setBattlefieldPickerOpen(false);
   abandonActiveRun();
   clearSoloRecovery();updateSoloRecoveryButton();
   placementToken++;placementPending=false;commandAbilityToken++;commandAbilityPending=false;
@@ -6088,6 +6166,11 @@ $('#promotion-modal').addEventListener('click',event=>{
 $('#cmd-attack').addEventListener('click',()=>startTargetOrder('attack','ATTACK MOVE'));
 $('#cmd-move').addEventListener('click',()=>startTargetOrder('forceMove','FORCE MOVE'));
 $('#cmd-reverse').addEventListener('click',()=>startTargetOrder('reverseMove','REVERSE MOVE'));
+$('#match-pace-toggle').addEventListener('click',()=>{
+  if(!playing||paused||!matchPaceAvailable())return;
+  matchPaceMode=!matchPaceMode;
+  updateSelectionCard();
+});
 $('#route-plan-toggle').addEventListener('click',()=>{
   if(game&&playing&&!paused&&!replayMode)setRoutePlanMode(!routePlanMode);
 });
@@ -6109,14 +6192,20 @@ $('#cmd-harvest').addEventListener('click',()=>{
 $('#cmd-return').addEventListener('click',()=>resultMessage(game?.issueReturnCargo?.(),'HARVESTER RETURNING CARGO'));
 $('#cmd-repair').addEventListener('click',()=>{const b=selectedBuilding();if(b){const stopping=!!b.repairing;resultMessage(game.toggleRepair(b.id),stopping?'REPAIR STOPPED':'REPAIR ORDERED');updateUI(true);return;}if(selectedObjects().some(o=>o.defId==='engineer')){startTargetOrder('engineer','ENGINEER TASK','SELECT WRECK, BRIDGE, OR STRUCTURE');return;}toast('SELECT A STRUCTURE OR ENGINEER',true);});
 $('#battlefield-picker-toggle').addEventListener('click',()=>setBattlefieldPickerOpen(!battlefieldPickerIsOpen(),{focusFirst:!battlefieldPickerIsOpen()}));
+$('#battlefield-picker-add-squad').addEventListener('click',()=>setBattlefieldPickerAddSquadMode(!battlefieldPickerAddSquadMode));
 $('#battlefield-picker-list').addEventListener('click',event=>{
   const button=event.target.closest('[data-battlefield-object]');
-  if(button)activateBattlefieldObject(button.dataset.battlefieldObject);
+  if(button)activateBattlefieldObject(button.dataset.battlefieldObject,{additive:event.shiftKey});
 });
 $('#battlefield-picker-list').addEventListener('keydown',event=>{
   const options=[...$('#battlefield-picker-list').querySelectorAll('button[data-battlefield-object]')];
   const index=options.indexOf(event.target.closest('button[data-battlefield-object]'));
   if(index<0||!options.length)return;
+  if(event.key==='Enter'&&event.shiftKey){
+    event.preventDefault();
+    activateBattlefieldObject(options[index].dataset.battlefieldObject,{additive:true});
+    return;
+  }
   let next=-1;
   if(event.key==='ArrowDown')next=(index+1)%options.length;
   else if(event.key==='ArrowUp')next=(index-1+options.length)%options.length;
@@ -6191,7 +6280,7 @@ canvas.addEventListener('pointerup',e=>{
     if(selecting){selectBox(pointer.sx,pointer.sy,pointer.x,pointer.y,false);pointer.dragging=false;return;}
     if(moved)return;
   }
-  if(pointer.forceMove){pointer.forceMove=false;pointer.dragging=false;const queue=e.shiftKey||routePlanMode;resultMessage(game.issueForceMove(pointer.wx,pointer.wy,queue),queue?'FORCE MOVE QUEUED':'FORCE MOVE ORDERED');return;}
+  if(pointer.forceMove){pointer.forceMove=false;pointer.dragging=false;const queue=e.shiftKey||routePlanMode;resultMessage(issueForceMoveCommand(pointer.wx,pointer.wy,queue),queue?'FORCE MOVE QUEUED':'FORCE MOVE ORDERED');return;}
   if(pointer.dragging){selectBox(pointer.sx,pointer.sy,pointer.x,pointer.y,e.shiftKey);pointer.dragging=false;return;}
   if(placeId){attemptPlacement(pointer.wx,pointer.wy);return;}
   if(commandAbilityMode){if(commandAbilityPending)return;const id=commandAbilityMode,token=commandAbilityToken;const result=game.useCommandAbility(id,pointer.wx,pointer.wy);if(result?.pending){commandAbilityPending=true;$('#attack-hint').innerHTML=`${COMMAND_ABILITIES[id].name.toUpperCase()} · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL`;resultMessage(result,`${COMMAND_ABILITIES[id].name.toUpperCase()} DEPLOYED`,id==='stormcall'?'stormcall':'order',{onAccepted:()=>{if(commandAbilityToken===token&&commandAbilityMode===id){cancelCommandAbility();updateUI(true);}},onSettled:ack=>{if(commandAbilityToken===token&&commandAbilityMode===id){commandAbilityPending=false;if(!ack?.ok){if(ack?.transportFailure)cancelCommandAbility();else $('#attack-hint').innerHTML=`${COMMAND_ABILITIES[id].name.toUpperCase()} · ORDER REJECTED · SELECT TARGET <span>·</span> ESC TO CANCEL`;}}}});}else if(resultMessage(result,`${COMMAND_ABILITIES[id].name.toUpperCase()} DEPLOYED`,id==='stormcall'?'stormcall':'order')){cancelCommandAbility();updateUI(true);}return;}

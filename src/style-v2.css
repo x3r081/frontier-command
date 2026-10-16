@@ -3586,3 +3586,79 @@ body:has(#end-modal:not(.hidden)),
   font-weight: 700;
   letter-spacing: .05em;
 }
+
+.match-pace-toggle {
+  flex: 0 0 auto;
+  min-height: 20px;
+  padding: 2px 7px;
+  border: 1px solid rgba(201, 255, 102, .55);
+  background: rgba(18, 37, 27, .9);
+  color: #c6d6c4;
+  font: 700 9px/1 "Barlow Condensed", sans-serif;
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+.selected-header #selection-count { font-variant-numeric: tabular-nums; }
+.match-pace-toggle:hover,
+.match-pace-toggle.active {
+  border-color: var(--lime);
+  background: #294429;
+  color: #efffd7;
+}
+.match-pace-toggle:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 1px;
+}
+@media (pointer: coarse), (max-width: 670px) {
+  .command-panel .selected-header:has(#match-pace-toggle:not(.hidden)) {
+    flex: 0 0 48px;
+    height: 48px;
+    min-height: 48px;
+    gap: 6px;
+    padding-inline: 8px;
+  }
+  .match-pace-toggle { min-height: 44px; height: 44px; padding-inline: 9px; font-size: 11px; }
+}
+
+.battlefield-picker-squad-tools {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 7px;
+  margin-top: 8px;
+}
+.battlefield-picker-squad-tools button {
+  min-height: 30px;
+  padding: 4px 9px;
+  border: 1px solid #526b55;
+  background: #14241a;
+  color: #d7e5d3;
+  font: 700 10px/1.1 "Barlow Condensed", sans-serif;
+  letter-spacing: .08em;
+  white-space: nowrap;
+}
+.battlefield-picker-squad-tools button:hover,
+.battlefield-picker-squad-tools button[aria-pressed="true"] {
+  border-color: var(--lime);
+  background: #294429;
+  color: #f0ffd8;
+}
+.battlefield-picker-squad-tools button:focus-visible {
+  outline: 2px solid var(--lime);
+  outline-offset: 2px;
+}
+.battlefield-picker-squad-tools small {
+  min-width: 0;
+  color: #b5c6b7;
+  font: 500 10px/1.35 Inter, Arial, sans-serif;
+}
+.battlefield-object-option[aria-pressed="true"] {
+  border-color: var(--lime);
+  background: #203824;
+  color: #efffd9;
+}
+@media (pointer: coarse), (max-width: 670px) {
+  .battlefield-picker-squad-tools { grid-template-columns: 1fr; gap: 4px; }
+  .battlefield-picker-squad-tools button { min-height: 44px; font-size: 11px; }
+  .battlefield-picker-squad-tools small { font-size: 11px; }
+}

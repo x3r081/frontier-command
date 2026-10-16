@@ -1093,6 +1093,9 @@ function command(lobby, member, message) {
   if (message.queue !== undefined && (typeof message.queue !== 'boolean' ||
       !['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack'].includes(message.command)))
     return { ok: false, reason: 'Invalid queued order.' };
+  if (message.matchPace !== undefined && (typeof message.matchPace !== 'boolean' ||
+      !['issueMove', 'issueForceMove', 'issueReverseMove'].includes(message.command)))
+    return { ok: false, reason: 'Invalid matched pace order.' };
   const ids = Array.isArray(message.ids) ? message.ids.filter(id => typeof id === 'string').slice(0, 100) : [];
   member.selection = ids.filter(id => game.getEntity(id)?.owner === member.side);
   game.commandOwner = member.side;
@@ -1100,9 +1103,9 @@ function command(lobby, member, message) {
   const n = value => Number(value);
   try {
     switch (message.command) {
-      case 'issueMove': return game.issueMove(n(message.x), n(message.y), Boolean(message.attackMove), message.queue === true);
-      case 'issueForceMove': return game.issueForceMove(n(message.x), n(message.y), message.queue === true);
-      case 'issueReverseMove': return game.issueReverseMove(n(message.x), n(message.y), message.queue === true);
+      case 'issueMove': return game.issueMove(n(message.x), n(message.y), Boolean(message.attackMove), message.queue === true, message.matchPace === true);
+      case 'issueForceMove': return game.issueForceMove(n(message.x), n(message.y), message.queue === true, message.matchPace === true);
+      case 'issueReverseMove': return game.issueReverseMove(n(message.x), n(message.y), message.queue === true, message.matchPace === true);
       case 'issueAttack': return game.issueAttack(message.targetId, message.queue === true);
       case 'issueHarvest': return game.issueHarvest();
       case 'issueBloomExpedition': return game.issueBloomExpedition();
