@@ -14,9 +14,9 @@ const MACRO_LANDMARKS = Object.freeze({
   'canyon-ring': {key:'oreHoist',w:4,h:2,scale:1},
 });
 const GRAPHICS_QUALITY = Object.freeze({
-  eco: { maxDpr: 1, shadowMapSize: 512, trackCapacity: 96, ruinCapacity: 8, ruinRubblePieces: 1, collapseCapacity: 2, environmentPropCapacity: 6, dustMoteCapacity: 28 },
-  balanced: { maxDpr: 1.5, shadowMapSize: 1024, trackCapacity: 256, ruinCapacity: 16, ruinRubblePieces: 2, collapseCapacity: 5, environmentPropCapacity: 12, dustMoteCapacity: 64 },
-  ultra: { maxDpr: 2, shadowMapSize: 2048, trackCapacity: 512, ruinCapacity: 24, ruinRubblePieces: 3, collapseCapacity: 10, environmentPropCapacity: 18, dustMoteCapacity: 112 },
+  eco: { maxDpr: 1, shadowMapSize: 512, trackCapacity: 96, ruinCapacity: 8, ruinRubblePieces: 1, collapseCapacity: 2, environmentPropCapacity: 6, sandScatterCapacity: 72, dustMoteCapacity: 28 },
+  balanced: { maxDpr: 1.5, shadowMapSize: 1024, trackCapacity: 256, ruinCapacity: 16, ruinRubblePieces: 2, collapseCapacity: 5, environmentPropCapacity: 12, sandScatterCapacity: 132, dustMoteCapacity: 64 },
+  ultra: { maxDpr: 2, shadowMapSize: 2048, trackCapacity: 512, ruinCapacity: 24, ruinRubblePieces: 3, collapseCapacity: 10, environmentPropCapacity: 18, sandScatterCapacity: 192, dustMoteCapacity: 112 },
 });
 const SKY = 0x1a3036;
 const DOCTRINE_RING_COLORS = Object.freeze({rapid:0x72e8e9,reinforced:0xffd67d,precision:0xff8ca5});
@@ -2052,6 +2052,7 @@ export class Renderer3D {
       this.terrainGroup.add(saltbrush);
     } else saltbrushGeometry.dispose();
     this._addGroundDetails(game,crystalCoords,rockCoords);
+    this._addSandScatter(game);
     this._addDeltaCrossing(game);
     this._addRidgeLandmarks(game);
     this._addCrashSite(game);
@@ -2573,6 +2574,105 @@ export class Renderer3D {
     // on its visual footprint so production never disappears under the hull.
     mesh.visible=!(game.buildings||[]).some(b=>
       b.hp>0&&x+2.4>b.x&&x-2.4<b.x+b.w&&z+2.4>b.y&&z-2.4<b.y+b.h);
+  }
+
+  _addSandScatter(game) {
+    const capacity=GRAPHICS_QUALITY[this.quality].sandScatterCapacity;
+    if(capacity<=0)return;
+    const blocked=new Set();
+    const markRect=(x0,z0,x1,z1)=>{
+      for(let z=Math.max(0,z0);z<Math.min(game.height,z1);z++)
+        for(let x=Math.max(0,x0);x<Math.min(game.width,x1);x++)blocked.add(z*game.width+x);
+    };
+    // Leave a clean apron around occupied building footprints, relay pads,
+    // and bridge decks so the little ground forms never merge into gameplay cues.
+    for(const building of game.buildings||[])
+      markRect(Math.floor(building.x-0.5),Math.floor(building.y-0.5),
+        Math.ceil(building.x+building.w+0.5),Math.ceil(building.y+building.h+0.5));
+    for(const bridge of game.bridges||[])
+      markRect(Math.floor(bridge.x-0.55),Math.floor(bridge.y-0.55),
+        Math.ceil(bridge.x+bridge.w+0.55),Math.ceil(bridge.y+bridge.h+0.55));
+    const relays=game.relays||[];
+    for(let z=1;z<game.height-1;z++)for(let x=1;x<game.width-1;x++) {
+      const px=x+0.5,pz=z+0.5;
+      if(relays.some(relay=>Math.hypot(px-relay.x,pz-relay.y)<1.85))blocked.add(z*game.width+x);
+    }
+    // Shard Valley's authored service road has a deliberate open centerline.
+    // Rasterize a narrow safety strip around the same curve used by its road mesh.
+    if(game.mapId==='shard-valley') {
+      const route=new THREE.CatmullRomCurve3([
+        new THREE.Vector3(5,0,40),new THREE.Vector3(11,0,38),new THREE.Vector3(18,0,34),
+        new THREE.Vector3(25,0,29),new THREE.Vector3(31,0,24),new THREE.Vector3(39,0,20),
+        new THREE.Vector3(47,0,16),new THREE.Vector3(55,0,10),
+      ]);
+      for(let step=0;step<=128;step++) {
+        const point=route.getPoint(step/128);
+        for(let dz=-2;dz<=2;dz++)for(let dx=-2;dx<=2;dx++) {
+          const x=Math.floor(point.x)+dx,z=Math.floor(point.z)+dz;
+          if(x<0||z<0||x>=game.width||z>=game.height)continue;
+          if(Math.hypot(x+0.5-point.x,z+0.5-point.z)<1.42)blocked.add(z*game.width+x);
+        }
+      }
+    }
+
+    const mapSeed=[...(game.mapId||'')].reduce((seed,char)=>Math.imul(seed^char.charCodeAt(0),16777619),
+      (Number(game.seed)||0)^2166136261);
+    const shale=[],scrub=[];
+    for(let z=1;z<game.height-1;z++)for(let x=1;x<game.width-1;x++) {
+      const index=z*game.width+x,tile=game.terrain[z]?.[x];
+      if(tile?.type!=='sand'||(tile.resource||0)>0||blocked.has(index))continue;
+      const score=hash(x,z,mapSeed+301);
+      if(score<0.31)shale.push({x,z,score});
+      else if(score<0.52)scrub.push({x,z,score});
+    }
+    const shaleCapacity=Math.round(capacity*0.58),scrubCapacity=capacity-shaleCapacity;
+    shale.sort((a,b)=>a.score-b.score);shale.length=Math.min(shale.length,shaleCapacity);
+    scrub.sort((a,b)=>a.score-b.score);scrub.length=Math.min(scrub.length,scrubCapacity);
+    if(!shale.length&&!scrub.length)return;
+
+    // Both families share one geometry/material and one instanced draw each.
+    // Their low silhouettes stay below infantry and vehicle hulls at command zoom.
+    const shaleParts=[
+      {geometry:new THREE.DodecahedronGeometry(0.25,0),position:[-0.10,0.025,0.02],rotation:[0.12,0.1,0.04]},
+      {geometry:new THREE.DodecahedronGeometry(0.18,0),position:[0.12,0.018,-0.08],rotation:[0.04,0.7,0.12]},
+    ];
+    const shaleGeometry=joinedGeometry(shaleParts);
+    const shaleMaterial=mat(0xffffff,{roughness:1,metalness:0,flatShading:true});
+    const shaleMesh=new THREE.InstancedMesh(shaleGeometry,shaleMaterial,Math.max(1,shale.length));
+    shaleMesh.name='sand-shale-scatter';shaleMesh.count=shale.length;
+    shaleMesh.castShadow=false;shaleMesh.receiveShadow=false;shaleMesh.frustumCulled=false;shaleMesh.raycast=()=>{};
+    const shaleBase=new THREE.Color(this.mapStyle.rock).lerp(new THREE.Color(this.mapStyle.patch),0.26);
+    const scrubGeometry=joinedGeometry([
+      {geometry:new THREE.ConeGeometry(0.065,0.19,5),position:[0,0.095,0]},
+      {geometry:new THREE.ConeGeometry(0.046,0.15,4),position:[0.075,0.075,0.035],rotation:[0.22,0,-0.30]},
+      {geometry:new THREE.ConeGeometry(0.043,0.14,4),position:[-0.065,0.07,-0.035],rotation:[-0.18,0,0.27]},
+    ]);
+    const scrubMaterial=addVegetationWind(mat(0xffffff,{roughness:1,metalness:0}),
+      this.sandWindTimeUniform,this.vegetationWindMotionUniform,0.012,'scrub');
+    const scrubMesh=new THREE.InstancedMesh(scrubGeometry,scrubMaterial,Math.max(1,scrub.length));
+    scrubMesh.name='sand-scrub-scatter';scrubMesh.count=scrub.length;
+    scrubMesh.castShadow=false;scrubMesh.receiveShadow=false;scrubMesh.frustumCulled=false;scrubMesh.raycast=()=>{};
+    const scrubBase=new THREE.Color(this.mapStyle.vegetation);
+    const transform=new THREE.Object3D(),color=new THREE.Color();
+    const writeInstances=(placements,mesh,seedOffset,base,minScale,maxScale,verticalScale)=>{
+      for(let i=0;i<placements.length;i++) {
+        const p=placements[i],seed=hash(p.x,p.z,mapSeed+seedOffset);
+        const scale=minScale+seed*(maxScale-minScale);
+        transform.position.set(p.x+0.5+(hash(p.x,p.z,mapSeed+seedOffset+1)-0.5)*0.44,
+          0.018+hash(p.x,p.z,mapSeed+seedOffset+2)*0.008,
+          p.z+0.5+(hash(p.x,p.z,mapSeed+seedOffset+3)-0.5)*0.44);
+        transform.rotation.set(0,hash(p.x,p.z,mapSeed+seedOffset+4)*Math.PI*2,0);
+        transform.scale.set(scale,scale*verticalScale*(0.84+hash(p.x,p.z,mapSeed+seedOffset+5)*0.25),scale);
+        transform.updateMatrix();mesh.setMatrixAt(i,transform.matrix);
+        color.copy(base).multiplyScalar(0.80+hash(p.x,p.z,mapSeed+seedOffset+6)*0.35);
+        mesh.setColorAt(i,color);
+      }
+      mesh.instanceMatrix.needsUpdate=true;
+      if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;
+    };
+    writeInstances(shale,shaleMesh,319,shaleBase,0.72,1.24,0.32);
+    writeInstances(scrub,scrubMesh,337,scrubBase,0.78,1.16,0.68);
+    this.terrainGroup.add(shaleMesh,scrubMesh);
   }
 
   _addGroundDetails(game,crystalCoords,rockCoords) {
@@ -4187,7 +4287,9 @@ export class Renderer3D {
         const material = new THREE.MeshBasicMaterial({ color: 0xffe0a2, transparent: true,
           opacity: 0, depthWrite: false, side: THREE.DoubleSide, toneMapped: false,
           blending: THREE.AdditiveBlending });
-        const ring = new THREE.Mesh(new THREE.RingGeometry(0.58, 0.82, 32), material);
+        // A broad contact halo survives the normal command camera distance;
+        // the old narrow ring was easy to lose beneath infantry and terrain.
+        const ring = new THREE.Mesh(new THREE.RingGeometry(0.62, 0.88, 32), material);
         ring.rotation.x = -Math.PI / 2;
         ring.position.y = 0.16;
         ring.scale.setScalar(radius / 0.68);
@@ -4195,7 +4297,7 @@ export class Renderer3D {
         ring.visible = false;
         state.group.add(ring);
         animation.impactRing = ring;
-        animation.impactRingScale = radius / 0.68;
+        animation.impactRingScale = radius / 0.68 * 1.28;
       }
       animation.impactRing.visible = true;
     }
@@ -4205,19 +4307,22 @@ export class Renderer3D {
     // simulation position or allocating a transient effect for every hit.
     const hitAge = time - animation.hitAt;
     const hit = hitAge >= 0 && hitAge < 0.34 ? Math.exp(-hitAge * 11) : 0;
-    state.group.position.y += hit * (state.building ? 0.018 : 0.042);
+    const reducedMotion = this.reducedMotionQuery?.matches ?? false;
+    if (!reducedMotion) state.group.position.y += hit * (state.building ? 0.018 : 0.042);
     if (animation.impactRing) {
-      const ringLife = clamp(1 - hitAge / 0.34, 0, 1);
+      const ringDuration = reducedMotion ? 0.24 : 0.34;
+      const ringLife = clamp(1 - hitAge / ringDuration, 0, 1);
       animation.impactRing.visible = ringLife > 0;
-      animation.impactRing.material.opacity = 0.82 * ringLife;
-      animation.impactRing.scale.setScalar(animation.impactRingScale * (0.48 + (1 - ringLife) * 0.95));
+      animation.impactRing.material.opacity = (this.quality === 'eco' ? 0.72 : 0.9) * ringLife;
+      const expansion = reducedMotion ? 0.92 : 0.48 + (1 - ringLife) * 0.95;
+      animation.impactRing.scale.setScalar(animation.impactRingScale * expansion);
     }
 
     // Damage remains visible between impacts as a restrained warm, sooty tint.
     // Every material is already per-instance for authored GLBs; keep its
     // original colors and restore from those values every frame.
     const wear = hp < 0.45 ? (0.45 - hp) / 0.45 * 0.20 : 0;
-    const flash = hit * 0.38;
+    const flash = hit * (reducedMotion ? 0.26 : 0.38);
     if (wear < 0.002 && flash < 0.002 && animation.applied === 0) return;
     animation.applied = Math.max(wear, flash);
     const wearColor = animation.wearColor;

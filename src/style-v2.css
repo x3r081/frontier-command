@@ -3404,15 +3404,24 @@ body:has(#end-modal:not(.hidden)),
 .ai-profile-badge[data-profile="relay-marshal"] { border-color: rgba(109, 220, 224, .55); border-left-color: #77dce0; background: rgba(12, 37, 39, .93); }
 .ai-profile-badge[data-profile="relay-marshal"] small { color: #a9dfe0; }
 .ai-profile-badge[data-profile="relay-marshal"] strong { color: #e2ffff; }
+.ai-profile-badge.has-counter-plan { max-width: min(292px, calc(100% - 44px)); border-left-color: #f0bd70; }
+.ai-counterplan-note {
+  display: block; margin-top: 5px; padding-top: 6px; border-top: 1px solid rgba(240, 189, 112, .34);
+  color: #ffd391; font: 750 10px/1.25 "Barlow Condensed", sans-serif; letter-spacing: .09em;
+}
 .leaderboard-filters .leaderboard-filter:has(> select:disabled) { display: none; }
 .battlefield-wrap:has(.deployment-intro:not(.hidden)) .ai-profile-badge,
 .battlefield-wrap:has(.campaign-guidance.quick-start-guidance:not(.hidden)) .ai-profile-badge { visibility: hidden; }
 .battlefield-wrap:has(.ai-profile-badge:not(.hidden)) .salvage-locator { top: 106px; }
+.battlefield-wrap:has(.ai-profile-badge.has-counter-plan:not(.hidden)) .salvage-locator { top: 130px; }
 @media (max-width: 670px) {
   .ai-profile-badge { top: 76px; left: 10px; max-width: calc(100% - 20px); min-height: 36px; padding: 4px 7px; gap: 2px; }
   .ai-profile-badge small { font-size: 8px; }
   .ai-profile-badge strong { font-size: 13px; }
   .battlefield-wrap:has(.ai-profile-badge:not(.hidden)) .salvage-locator { top: 122px; }
+  .ai-profile-badge.has-counter-plan { max-width: calc(100% - 20px); }
+  .ai-counterplan-note { font-size: 9px; }
+  .battlefield-wrap:has(.ai-profile-badge.has-counter-plan:not(.hidden)) .salvage-locator { top: 145px; }
 }
 
 /* Bloom harvest is a distinct temporary order, with readable contrast in the

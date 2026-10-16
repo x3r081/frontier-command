@@ -49,12 +49,15 @@ const RANKED_SEASON = 53;
 // both solo modes and multiplayer, and rebalances Shard Valley's starting crystal.
 // Version 58 adds tactical elevation to skirmish and ranked multiplayer. Only
 // the skirmish comparison floor advances; campaign rules stay at version 57.
-// Ranked multiplayer starts Season 53.
+// Ranked multiplayer starts Season 53. Version 59 adds the visibility-gated
+// skirmish counter-plan, resetting skirmish boards. Version 60 changes only
+// Dawn of the Free's relay-shield finale, so its campaign board resets alone.
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
-  (score.mode === 'skirmish' ? score.scoreVersion >= 58 &&
+  (score.mode === 'skirmish' ? score.scoreVersion >= 59 &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
-    : score.mode === 'campaign' && score.scoreVersion >= 57 &&
+    : score.mode === 'campaign' && score.scoreVersion >=
+        (score.scenarioId === 'dawn-of-the-free' ? 60 : 57) &&
         score.scoreVersion <= SCORE_VERSION);
 const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;

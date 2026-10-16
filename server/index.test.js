@@ -478,7 +478,7 @@ test('leaderboard validates filters and ranks only compatible verified scores', 
   assert.equal(history[1].score, 7410);
 });
 
-test('v58 skirmish boards compare tactical elevation while preserving older results', async () => {
+test('v59 skirmish boards compare the observed counter-plan while preserving older results', async () => {
   const profile = await createProfile('Route Compatibility');
   const base = { profileId: profile.profile.id, mode: 'skirmish', difficulty: 'normal',
     faction: 'aegis', skirmishOpening: 'established', victoryMode: 'dominion',
@@ -520,6 +520,10 @@ test('v58 skirmish boards compare tactical elevation while preserving older resu
       aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
     { ...base, id: 'route-v58-shard', scenarioId: 'shard-valley', scoreVersion: 58,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
+    { ...base, id: 'route-v59-canyon', scenarioId: 'canyon-ring', scoreVersion: 59,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+    { ...base, id: 'route-v59-shard', scenarioId: 'shard-valley', scoreVersion: 59,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
     { ...base, id: 'siege-v53', scenarioId: 'twin-passes', scoreVersion: 53,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-v54', scenarioId: 'twin-passes', scoreVersion: 54,
@@ -528,6 +532,8 @@ test('v58 skirmish boards compare tactical elevation while preserving older resu
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-v58', scenarioId: 'twin-passes', scoreVersion: 58,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
+    { ...base, id: 'siege-v59', scenarioId: 'twin-passes', scoreVersion: 59,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-easy-v52', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 52,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-easy-v53', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 53,
@@ -535,6 +541,8 @@ test('v58 skirmish boards compare tactical elevation while preserving older resu
     { ...base, id: 'siege-easy-v56', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 56,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-easy-v58', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 58,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
+    { ...base, id: 'siege-easy-v59', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 59,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
   ];
   store.scores.push(...rows);
@@ -549,19 +557,19 @@ test('v58 skirmish boards compare tactical elevation while preserving older resu
   try {
     const shard = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=shard-valley', profile.token)).json()).entries;
     const canyon = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=canyon-ring', profile.token)).json()).entries;
-    assert.deepEqual(shard.map(entry => entry.id), ['route-v58-shard']);
-    assert.deepEqual(canyon.map(entry => entry.id), ['route-v58-canyon']);
+    assert.deepEqual(shard.map(entry => entry.id), ['route-v59-shard']);
+    assert.deepEqual(canyon.map(entry => entry.id), ['route-v59-canyon']);
     const siege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=normal',
       profile.token)).json()).entries;
-    assert.deepEqual(siege.map(entry => entry.id), ['siege-v58'],
-      'v57 Siege Director scores predate tactical elevation');
+    assert.deepEqual(siege.map(entry => entry.id), ['siege-v59'],
+      'v58 Siege Director scores predate the observed counter-plan');
     const easySiege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=easy',
       profile.token)).json()).entries;
-    assert.deepEqual(easySiege.map(entry => entry.id), ['siege-easy-v58'],
-      'tactical elevation applies on Easy too');
+    assert.deepEqual(easySiege.map(entry => entry.id), ['siege-easy-v59'],
+      'the observed counter-plan applies on Easy too');
     assert.equal(shard[0].aiCommanderProfileId, AI_COMMANDER_PROFILES[1].id);
     assert.deepEqual((await (await api(`/api/leaderboard?mode=skirmish&scenarioId=canyon-ring&aiCommanderProfileId=${AI_COMMANDER_PROFILES[0].id}`,
-      profile.token)).json()).entries.map(entry => entry.id), ['route-v58-canyon']);
+      profile.token)).json()).entries.map(entry => entry.id), ['route-v59-canyon']);
     assert.equal((await api('/api/leaderboard?mode=skirmish&aiCommanderProfileId=unknown', profile.token)).status, 400);
     assert.ok(store.scores.some(score => score.id === 'route-v44-canyon'),
       'retiring an old result from comparable rankings does not erase it');
@@ -573,6 +581,36 @@ test('v58 skirmish boards compare tactical elevation while preserving older resu
       .some(entry => entry.id === 'history-route-v48'), 'v48 results stay in personal history after leaving the board');
     assert.ok((await (await api('/api/records/history', profile.token)).json()).entries
       .some(entry => entry.id === 'history-route-v49'), 'v49 scores stay in personal history after leaving the board');
+  } finally {
+    for (const row of rows) {
+      const index = store.scores.indexOf(row);
+      if (index >= 0) store.scores.splice(index, 1);
+    }
+  }
+});
+
+test('v60 Dawn of the Free board resets without retiring other campaign missions', async () => {
+  const profile = await createProfile('Finale Compatibility');
+  const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal', faction: 'aegis',
+    doctrineId: 'standard', fieldOrderId: 'none', carryoverId: 'none', supplyId: 'none',
+    seconds: 90, kills: 8, completedAt: 600, verified: true };
+  const rows = [
+    { ...base, id: 'finale-v59', scenarioId: 'dawn-of-the-free',
+      scenarioName: 'Dawn of the Free', scoreVersion: 59 },
+    { ...base, id: 'finale-v60', scenarioId: 'dawn-of-the-free',
+      scenarioName: 'Dawn of the Free', scoreVersion: 60 },
+    { ...base, id: 'harvest-v57', scenarioId: 'first-harvest',
+      scenarioName: 'First Harvest', scoreVersion: 57 },
+  ];
+  store.scores.push(...rows);
+  try {
+    const finale = (await (await api('/api/leaderboard?mode=campaign&scenarioId=dawn-of-the-free',
+      profile.token)).json()).entries;
+    const harvest = (await (await api('/api/leaderboard?mode=campaign&scenarioId=first-harvest',
+      profile.token)).json()).entries;
+    assert.deepEqual(finale.map(entry => entry.id), ['finale-v60']);
+    assert.deepEqual(harvest.map(entry => entry.id), ['harvest-v57']);
+    assert.ok(store.scores.includes(rows[0]), 'older finale history is preserved');
   } finally {
     for (const row of rows) {
       const index = store.scores.indexOf(row);

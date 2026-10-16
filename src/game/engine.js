@@ -47,6 +47,7 @@ export const AI_COMMANDER_PROFILE_RULES_VERSION = 47;
 export const SIEGE_DIRECTOR_RULES_VERSION = 53;
 export const SIEGE_EXPANSION_RULES_VERSION = 54;
 export const AI_HARVESTER_RETREAT_RULES_VERSION = 56;
+export const AI_COUNTER_PLAN_RULES_VERSION = 59;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
 export const MAX_QUEUED_ORDERS = 8;
@@ -353,6 +354,7 @@ export class Game {
     this.doctrineReplacementRulesVersion = DOCTRINE_REPLACEMENT_RULES_VERSION;
     this.relayDominionTargetCommitmentRulesVersion = RELAY_DOMINION_TARGET_COMMITMENT_RULES_VERSION;
     this.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
+    this.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     this.salvageDrop = null;
     this.skirmishOpening = mode === 'skirmish' && skirmishOpening === 'command-rig' ? 'command-rig' : 'established';
     this.victoryMode = ['skirmish', 'multiplayer'].includes(mode) && victoryMode === 'elimination' ? 'elimination' : 'dominion';
@@ -421,6 +423,7 @@ export class Game {
     this._aiWaveTimer = this.difficulty === 'hard' ? 30 : this.difficulty === 'easy' ? 65 : 47;
     this._aiWaveNumber = 0;
     this._aiIntel = [];
+    if (replayVersion == null || replayVersion >= AI_COUNTER_PLAN_RULES_VERSION) this.aiCounterPlan = null;
     this._aiScoutStep = 0;
     this._aiRelayTarget = null;
     this._aiRelayCommittedTargetId = null;
@@ -4221,6 +4224,67 @@ export class Game {
       else this._aiIntel.push(sighting);
     }
     this._aiIntel = this._aiIntel.filter(item => this.time - item.seen <= (item.building ? 180 : 24));
+    if (this.mode !== 'skirmish' || (this.replayVersion != null && this.replayVersion < AI_COUNTER_PLAN_RULES_VERSION)) return;
+    const armor = this.units.filter(unit => unit.owner === 'player' && unit.hp > 0 && !unit.embarkedIn &&
+      UNIT_DEFS[unit.defId]?.weapon &&
+      ['light', 'heavy'].includes(UNIT_DEFS[unit.defId]?.armor) && this.isVisible(unit, 'enemy'));
+    this.aiCounterPlan ??= null;
+    this._aiArmorObservation ??= { samples: 0, lastSampleAt: null };
+    if (armor.length && this._aiArmorObservation.lastSampleAt !== this.time) {
+      if (this._aiArmorObservation.lastSampleAt != null &&
+          this.time - this._aiArmorObservation.lastSampleAt > 36) this._aiArmorObservation.samples = 0;
+      this._aiArmorObservation.samples++;
+      this._aiArmorObservation.lastSampleAt = this.time;
+      const latest = armor.sort((a, b) => a.id.localeCompare(b.id))[0];
+      const point = this._entityCenter(latest);
+      if (this.aiCounterPlan) {
+        this.aiCounterPlan.observedArmor = Math.max(this.aiCounterPlan.observedArmor, armor.length);
+        this.aiCounterPlan.lastObservedAt = this.time;
+        this.aiCounterPlan.target = { x: point.x, y: point.y };
+      } else if (this._aiArmorObservation.samples >= 6) {
+        this.aiCounterPlan = { id: 'anti-armor-screen', observedArmor: armor.length,
+          startedAt: this.time, lastObservedAt: this.time, target: { x: point.x, y: point.y } };
+        this._event('aiCounterPlanStarted', { plan: this.aiCounterPlan.id, target: { ...this.aiCounterPlan.target },
+          message: 'Enemy command is forming an anti-armor screen near the observed approach.' });
+      }
+    }
+    if (this.aiCounterPlan && this.time - this.aiCounterPlan.lastObservedAt > 36) this.aiCounterPlan = null;
+  }
+
+  _aiExecuteCounterPlan(combatUnits) {
+    if (this.mode !== 'skirmish' || (this.replayVersion != null && this.replayVersion < AI_COUNTER_PLAN_RULES_VERSION)) return;
+    const plan = this.aiCounterPlan;
+    if (!plan || plan.id !== 'anti-armor-screen' || this.time - plan.lastObservedAt > 36) return;
+    if (!plan.target || !Number.isFinite(plan.target.x) || !Number.isFinite(plan.target.y)) return;
+    const counters = combatUnits.filter(unit => ['rocket', 'stealthTank'].includes(unit.defId))
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const assigned = counters.filter(unit => unit.order?.aiCounterPlan === plan.id);
+    const eligible = counters.filter(unit => !unit._relayAssignment && !unit._aiDefenseTarget &&
+      !unit._aiRaidTarget && !unit.order?.aiCounterPlan && unit.order?.type !== 'attack' && !unit.order?.aiScout);
+    const slots = Math.max(0, 2 - assigned.length);
+    const sector = plan.target;
+    const command = this.buildings.find(building => building.owner === 'enemy' && building.defId === 'command');
+    const home = command ? { x: command.x + command.w / 2, y: command.y + command.h / 2 } : { x: 2, y: 2 };
+    const approachLength = Math.hypot(home.x - sector.x, home.y - sector.y) || 1;
+    const hold = { x: clamp(sector.x + (home.x - sector.x) / approachLength * 2, 1, this.width - 2),
+      y: clamp(sector.y + (home.y - sector.y) / approachLength * 2, 1, this.height - 2) };
+    const tile = sector && this._nearestPassable(Math.floor(hold.x), Math.floor(hold.y),
+      Math.floor(home.x), Math.floor(home.y));
+    if (!tile) return;
+    const x = tile[0] + 0.5, y = tile[1] + 0.5;
+    const canReach = unit => dist(unit.x, unit.y, x, y) < 0.75 ||
+      this._findPath(unit.x, unit.y, x, y).length > 0;
+    for (const unit of eligible.filter(canReach).slice(0, slots)) {
+      unit.order = { type: 'move', x, y, attackMove: true, aiCounterPlan: plan.id,
+        aiCounterPlanOrderTime: this.time };
+      unit.path = []; unit._pathGoal = null;
+    }
+    for (const unit of assigned) if (dist(unit.order.x, unit.order.y, x, y) >= 3 &&
+        this.time - (unit.order.aiCounterPlanOrderTime ?? plan.startedAt) >= 8 && canReach(unit)) {
+      unit.order = { type: 'move', x, y, attackMove: true, aiCounterPlan: plan.id,
+        aiCounterPlanOrderTime: this.time };
+      unit.path = []; unit._pathGoal = null;
+    }
   }
 
   _aiScout(combatUnits) {
@@ -5600,6 +5664,9 @@ export class Game {
     this._aiRecoverArmor(combatUnits);
     this._aiRecoverWrecks();
     this._aiSalvageDrop();
+    // Apply the screen after defense and relay assignments so those higher
+    // priority duties are respected and the hold order persists while safe.
+    this._aiExecuteCounterPlan(combatUnits);
     const harvesters = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 && u.defId === 'harvester').length;
     const airDefense = this.enemyFaction === 'aegis' ? 'aaTower' : 'sam';
     const specialDefense = this.enemyFaction === 'vesper' ? 'obelisk' : 'guardTower';
@@ -5664,7 +5731,10 @@ export class Game {
         this.credits.enemy >= UNIT_DEFS.medic.cost && this.units.some(unit => unit.owner === 'enemy' &&
           unit.hp > 0 && !unit.embarkedIn && unit.defId !== 'medic' && UNIT_DEFS[unit.defId]?.weapon &&
           UNIT_DEFS[unit.defId]?.armor === 'infantry' && unit.maxHp - unit.hp > 1);
-      const choice = this.mode === 'skirmish' && (this.replayVersion == null || this.replayVersion >= 22)
+      const counterPlanActive = this.mode === 'skirmish' && (this.replayVersion == null || this.replayVersion >= AI_COUNTER_PLAN_RULES_VERSION) &&
+        this.aiCounterPlan?.id === 'anti-armor-screen' && this.time - this.aiCounterPlan.lastObservedAt <= 36 &&
+        rockets < 2;
+      const choice = counterPlanActive ? 'rocket' : this.mode === 'skirmish' && (this.replayVersion == null || this.replayVersion >= 22)
         ? this._aiChooseTeamUnit({ r, infantry, recent, recentIntel, air, armor, rockets, stealthTanks,
           needAirRockets, needAntiArmor, needVesperArmor, needMedic, combatUnits, enemyBuildings, count })
         : needAirRockets || (needAntiArmor && !needVesperArmor) ? 'rocket' : needVesperArmor ? 'stealthTank' : count('helipad') && r > 0.91 ? this.enemyFaction === 'aegis' ? 'orca' : 'apache' : infantry
@@ -6367,6 +6437,10 @@ export class Game {
     if (game.mode === 'skirmish' && game.replayVersion == null &&
         data.aiHarvesterRetreatRulesVersion !== AI_HARVESTER_RETREAT_RULES_VERSION)
       game.replayVersion = AI_HARVESTER_RETREAT_RULES_VERSION - 1;
+    // Older unversioned skirmish saves predate the observed counter-plan.
+    if (game.mode === 'skirmish' && game.replayVersion == null &&
+        data.aiCounterPlanRulesVersion !== AI_COUNTER_PLAN_RULES_VERSION)
+      game.replayVersion = AI_COUNTER_PLAN_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6385,6 +6459,7 @@ export class Game {
     game.doctrineReplacementRulesVersion = DOCTRINE_REPLACEMENT_RULES_VERSION;
     game.relayDominionTargetCommitmentRulesVersion = RELAY_DOMINION_TARGET_COMMITMENT_RULES_VERSION;
     game.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
+    game.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     const savedProfile = AI_COMMANDER_PROFILES.find(profile => profile.id === data.aiCommanderProfileId);
     const fallbackProfile = aiCommanderProfileForSeed(game.seed,
       game.replayVersion ?? SIEGE_DIRECTOR_RULES_VERSION);

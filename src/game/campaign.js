@@ -5,6 +5,9 @@ const CAMPAIGN_ROUTE_OBJECTIVE_RULES_VERSION = 46;
 const ASHES_ROUTE_RULES_VERSION = 51;
 const FIRST_HARVEST_RAID_RULES_VERSION = 54;
 const IRON_CURRENT_RELAY_ASSAULT_RULES_VERSION = 55;
+const DAWN_FREE_SHIELD_REFORM_RULES_VERSION = 60;
+const DAWN_FREE_RELAY_COUNTERATTACK_DELAY = 9;
+const DAWN_FREE_SHIELD_WARNING_DURATION = 7;
 
 /** Stable player doctrine choices for campaign missions. */
 export const CAMPAIGN_DOCTRINES = Object.freeze([
@@ -710,6 +713,15 @@ function prepareMission(game, index, replayVersion = null) {
     state.holdDuration = 18;
     state.holdElapsed = 0;
     state.phase = 'secure-relays';
+    if (replayVersion === null || replayVersion >= DAWN_FREE_SHIELD_REFORM_RULES_VERSION) {
+      state.dawnFreeShieldReformRulesVersion = DAWN_FREE_SHIELD_REFORM_RULES_VERSION;
+      state.shieldReformCount = 0;
+      state.shieldReformWarningElapsed = 0;
+      state.shieldReformWarningActive = false;
+      state.relayCounterattackFired = false;
+      state.relayCounterattackAt = null;
+      state.relayCounterattackUnitIds = [];
+    }
     state.targetId = livingBuildings(game, 'enemy', 'command')[0]?.id ?? null;
     const command = game.getEntity(state.targetId);
     if (command) command.campaignShielded = true;
@@ -1227,6 +1239,70 @@ function updateFirstHarvestRaid(game, state) {
   state.firstHarvestRaidRepelled = raidIds.size > 0 && [...raidIds].every(id => !live(game.getEntity(id)));
 }
 
+function dawnFreeShieldReformRulesActive(state, replayVersion) {
+  return replayVersion === null
+    ? state.dawnFreeShieldReformRulesVersion === DAWN_FREE_SHIELD_REFORM_RULES_VERSION
+    : replayVersion >= DAWN_FREE_SHIELD_REFORM_RULES_VERSION;
+}
+
+function updateDawnFreeShieldReform(game, state, dt) {
+  const target = state.targetId ? game.getEntity(state.targetId) : null;
+  if (!target || !live(target)) return;
+
+  const held = game.relays.filter(relay => relay.owner === 'player' && !relay.contested).length;
+
+  if (!state.relayCounterattackFired && Number.isFinite(state.relayCounterattackAt) &&
+      game.time + 1e-9 >= state.relayCounterattackAt) {
+    const relay = game.relays.find(item => item.id === state.relayCounterattackRelayId) || game.relays[1];
+    if (relay) {
+      const target = { type: 'move', x: relay.x, y: relay.y, attackMove: true };
+      const units = [
+        game._createUnit('enemy', 'lightTank', 42.5, 25.5, target),
+        game._createUnit('enemy', 'rocket', 43.5, 24.5, target),
+        game._createUnit('enemy', 'rifle', 44.5, 25.5, target),
+      ];
+      state.relayCounterattackUnitIds = units.map(unit => unit.id);
+      state.relayCounterattackFired = true;
+      game.scans.push({ owner: 'player', x: relay.x, y: relay.y, radius: 7, until: game.time + 18 });
+      game._updateFog();
+      game._event('campaignReinforcement', {
+        message: 'Vesper’s reserve has reached the relay approach. The marked assault group is moving to retake the central network.',
+        targetId: units[0].id, marker: { x: relay.x, y: relay.y }, relayId: relay.id,
+      });
+    }
+    state.relayCounterattackAt = null;
+  }
+
+  if (state.shieldReformCount >= 1 || state.phase !== 'destroy-command') return;
+  if (held >= (state.relayTargetCount || 2)) {
+    state.shieldReformWarningElapsed = 0;
+    state.shieldReformWarningActive = false;
+    return;
+  }
+
+  if (!state.shieldReformWarningActive) {
+    state.shieldReformWarningActive = true;
+    state.shieldReformWarningElapsed = 0;
+    game._event('campaignThreatWarning', {
+      message: 'Relay majority lost. The command yard shield will reform in seven seconds unless two relays are secured.',
+      marker: { x: game.relays[1]?.x ?? 31.5, y: game.relays[1]?.y ?? 18.5 },
+    });
+  }
+  state.shieldReformWarningElapsed = (state.shieldReformWarningElapsed || 0) +
+    (Number.isFinite(dt) && dt > 0 ? Math.min(dt, 10) : 0);
+  if (state.shieldReformWarningElapsed + 1e-9 < DAWN_FREE_SHIELD_WARNING_DURATION) return;
+
+  target.campaignShielded = true;
+  state.phase = 'secure-relays';
+  state.holdElapsed = 0;
+  state.shieldReformCount = 1;
+  state.shieldReformWarningActive = false;
+  state.shieldReformWarningElapsed = 0;
+  game._event('campaignIntel', {
+    message: 'Vesper relay crews restored the command shield. The yard remains damaged; secure two relays again to expose it.',
+  });
+}
+
 /** Advance mission-specific win conditions after Game.update(dt). */
 export function updateCampaign(game, index = game?.campaignMission, dt = 0, replayVersion = game?.replayVersion ?? null) {
   if (!game || !Number.isInteger(index) || index < 0 || index >= CAMPAIGN_MISSIONS.length) return false;
@@ -1549,12 +1625,25 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
           target.hp = Math.min(target.hp, target.maxHp * 0.55);
         }
         game._event('campaignIntel', { message: 'The relay shield collapsed and damaged the Vesper command yard’s armor. The yard is exposed.' });
+        if (dawnFreeShieldReformRulesActive(state, replayVersion) && !state.relayCounterattackFired &&
+            !Number.isFinite(state.relayCounterattackAt)) {
+          const relay = game.relays[1] || game.relays[0];
+          state.relayCounterattackRelayId = relay?.id ?? null;
+          state.relayCounterattackAt = game.time + DAWN_FREE_RELAY_COUNTERATTACK_DELAY;
+          game._event('campaignThreatWarning', {
+            message: 'Vesper’s reserve is moving on the central relay. Hold the network while your assault attacks the exposed command yard.',
+            marker: relay ? { x: relay.x, y: relay.y } : null,
+            relayId: relay?.id ?? null,
+          });
+        }
       }
     }
     if (state.phase === 'destroy-command') {
       const target = state.targetId ? game.getEntity(state.targetId) : null;
       complete = !target || !live(target);
     }
+    if (!complete && dawnFreeShieldReformRulesActive(state, replayVersion))
+      updateDawnFreeShieldReform(game, state, dt);
   } else if (index === 12) {
     const engineer = state.engineerId ? game.getEntity(state.engineerId) : null;
     if (!live(engineer)) return failMission(game, 'The signal engineer was lost.');

@@ -3658,12 +3658,21 @@ function updateUI(force=false) {
   if(!game)return;
   const aiProfile = activeAiCommanderProfile();
   const aiBadge = $('#ai-profile-badge');
+  const aiPlan = game.mode === 'skirmish' && game.aiCounterPlan?.id === 'anti-armor-screen'
+    ? game.aiCounterPlan : null;
+  const aiPlanNote = $('#ai-counterplan-note');
   aiBadge.classList.toggle('hidden', !aiProfile);
+  aiBadge.classList.toggle('has-counter-plan', !!aiPlan);
+  aiPlanNote.classList.toggle('hidden', !aiPlan);
   if (aiProfile) {
     $('#ai-profile-name').textContent = aiProfile.name.toUpperCase();
     aiBadge.dataset.profile = aiProfile.id;
-    aiBadge.title = aiProfile.description;
-    aiBadge.setAttribute('aria-label', `Enemy commander ${aiProfile.name}. ${aiProfile.description}`);
+    const contact = aiPlan && Number.isFinite(aiPlan.target?.x) && Number.isFinite(aiPlan.target?.y)
+      ? ` · LAST CONTACT ${String(Math.floor(aiPlan.target.x)).padStart(2, '0')}//${String(Math.floor(aiPlan.target.y)).padStart(2, '0')}` : '';
+    if (aiPlan) aiPlanNote.textContent = `ANTI-ARMOR SCREEN${contact}`;
+    const planDescription = aiPlan ? ' The enemy observed your armor and is setting an anti-armor screen near its last contact.' : '';
+    aiBadge.title = aiProfile.description + planDescription;
+    aiBadge.setAttribute('aria-label', `Enemy commander ${aiProfile.name}. ${aiProfile.description}${planDescription}`);
   } else {
     delete aiBadge.dataset.profile;
     aiBadge.removeAttribute('title');
@@ -4037,12 +4046,21 @@ function updateCampaignTracker(forDebrief=false) {
     }
     case 10: { const beacon=game.getEntity(state.fallbackId); title='Protect the fallback beacon'; primary=`Survive ${timer((state.duration||120)-state.elapsed)} remaining`; secondary=`Fallback beacon ${hpText(beacon)}`; break; }
     case 11: {
-      const relaysHeld=game.relays.filter(relay=>relay.owner==='player').length;
+      const relaysHeld=game.relays.filter(relay=>relay.owner==='player'&&!relay.contested).length;
       const assault=state.phase==='destroy-command';
       const target=game.getEntity(state.targetId);
-      title=assault?'Destroy the Vesper Command Yard':'Break the relay shield: hold both relays';
-      primary=assault?`Enemy command yard ${hpText(target)}`:`Relays held ${relaysHeld} / ${state.relayTargetCount||2}`;
-      secondary=assault?`Your command yard ${hpText(command)}`:`Hold progress ${Math.floor(state.holdElapsed||0)} / ${state.holdDuration||18}s · yard ${hpText(command)}`;
+      const reformRules=game.replayVersion==null
+        ?state.dawnFreeShieldReformRulesVersion===60:game.replayVersion>=60;
+      const shieldCanReform=reformRules&&
+        (state.shieldReformCount||0)<1;
+      const reformWarning=assault&&shieldCanReform&&state.shieldReformWarningActive;
+      title=reformWarning?'Retake both relays before the shield reforms':
+        assault?'Destroy the Vesper Command Yard':
+          state.shieldReformCount?'Break the restored shield: hold both relays':'Break the relay shield: hold both relays';
+      primary=reformWarning?`Relay link ${relaysHeld} / ${state.relayTargetCount||2} · shield returns in ${timer(7-state.shieldReformWarningElapsed)}`:
+        assault?`Enemy command yard ${hpText(target)}`:`Relays held ${relaysHeld} / ${state.relayTargetCount||2}`;
+      secondary=assault?`${shieldCanReform?'Defend both relays':reformRules?'Shield permanently offline':'Enemy yard exposed'} · your yard ${hpText(command)}`:
+        `Hold progress ${Math.floor(state.holdElapsed||0)} / ${state.holdDuration||18}s · yard ${hpText(command)}`;
       break;
     }
     case 12: {
@@ -4284,6 +4302,10 @@ function processEvents() {
       audio.play('alert');continue;
     }
     if(type==='stormglassBloomEnded')continue;
+    if(type==='aiCounterPlanStarted'){
+      toast('ENEMY ADAPTING · ANTI-ARMOR SCREEN FORMING',true,6000);
+      audio.play('alert');continue;
+    }
     // The deploy command already confirms success. Its event also fires for the AI.
     if(type==='mcvDeployed')continue;
     if(type==='stormcallPulse'||type==='stormcallCanceled'){
@@ -4463,6 +4485,8 @@ function campaignLossReview(index, state, objective, forceCount, kills) {
   const dawnfallRelay = game.relays.find(relay => relay.id === state.relayId);
   const freightRelay = game.relays.find(relay => relay.id === state.relayId);
   const freightStatus = freightRelay?.owner === 'player' && !freightRelay.contested ? 'secure' : freightRelay?.contested ? 'contested' : 'unsecured';
+  const finaleCanReform=(game.replayVersion==null
+    ?state.dawnFreeShieldReformRulesVersion===60:game.replayVersion>=60)&&(state.shieldReformCount||0)<1;
   const rows = {
     0: [`${refineries}/2 powered refineries · ${credits.toLocaleString()} / 2,200 credits at loss.`, refineries < 2 ? 'Bring a second refinery online early, then protect the harvest long enough to bank 2,200 credits.' : 'Keep the refinery network powered and defend the banked credits until the objective registers.'],
     1: [`Radar array ${integrity(stateFor('targetId'))} · ${game.units.filter(unit => unit.owner === 'player' && unit.defId === 'engineer' && live(unit)).length} engineers alive.`, 'Clear the route with armed units first; send an engineer to capture the damaged array once it is safe.'],
@@ -4491,7 +4515,7 @@ function campaignLossReview(index, state, objective, forceCount, kills) {
         : `Signal chief ${state.chiefEscapePhase==='escaping'?'was fleeing toward extraction':state.chiefEscapePhase==='alerted'?'was alerted':'was not intercepted'} · command yard ${integrity(command)} · ${Math.max(0, Math.ceil((state.deadline || 300) - state.elapsed))}s remained.`,
       'Scout the eastern outpost early. When the chief appears, order your armed escort to attack them directly before they reach southeast extraction.'],
     10: [`Fallback beacon ${integrity(stateFor('fallbackId'))} · ${Math.floor(state.elapsed || 0)} / ${state.duration || 120}s defended.`, 'Stage defenders on the western pass and repair the beacon under cover; the forward yard can be sacrificed if the beacon stays protected.'],
-    11: [`${relays} relays held · command yard ${integrity(command)} · phase ${state.phase === 'destroy-command' ? 'command yard exposed' : 'relay shield active'}.`, state.phase === 'destroy-command' ? 'Keep the relays covered and shift your assault force onto the exposed Command Yard.' : 'Capture both central relays and hold them together until the shield drops; preserve enough armor for the yard assault.'],
+    11: [`${relays} relays held · command yard ${integrity(command)} · phase ${state.phase === 'destroy-command' ? 'command yard exposed' : state.shieldReformCount ? 'relay shield restored' : 'relay shield active'}.`, state.phase === 'destroy-command' ? finaleCanReform?'Keep two relays uncontested while your assault force attacks the exposed Command Yard; the enemy can restore its shield once.':'Shift your assault force onto the exposed Command Yard while protecting your own yard.' : 'Capture both central relays and hold them together until the shield drops; preserve enough armor for the yard assault.'],
     12: [`Engineer ${integrity(stateFor('engineerId'))} · landing hold ${Math.floor(state.holdElapsed || 0)} / ${state.holdDuration || 12}s · ${Math.max(0, Math.ceil((state.deadline || 240) - state.elapsed))}s window.`, state.phase === 'extract-engineer' ? 'Board the engineer for the west-bank crossing and keep the dropship alive through landing.' : 'Clear the eastern landing, keep the engineer nearby, and hold the relay before the recovery window closes.'],
     13: [`Engineer ${integrity(stateFor('engineerId'))} · vault upload ${Math.floor(state.hackElapsed || 0)} / ${state.hackDuration || 8}s · ${Math.max(0, Math.ceil((state.deadline || 210) - state.elapsed))}s window.`, state.phase === 'extract-engineer' ? 'Take the same engineer back to the western beacon as soon as the upload completes.' : 'Keep the engineer beside the vault for the full upload; use the covert escort to clear threats without pulling the engineer away.'],
     14: [state.reserveCommitted
