@@ -94,6 +94,7 @@ export const ENGINEER_FIELD_REPAIR_RULES_VERSION = 85;
 export const AI_ROCKET_PRIORITY_RULES_VERSION = 86;
 export const ENGINEER_ESCORT_RULES_VERSION = 87;
 export const AI_FIELD_SUPPORT_RULES_VERSION = 88;
+export const COMBAT_ESCORT_RULES_VERSION = 89;
 export const AI_FIELD_SUPPORT_RESERVE = 1250;
 export const ENGINEER_FIELD_REPAIR_KITS = 2;
 export const ENGINEER_FIELD_REPAIR_AMOUNT = 120;
@@ -400,6 +401,7 @@ export class Game {
     this.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
     this.engineerEscortRulesVersion = ENGINEER_ESCORT_RULES_VERSION;
     this.aiFieldSupportRulesVersion = AI_FIELD_SUPPORT_RULES_VERSION;
+    this.combatEscortRulesVersion = COMBAT_ESCORT_RULES_VERSION;
     this._aiFieldSupportInvestment = null;
     this._aiFieldSupportInvestmentCooldownUntil = 0;
     this._aiFieldBunkerBuilt = false;
@@ -2598,6 +2600,33 @@ export class Game {
       (this.replayVersion == null || this.replayVersion >= AI_ROCKET_PRIORITY_RULES_VERSION);
   }
 
+  _combatEscortEnabled() {
+    return this.replayVersion == null || this.replayVersion >= COMBAT_ESCORT_RULES_VERSION;
+  }
+
+  _combatEscortPairEnabled(follower, leader) {
+    const followerDef = UNIT_DEFS[follower?.defId];
+    const leaderDef = UNIT_DEFS[leader?.defId];
+    return this._combatEscortEnabled() && follower?.hp > 0 && !follower.embarkedIn &&
+      !!followerDef?.weapon && !followerDef.flying && followerDef.speed > 0 &&
+      this.units.includes(leader) && leader?.hp > 0 && !leader.embarkedIn &&
+      leader.owner === follower.owner && !leaderDef?.flying && leaderDef?.speed > 0;
+  }
+
+  _combatEscortApproachPoint(follower, target, leader, weaponRange) {
+    const center = this._entityCenter(target);
+    const path = this._findPath(follower.x, follower.y, center.x, center.y);
+    if (!path.length) return null;
+    for (let index = 0; index < path.length; index++) {
+      const point = path[index];
+      if (dist(point.x, point.y, leader.x, leader.y) > 4.000001) break;
+      if (this._distanceToEntity(point.x, point.y, target) <= weaponRange * 0.82 &&
+          this._hasLineOfSight(point.x, point.y, center.x, center.y))
+        return { ...point, path: path.slice(0, index + 1) };
+    }
+    return null;
+  }
+
   _engineerFollowRepairEnabled() {
     return this._engineerFieldRepairEnabled() &&
       (this.replayVersion == null || this.replayVersion >= ENGINEER_ESCORT_RULES_VERSION);
@@ -3467,12 +3496,15 @@ export class Game {
     let bestPreferredReachable = null, preferredReachableScore = Infinity;
     const order = acquisition?.order;
     const canPursue = order?.type === 'attack' || order?.type === 'guard' || order?.type === 'patrol' ||
-      order?.attackMove === true || observer.stance === 'defensive';
+      order?.attackMove === true || observer.stance === 'defensive' || !!acquisition?.escortLeader;
     for (const e of [...this.units, ...this.buildings]) {
       if (observer.owner === 'enemy' && this._aiEngineerRaidTargetReserved(e)) continue;
       if (e.owner === observer.owner || e.hp <= 0 || e.embarkedIn || e.progress < 1 || !this._canDetect(observer, e)) continue;
       const air = !!UNIT_DEFS[e.defId]?.flying;
       if (targetMode === 'air' && !air || targetMode === 'ground' && air) continue;
+      if (acquisition?.escortLeader &&
+          (!this.isVisible(e, observer.owner) || this._distanceToEntity(acquisition.escortLeader.x,
+            acquisition.escortLeader.y, e) > 5.5)) continue;
       const distance = this._distanceToEntity(observer.x, observer.y, e);
       if (distance > radius) continue;
       if (prioritize && order?.type === 'guard' &&
@@ -5037,6 +5069,7 @@ export class Game {
     if (u.hp <= 0) return;
     const order = u.order || { type: 'idle' };
     let productionRally = u._productionRally;
+    let combatEscortLeader = null;
     if (productionRally) {
       const approachOrder = productionRally.stage === 'approach' && order.type === 'move' &&
         Math.abs(order.x - productionRally.approachX) < 0.001 &&
@@ -5148,9 +5181,11 @@ export class Game {
       }
       const c = this._entityCenter(followed);
       const clearance = (d.radius || 0.3) + (UNIT_DEFS[followed.defId]?.radius || 0.35) + 0.55;
+      const combatEscort = this._combatEscortPairEnabled(u, followed);
       const repairHandled = u.defId === 'engineer' && this._engineerFollowRepairEnabled() &&
         this._updateEngineerFollowRepair(u, followed, dt);
-      if (!repairHandled) {
+      if (combatEscort) combatEscortLeader = followed;
+      else if (!repairHandled) {
         if (this._distanceToEntity(u.x, u.y, followed) > clearance) {
           const stopDistance = 'w' in followed
             ? Math.hypot(followed.w / 2, followed.h / 2) + clearance
@@ -5202,12 +5237,13 @@ export class Game {
       }
     }
     if (!target && d.weapon && u.stance !== 'holdFire' && order.type !== 'scatter' && order.type !== 'forceMove') {
-      const radius = u.stance === 'defensive' || (order.type === 'move' && order.attackMove) ||
+      const radius = combatEscortLeader || u.stance === 'defensive' || (order.type === 'move' && order.attackMove) ||
         order.type === 'guard' || order.type === 'patrol' ? this._unitSight(u, d.sight) : weaponRange + 0.25;
-      target = this._findEnemyNear(u, radius, d.weapon.target, { weaponRange, order });
+      target = this._findEnemyNear(u, radius, d.weapon.target,
+        { weaponRange, order, ...(combatEscortLeader ? { escortLeader: combatEscortLeader } : {}) });
       if (target && order.type === 'guard' &&
         this._distanceToEntity(order.x, order.y, target) > 5.5) target = null;
-      if (target && u.stance === 'defensive') {
+      if (target && u.stance === 'defensive' && !combatEscortLeader) {
         const tracked = u._stanceChase;
         if (tracked?.targetId === target.id) {
           if (this._distanceToEntity(tracked.x, tracked.y, target) > 5.5) target = null;
@@ -5216,9 +5252,46 @@ export class Game {
         }
       }
     }
-    if (u.stance === 'defensive' && u._stanceChase) {
+    if (u.stance === 'defensive' && !combatEscortLeader && u._stanceChase) {
       const tracked = this.getEntity(u._stanceChase.targetId);
       if (!tracked || tracked.hp <= 0 || tracked.owner === u.owner) u._stanceChase = null;
+    }
+    if (combatEscortLeader) {
+      const leaderCenter = this._entityCenter(combatEscortLeader);
+      const clearance = (d.radius || 0.3) + (UNIT_DEFS[combatEscortLeader.defId]?.radius || 0.35) + 0.55;
+      const rejoinLeader = () => {
+        if (this._distanceToEntity(u.x, u.y, combatEscortLeader) > clearance)
+          this._moveUnit(u, leaderCenter.x, leaderCenter.y, dt, clearance);
+        else if (u.path.length) u.path = [];
+      };
+      if (this._distanceToEntity(u.x, u.y, combatEscortLeader) > 4) {
+        rejoinLeader();
+        return;
+      }
+      if (!target) {
+        rejoinLeader();
+        return;
+      }
+      const targetCenter = this._entityCenter(target);
+      const distance = this._distanceToEntity(u.x, u.y, target);
+      const hasLineOfSight = this._hasLineOfSight(u.x, u.y, targetCenter.x, targetCenter.y);
+      if (distance <= weaponRange && hasLineOfSight) {
+        if (u.cooldown <= 0 && u.suppressedUntil <= this.time) this._fire(u, target, d.weapon);
+        return;
+      }
+      const approach = this._combatEscortApproachPoint(u, target, combatEscortLeader, weaponRange);
+      if (approach) {
+        // Reuse only the path prefix already checked against the leash. A
+        // stale follow or prior approach path may otherwise survive _moveUnit's
+        // goal tolerance and lead the escort outside the validated corridor.
+        u.path = approach.path;
+        u._pathGoal = { x: approach.x, y: approach.y };
+        u._pathEnd = { x: approach.x, y: approach.y };
+        this._moveUnit(u, approach.x, approach.y, dt, 0.2);
+        return;
+      }
+      rejoinLeader();
+      return;
     }
     if (target && d.weapon) {
       const distance = this._distanceToEntity(u.x, u.y, target);
@@ -9239,6 +9312,11 @@ export class Game {
         data.engineerEscortRulesVersion === ENGINEER_ESCORT_RULES_VERSION &&
         data.aiFieldSupportRulesVersion !== AI_FIELD_SUPPORT_RULES_VERSION)
       game.replayVersion = ENGINEER_ESCORT_RULES_VERSION;
+    // Markerless v88 saves predate armed units engaging threats while following
+    // a mobile ground leader. Keep their original follow-and-fire behavior.
+    if (game.replayVersion == null && data.aiFieldSupportRulesVersion === AI_FIELD_SUPPORT_RULES_VERSION &&
+        data.combatEscortRulesVersion !== COMBAT_ESCORT_RULES_VERSION)
+      game.replayVersion = AI_FIELD_SUPPORT_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -9392,6 +9470,7 @@ export class Game {
     game.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
     game.engineerEscortRulesVersion = ENGINEER_ESCORT_RULES_VERSION;
     game.aiFieldSupportRulesVersion = AI_FIELD_SUPPORT_RULES_VERSION;
+    game.combatEscortRulesVersion = COMBAT_ESCORT_RULES_VERSION;
     const savedSupportInvestment = data._aiFieldSupportInvestment;
     game._aiFieldSupportInvestment = game._aiFieldSupportEnabled() &&
       data.aiFieldSupportRulesVersion === AI_FIELD_SUPPORT_RULES_VERSION && savedSupportInvestment &&

@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, TARGET_PRIORITY_RULES_VERSION, MEDIC_ESCORT_RULES_VERSION, ENGINEER_ESCORT_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, TARGET_PRIORITY_RULES_VERSION, MEDIC_ESCORT_RULES_VERSION, ENGINEER_ESCORT_RULES_VERSION, COMBAT_ESCORT_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, getCounterbatteryView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -53,6 +53,7 @@ const portraitVariant = (faction, id) => faction === 'vesper'
     : id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
       : id === 'buggy' ? 'buggy-vesper'
+        : id === 'lightTank' ? 'lightTank-vesper'
         : id === 'artillery' ? 'artillery-vesper'
         : ['command','power','refinery','barracks','factory','radar','tech'].includes(id) ? `${id}-vesper` : id
   : id;
@@ -1132,7 +1133,7 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
   if(attackMoveMode==='bunkerAttack')return entries.filter(entry=>entry.entity?.owner==='enemy')
     .map(entry=>({...entry,ariaLabel:`Target ${entry.ariaLabel.replace(/^Center camera on visible enemy /,'')}`}));
   if(attackMoveMode==='follow')return entries.filter(entry=>isFriendlyFollowTarget(entry.entity))
-    .map(entry=>({...entry,ariaLabel:`${engineerEscortVehicle(entry.entity)&&selectedObjects().some(unit=>unit.defId==='engineer')?'Escort and patch':'Escort'} ${entry.ariaLabel.replace(/^Select friendly /,'')}`}));
+    .map(entry=>({...entry,ariaLabel:`${engineerEscortVehicle(entry.entity)&&selectedObjects().some(unit=>unit.defId==='engineer')?'Escort and patch':combatEscortLeader(entry.entity)&&selectedObjects().some(isCombatEscortUnit)?'Protect':'Escort'} ${entry.ariaLabel.replace(/^Select friendly /,'')}`}));
   if(attackMoveMode==='engineer')return entries.filter(entry=>entry.wreck||
     engineerStructureTarget(entry.entity)||fieldRepairPatient(entry.entity)).map(entry=>({...entry,
       ariaLabel:fieldRepairPatient(entry.entity)?`Patch ${entry.ariaLabel.replace(/^Select friendly /,'')}`:
@@ -1349,6 +1350,19 @@ function selectedBuilding() { return selectedObjects().find(o => 'w' in o && o.o
 function medicEscortRulesInGame(){
   return !!game&&(game.replayVersion==null||game.replayVersion>=MEDIC_ESCORT_RULES_VERSION);
 }
+function combatEscortRulesInGame(){
+  return !!game&&(game.replayVersion==null||game.replayVersion>=COMBAT_ESCORT_RULES_VERSION);
+}
+function isCombatEscortUnit(unit){
+  const def=game?.unitDefs?.[unit?.defId];
+  return combatEscortRulesInGame()&&unit?.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
+    !('w' in unit)&&!!def?.weapon&&!def.flying;
+}
+function combatEscortLeader(target){
+  const def=game?.unitDefs?.[target?.defId];
+  return combatEscortRulesInGame()&&target?.owner==='player'&&target.hp>0&&!target.embarkedIn&&
+    !('w' in target)&&def?.speed>0&&!def.flying;
+}
 function isFriendlyFollowTarget(target){
   return !!target&&target.owner==='player'&&target.hp>0&&!target.embarkedIn&&
     !(game.selection||[]).includes(target.id);
@@ -1360,13 +1374,18 @@ function medicEscortPatient(target){
 function escortFeedback(target){
   if(engineerEscortVehicle(target)&&selectedObjects().some(unit=>unit.defId==='engineer'))
     return 'ENGINEER ESCORT SET · STOP VEHICLE TO USE CARRIED KITS';
-  return medicEscortPatient(target)&&selectedObjects().some(unit=>unit.defId==='medic')
-    ?'ESCORT ORDERED · MEDIC TRIAGE PRIORITY':'ESCORT ORDERED';
+  if(medicEscortPatient(target)&&selectedObjects().some(unit=>unit.defId==='medic'))
+    return 'ESCORT ORDERED · MEDIC TRIAGE PRIORITY';
+  return combatEscortLeader(target)&&selectedObjects().some(isCombatEscortUnit)
+    ?'COMBAT ESCORT SET · SCREEN THREATS AND REJOIN LEADER':'ESCORT ORDERED';
 }
 function startFollowOrder(){
   const selected=selectedObjects();
   const engineerOnly=engineerEscortRulesInGame()&&selected.length&&selected.every(unit=>unit.defId==='engineer');
-  startTargetOrder('follow',engineerOnly?'ENGINEER ESCORT':'FOLLOW',engineerOnly?'SELECT FRIENDLY GROUND VEHICLE · STOP TO PATCH':'SELECT FRIENDLY TARGET');
+  const combatScreen=selected.some(isCombatEscortUnit);
+  startTargetOrder('follow',engineerOnly?'ENGINEER ESCORT':combatScreen?'COMBAT ESCORT':'FOLLOW',
+    engineerOnly?'SELECT FRIENDLY GROUND VEHICLE · STOP TO PATCH':combatScreen?
+      'CHOOSE GROUND LEADER · ENGAGE NEARBY THREATS · REJOIN WITHIN 4 TILES':'SELECT FRIENDLY TARGET');
 }
 function mobileRallyAvailable(){
   return !!game&&!replayMode&&(game.replayVersion==null||game.replayVersion>=MOBILE_RALLY_RULES_VERSION)&&
@@ -3899,7 +3918,7 @@ function render(t) {
     draw3dHealthOverlay();
     drawBridgeHealthOverlay();
     if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}
-    drawQueuedRoute();drawSelectionBox();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();
+    drawQueuedRoute();drawSelectionBox();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();
     return;
   }
   ctx.clearRect(0,0,visibleW,visibleH);
@@ -3909,7 +3928,7 @@ function render(t) {
   for(const wreck of game.wrecks||[])drawWreckFallback(wreck,t);
   const entities=[...game.buildings.map(o=>({o,k:0,y:o.y+o.h})),...game.units.filter(o=>!o.embarkedIn).map(o=>({o,k:1,y:o.y}))].sort((a,b)=>a.y-b.y);
   for(const e of entities){if(e.k===0)drawBuilding(e.o,t);else drawUnit(e.o,t);}
-  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();
+  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();
 }
 function drawSalvageDropFallback(t){
   const drop=game?.salvageDrop;
@@ -3956,6 +3975,29 @@ function drawCommandAbilityMarker(t){
   octx.strokeStyle=valid?'#c6ff83':'#ff866f';octx.fillStyle=valid?'#c6ff8319':'#ff866f18';octx.lineWidth=2;octx.setLineDash([9,7]);
   octx.beginPath();octx.ellipse(pointer.x,pointer.y,radius+pulse,(radius+pulse)*.55,0,0,Math.PI*2);octx.fill();octx.stroke();
   octx.setLineDash([]);octx.beginPath();octx.moveTo(pointer.x-10,pointer.y);octx.lineTo(pointer.x+10,pointer.y);octx.moveTo(pointer.x,pointer.y-10);octx.lineTo(pointer.x,pointer.y+10);octx.stroke();octx.restore();
+}
+function drawCombatEscortGuide(){
+  if(!combatEscortRulesInGame()||(game.selection||[]).length!==1)return;
+  const unit=game.getEntity(game.selection[0]);
+  if(!isCombatEscortUnit(unit)||unit.order?.type!=='follow')return;
+  const leader=game.getEntity(unit.order.targetId);
+  if(!combatEscortLeader(leader))return;
+  if(renderer3d)syncRendererView();
+  const project=renderer3d?(x,y)=>renderer3d.worldToScreen(x,y):toScreen;
+  const center=project(leader.x,leader.y),escort=project(unit.x,unit.y);
+  octx.save();octx.lineWidth=1.2;octx.strokeStyle='#96e6dc69';octx.setLineDash([5,7]);
+  octx.beginPath();
+  for(let i=0;i<=40;i++){
+    const angle=i*Math.PI*2/40,p=project(leader.x+Math.cos(angle)*4,leader.y+Math.sin(angle)*4);
+    if(i===0)octx.moveTo(p.x,p.y);else octx.lineTo(p.x,p.y);
+  }
+  octx.stroke();octx.setLineDash([3,5]);octx.strokeStyle='#b0f3e2a6';
+  octx.beginPath();octx.moveTo(escort.x,escort.y);octx.lineTo(center.x,center.y);octx.stroke();
+  octx.setLineDash([]);octx.strokeStyle='#b7f6e3';octx.lineWidth=1.5;
+  octx.beginPath();octx.moveTo(center.x,center.y-7);octx.lineTo(center.x+6,center.y-3);
+  octx.lineTo(center.x+4,center.y+4);octx.lineTo(center.x,center.y+7);
+  octx.lineTo(center.x-4,center.y+4);octx.lineTo(center.x-6,center.y-3);octx.closePath();octx.stroke();
+  octx.restore();
 }
 function drawFieldRepairChannels(){
   if(!game||game.replayVersion!=null&&game.replayVersion<85)return;
@@ -5025,7 +5067,8 @@ function updateSelectionCard() {
   stanceButton.setAttribute('aria-label',armed.length?`Combat stance: ${stanceUI.name}. Cycle with T.`:'Combat stance unavailable; select an armed unit.');
   const medicSelected=medicEscortRulesInGame()&&units.some(unit=>unit.defId==='medic'&&unit.owner==='player');
   $('#cmd-follow').title=engineerEscortRulesInGame()&&selected.some(unit=>unit.defId==='engineer')?
-    'Escort with field repair kits (F). Choose a friendly ground vehicle; stop it for five-second repairs. Refill spent kits at a powered Field Workshop.':medicSelected?'Escort a friendly unit (F). Medics prioritize an injured infantry escort target in healing range; otherwise they heal nearby wounded infantry.':'Follow a friendly unit (F)';
+    'Escort with field repair kits (F). Choose a friendly ground vehicle; stop it for five-second repairs. Refill spent kits at a powered Field Workshop.':medicSelected?'Escort a friendly unit (F). Medics prioritize an injured infantry escort target in healing range; otherwise they heal nearby wounded infantry.':units.some(isCombatEscortUnit)?
+    'Combat escort (F). Protect a friendly mobile ground leader: engage visible nearby threats, pursue within four tiles, then rejoin. Hold Fire prevents engagement. Buildings and aircraft keep ordinary Follow.':'Follow a friendly unit (F)';
   $('#cmd-follow').setAttribute('aria-label',$('#cmd-follow').title);
   const canRepairStructure=selected.some(o=>'w' in o&&o.owner==='player');
   const canOrderEngineer=selected.some(o=>o.defId==='engineer'&&o.owner==='player');
@@ -5127,11 +5170,15 @@ function updateSelectionCard() {
       :first.order?.type==='refillRepairKits'?first._fieldRepairWaiting?`REFILL PAUSED · ${String(first._fieldRepairWaiting).toUpperCase()}`:
         first._fieldRepairRefillProgress>0?`REFILL ${Math.floor(first._fieldRepairRefillProgress)}/8S`:'RETURNING TO WORKSHOP'
         :engineerEscortStatus||(first.fieldRepairKits<1?'REFILL AT WORKSHOP':engineerEscortRulesInGame()?'FOLLOW (F) TO ESCORT':'ENGINEER TASK (R) TO PATCH')}`:null;
+  const combatLeader=isCombatEscortUnit(first)&&first.order?.type==='follow'?
+    game.getEntity(first.order.targetId):null;
+  const combatEscortState=combatEscortLeader(combatLeader)?
+    `${Math.hypot(first.x-combatLeader.x,first.y-combatLeader.y)>4?'REJOINING':'ESCORT SCREEN'} · ${game.unitDefs[combatLeader.defId].name.toUpperCase()}`:null;
   const reinforcementState=first.owner==='player'&&first._productionRally?
     first._productionRally.stage==='approach'?'RENDEZVOUS WITH RALLY UNIT':'FOLLOWING RALLY UNIT':null;
   const tacticalState=fieldActive||digInStatus||(singleDigInCooldown?`DIG IN COOLDOWN · ${singleDigInCooldown}S`:
     disrupted?`WEAPON DISRUPTED · ${Math.ceil(first.suppressedUntil-game.time)}S`:
-    fieldHint||recommissionState||repairKitState||serviceOrderState||harvesterState||aircraftState||medicState||reinforcementState||
+    fieldHint||recommissionState||repairKitState||serviceOrderState||harvesterState||aircraftState||medicState||combatEscortState||reinforcementState||
     (serviceSupported?`FIELD REPAIRS ACTIVE · ${unitOrder}`:refinerySupported?'NETWORK SUPPORTED · +20% EXTRACTION':first.defId==='stealthTank'&&first.revealedUntil<=(game?.time||0)?'CLOAKED · AMBUSH READY':isTroopCarrier(first)?`PASSENGERS ${first.passengerIds?.length||0}/${unitDef.capacity} · ${unitOrder}`:unitOrder));
   const workshopState=first.defId==='serviceBay'?(first.powered?'FIELD REPAIRS ONLINE':'FIELD REPAIRS OFFLINE'):null;
   const groupSummary=selected.length>1&&units.length?(()=>{

@@ -8,7 +8,7 @@ const MODEL_CATALOG = Object.freeze({
   buggy: { aegis: 'recon-buggy.glb', vesper: 'vesper-recon-buggy.glb' },
   apc: { all: 'apc.glb?rev=1' },
   dropship: { all: 'dropship.glb' },
-  lightTank: { all: 'striker-tank.glb' },
+  lightTank: { aegis: 'striker-tank.glb', vesper: 'vesper-striker-tank.glb' },
   artillery: { aegis: 'siege-crawler.glb?rev=1', vesper: 'vesper-siege-crawler.glb?rev=89' },
   guardian: { aegis: 'aegis-heavy-tank-game.glb?rev=2' },
   medic: { all: 'medic.glb?rev=86' },

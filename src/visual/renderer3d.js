@@ -1338,7 +1338,7 @@ export class Renderer3D {
       superweapon:'ion-spire.glb', warhead:'warhead-temple.glb',
       relay:'resonance-relay.glb',
       salvageDrop:'salvage-pod.glb',
-      lightTank:'striker-tank.glb', apc:'apc.glb',
+      lightTank:'striker-tank.glb', vesperLightTank:'vesper-striker-tank.glb', apc:'apc.glb',
       harvester:'harvester.glb', vesperHarvester:'vesper-harvester.glb', crystal:'crystal-cluster.glb',
       scout:'scout.glb', scoutVesper:'vesper-scout.glb', rifle:'rifle-infantry.glb', rocket:'rocket-infantry.glb',
       engineer:'engineer.glb', medic:'medic.glb', flamer:'flamer.glb',
@@ -3966,6 +3966,7 @@ export class Renderer3D {
     const modelKey=o.defId==='guardian'&&o.faction!=='aegis'?'none':
       o.defId==='scout'&&o.faction==='vesper'?'scoutVesper':
       o.defId==='buggy'&&o.faction==='vesper'?'vesperBuggy':
+      o.defId==='lightTank'&&o.faction==='vesper'?'vesperLightTank':
       o.defId==='artillery'&&o.faction==='vesper'?'vesperArtillery':
       o.defId==='mcv'&&o.faction==='vesper'?'vesperMcv':
       o.defId==='harvester'&&o.faction==='vesper'?'vesperHarvester':(vesperStructure||o.defId);
@@ -5700,7 +5701,7 @@ export class Renderer3D {
       const building='w' in o;
       live.add(o.id);
       let state=this.entities.get(o.id);
-      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',artillery:'vesperArtillery',mcv:'vesperMcv',
+      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',lightTank:'vesperLightTank',artillery:'vesperArtillery',mcv:'vesperMcv',
         refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
         radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
       const assetVersion=this.assetVersions.get(assetKey||o.defId)||0;
