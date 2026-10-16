@@ -855,6 +855,7 @@ async function watchReplayRecord(record, metadata = null) {
     await ensureRenderer();
     activePlayback = playback;
     replayMode = true;
+    syncTargetingFocus();
     replayMoments = selectReplayMoments(metadata?.moments, record.completedTicks);
     renderReplayMoments();
     replaySpeed = 1;
@@ -2315,6 +2316,7 @@ async function loadSaved(data, fromRecovery = false) {
     resetTacticalFeed();
     gameEnded = false; paused = false; playing = true; placeId = null; placementToken++; placementPending = false;
     attackMoveMode = false; cancelDigInTargeting(); commandAbilityMode = null; commandAbilityToken++; commandAbilityPending = false;
+    syncTargetingFocus();
     setRoutePlanMode(false);
     campaignGuidanceKey='';campaignGuidanceDismissedKey='';
     quickStartGuidance=false;
@@ -2357,6 +2359,7 @@ function returnToMenu({preserveLobby=false}={}) {
   if(!preserveLobby&&currentMode==='multiplayer'&&(lobby||matchRoomCode))network.send('leave_lobby');
   setMobileRadarOpen(false);
   paused = false; playing = false; game = null; activePlayback=null;replayMode=false;replayAccumulator=0;replaySeekTarget=null;
+  syncTargetingFocus();
   selectedFormation='';formationSelectionKey='';formationPreviewCache={key:'',at:0,preview:null};
   lobby=null;matchRoomCode=null;opponentReconnecting=false;postMatchOpponent=null;postMatchFriendRequestPending=false;audio.stopAmbient();hide('#game-shell'); hide('#pause-modal'); hide('#end-modal');hide('#multiplayer-status');hide('#replay-controls');$('#game-shell').classList.remove('replay-mode');show('#menu');updateReplayAvailability();
   renderLobby();renderCasualMatchmaking();
@@ -2364,8 +2367,9 @@ function returnToMenu({preserveLobby=false}={}) {
 }
 function togglePause(force) {
   if (!playing || gameEnded) return;
-  if(replayMode){if(replaySeekTarget!==null){replaySeekTarget=null;$('#replay-seek-status').textContent='SEEK CANCELLED';}paused=typeof force==='boolean'?force:!paused;replayAccumulator=0;updateReplayControls();lastTime=performance.now();refreshFrameRateReadout();return;}
+  if(replayMode){if(replaySeekTarget!==null){replaySeekTarget=null;$('#replay-seek-status').textContent='SEEK CANCELLED';}paused=typeof force==='boolean'?force:!paused;syncTargetingFocus();replayAccumulator=0;updateReplayControls();lastTime=performance.now();refreshFrameRateReadout();return;}
   paused = typeof force === 'boolean' ? force : !paused;
+  syncTargetingFocus();
   if (paused) {
     $('.pause-panel .panel-kicker').textContent=currentMode==='multiplayer'?'LIVE MATCH CONTINUES':'COMMAND PAUSED';
     $('#restart-game').innerHTML=`${currentMode==='campaign'?'RESTART OPERATION':'RESTART SKIRMISH'} <span>›</span>`;
@@ -2671,8 +2675,34 @@ function attemptPlacement(wx, wy) {
   updateUI(true);
 }
 let placementPending = false;
-function cancelPlacement(cancelEngine = false) { placementToken++; if (cancelEngine && game?.cancelConstruction && placeId) resultMessage(game.cancelConstruction(),'CONSTRUCTION CANCELED'); placeId = null; placementPending=false; hide('#placement-hint'); }
-function cancelCommandAbility(){commandAbilityToken++;commandAbilityMode=null;commandAbilityPending=false;hide('#attack-hint');}
+let targetingFocusActive = null;
+function syncTargetingFocus() {
+  const active = !!(playing && !paused && !gameEnded && !replayMode && (attackMoveMode || commandAbilityMode || digInMode || placeId));
+  if (active === targetingFocusActive) return;
+  targetingFocusActive = active;
+  const battlefield=$('#battlefield-wrap');
+  battlefield.classList.toggle('tactical-targeting', active);
+  if(active&&!$('#targeting-cancel')){
+    const button=document.createElement('button');
+    button.id='targeting-cancel';button.type='button';button.className='targeting-cancel';
+    button.textContent='CANCEL TARGETING';button.setAttribute('aria-label','Cancel current targeting action');
+    button.addEventListener('click',cancelActiveTargeting);
+    battlefield.append(button);
+  }
+}
+function targetingCancelCopy(){return innerWidth<=670||matchMedia('(pointer: coarse)').matches?'':' <span>·</span> ESC TO CANCEL';}
+function setPlacementHint(){
+  $('#placement-hint').innerHTML=innerWidth<=670||matchMedia('(pointer: coarse)').matches?'TAP BUILD SITE':'LEFT CLICK TO PLACE <span>·</span> ESC TO CANCEL';
+}
+function cancelActiveTargeting(){
+  if(placeId){cancelPlacement();return true;}
+  if(digInMode){cancelDigInTargeting();return true;}
+  if(commandAbilityMode){cancelCommandAbility();return true;}
+  if(attackMoveMode||routePlanMode){attackMoveMode=false;targetOrderPending=false;targetOrderToken++;hide('#attack-hint');setRoutePlanMode(false);updateAttackMoveButton();return true;}
+  return false;
+}
+function cancelPlacement(cancelEngine = false) { placementToken++; if (cancelEngine && game?.cancelConstruction && placeId) resultMessage(game.cancelConstruction(),'CONSTRUCTION CANCELED'); placeId = null; placementPending=false; hide('#placement-hint'); syncTargetingFocus(); }
+function cancelCommandAbility(){commandAbilityToken++;commandAbilityMode=null;commandAbilityPending=false;$('#attack-hint').removeAttribute('title');hide('#attack-hint');syncTargetingFocus();}
 function routeSelectionKey(units=selectedObjects().filter(o=>!('w' in o)&&o.owner==='player')){
   return units.map(unit=>unit.id).sort().join('|');
 }
@@ -2685,6 +2715,7 @@ function updateRoutePlanControl(units){
   button.setAttribute('aria-pressed',String(routePlanMode));
   button.setAttribute('aria-label',routePlanMode?'Disable route planning for selected units':'Enable route planning for selected units');
   button.title=routePlanMode?'Tap successive waypoints or visible enemies; tap ROUTE again to finish':'Plan a route with successive battlefield taps';
+  syncTargetingFocus();
 }
 function setRoutePlanMode(enabled){
   if(enabled){
@@ -2711,7 +2742,8 @@ function setRoutePlanMode(enabled){
 function targetOrderHint(mode,label,prompt){
   const routing=['attack','forceMove','reverseMove'].includes(mode);
   const touchGuide=matchMedia('(pointer: coarse)').matches||innerWidth<=670;
-  return `${label} · ${prompt}${routing?(routePlanMode?' · TAP MORE POINTS TO CONTINUE':touchGuide?' · TAP ROUTE TO QUEUE MORE POINTS':' · SHIFT+CLICK TO QUEUE'):''} <span>·</span> ESC TO CANCEL`;
+  const formationNote=selectedFormation&&['attack','forceMove'].includes(mode)?` · ${selectedFormation.toUpperCase()} LAYOUT`:'';
+  return `${label} · ${touchGuide?prompt.replace(/^SELECT /,'TAP '):prompt}${routing?(routePlanMode?' · TAP NEXT POINT':touchGuide?' · TAP ROUTE TO QUEUE':' · SHIFT+CLICK TO QUEUE'):''}${formationNote}${targetingCancelCopy()}`;
 }
 function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   if(!game)return;
@@ -2725,7 +2757,9 @@ function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   attackMoveMode=mode;
   updateAttackMoveButton();
   $('#attack-hint').innerHTML=targetOrderHint(mode,label,prompt);
+  $('#attack-hint').title=selectedFormation&&['attack','forceMove'].includes(mode)?'Approximate positions; terrain can adjust slots.':'';
   show('#attack-hint');
+  syncTargetingFocus();
   if(mode==='recommissionWreck'&&battlefieldPickerIsOpen())
     $('#battlefield-picker-status').textContent='Targeting active · choose a compatible visible vehicle wreck to recover its chassis.';
   renderBattlefieldPicker();
@@ -2760,7 +2794,7 @@ function issueRecommissionWreckTarget(wreck) {
   const result = game.issueRecommissionWreck(wreck.id);
   if (result?.pending) {
     targetOrderPending = true;
-    $('#attack-hint').innerHTML = 'RECOMMISSION WRECK · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL';
+    $('#attack-hint').innerHTML = `RECOMMISSION WRECK · WAITING FOR SERVER CONFIRMATION${targetingCancelCopy()}`;
     resultMessage(result, 'RECOMMISSION ORDERED · 12S', 'order', {
       onAccepted: () => {
         if (targetOrderToken !== token || attackMoveMode !== 'recommissionWreck') return;
@@ -2771,7 +2805,7 @@ function issueRecommissionWreckTarget(wreck) {
       onSettled: ack => {
         if (targetOrderToken !== token || attackMoveMode !== 'recommissionWreck') return;
         targetOrderPending = false;
-        if (!ack?.ok) $('#attack-hint').innerHTML = 'RECOMMISSION WRECK · ORDER REJECTED · SELECT WRECK <span>·</span> ESC TO CANCEL';
+        if (!ack?.ok) $('#attack-hint').innerHTML = `RECOMMISSION WRECK · ORDER REJECTED · SELECT WRECK${targetingCancelCopy()}`;
       }
     });
     return true;
@@ -2834,10 +2868,10 @@ function issueTargetOrder(wx,wy,queue=false){
   else {result=issueMoveCommand(wx,wy,true,queue);success=queue?'ATTACK MOVE QUEUED':'ATTACK MOVE ORDERED';}
   if(result?.pending){
     targetOrderPending=true;
-    $('#attack-hint').innerHTML=`${label} · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL`;
+    $('#attack-hint').innerHTML=`${label} · WAITING FOR SERVER CONFIRMATION${targetingCancelCopy()}`;
     resultMessage(result,success,cue,{
       onAccepted:()=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,label,'SELECT NEXT DESTINATION');else{attackMoveMode=false;hide('#attack-hint');updateAttackMoveButton();}}},
-      onSettled:ack=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(!ack?.ok){if(ack?.transportFailure){setRoutePlanMode(false);attackMoveMode=false;hide('#attack-hint');updateAttackMoveButton();}else $('#attack-hint').innerHTML=`${label} · ORDER REJECTED · SELECT TARGET <span>·</span> ESC TO CANCEL`;}}}
+      onSettled:ack=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(!ack?.ok){if(ack?.transportFailure){setRoutePlanMode(false);attackMoveMode=false;hide('#attack-hint');updateAttackMoveButton();}else $('#attack-hint').innerHTML=`${label} · ORDER REJECTED · SELECT TARGET${targetingCancelCopy()}`;}}}
     });
   } else if(resultMessage(result,success,cue)&&targetOrderToken===token&&attackMoveMode===mode){
     if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,label,'SELECT NEXT DESTINATION');
@@ -2862,8 +2896,11 @@ function startCommandAbility(id){
   updateAttackMoveButton();
   commandAbilityToken++;commandAbilityPending=false;
   commandAbilityMode=id;
-  $('#attack-hint').innerHTML=`${ability.name.toUpperCase()} · ${id==='stormcall'?'SELECT GROUND NEAR A SECURE RELAY':'SELECT TARGET'} <span>·</span> ESC TO CANCEL`;
+  const abilityPrompt=id==='stormcall'?'SELECT GROUND NEAR A SECURE RELAY':'SELECT TARGET';
+  $('#attack-hint').innerHTML=`${ability.name.toUpperCase()} · ${innerWidth<=670||matchMedia('(pointer: coarse)').matches?abilityPrompt.replace(/^SELECT /,'TAP '):abilityPrompt}${targetingCancelCopy()}`;
+  $('#attack-hint').removeAttribute('title');
   show('#attack-hint');
+  syncTargetingFocus();
   toast(`${ability.name} targeting active`);
 }
 
@@ -3136,6 +3173,7 @@ function formationGroundUnits(units=selectedObjects()) {
     !game.unitDefs?.[unit.defId]?.flying&&(game.unitDefs?.[unit.defId]?.speed||0)>0);
 }
 function updateFormationControl(units) {
+  const previousFormation=selectedFormation;
   const available=!!game&&formationPreviewAvailable(units);
   const key=units.map(unit=>unit.id).sort().join('|');
   if(key!==formationSelectionKey){selectedFormation='';formationSelectionKey=key;formationPreviewCache={key:'',at:0,preview:null};}
@@ -3145,6 +3183,13 @@ function updateFormationControl(units) {
   select.disabled=!available;
   if(select.value!==selectedFormation)select.value=selectedFormation;
   select.title='SCREEN puts armored units in front and rockets and support at the rear. Obstacles and combat can split the formation.';
+  if(previousFormation!==selectedFormation)refreshFormationTargetHint();
+}
+function refreshFormationTargetHint(){
+  if(!['attack','forceMove'].includes(attackMoveMode)||targetOrderPending)return;
+  const label=attackMoveMode==='attack'?'ATTACK MOVE':'FORCE MOVE';
+  $('#attack-hint').innerHTML=targetOrderHint(attackMoveMode,label,'SELECT DESTINATION');
+  $('#attack-hint').title=selectedFormation?'Approximate positions; terrain can adjust slots.':'';
 }
 function issueFormationCommand(x,y,movement,queue=false) {
   if(!selectedFormation||!formationPreviewAvailable())return null;
@@ -3180,8 +3225,10 @@ function drawFormationPreview() {
     octx.beginPath();octx.moveTo(ex,ey);octx.lineTo(ex-Math.cos(screenFacing-.55)*7,ey-Math.sin(screenFacing-.55)*7);octx.moveTo(ex,ey);octx.lineTo(ex-Math.cos(screenFacing+.55)*7,ey-Math.sin(screenFacing+.55)*7);octx.stroke();
   }
   octx.setLineDash([]);octx.font='700 9px Barlow Condensed, sans-serif';octx.textAlign='left';octx.textBaseline='middle';
-  const legend='NOMINAL POSITIONS',lx=Math.max(4,Math.min(visibleW-110,center.x+13)),ly=Math.max(10,Math.min(visibleH-8,center.y+27));
-  octx.fillStyle='#07140fd9';octx.fillRect(lx-4,ly-7,104,14);octx.fillStyle='#c9e6c1';octx.fillText(legend,lx,ly);
+  if(visibleW>670){
+    const legend='NOMINAL POSITIONS',lx=Math.max(4,Math.min(visibleW-110,center.x+13)),ly=Math.max(10,Math.min(visibleH-8,center.y+27));
+    octx.fillStyle='#07140fd9';octx.fillRect(lx-4,ly-7,104,14);octx.fillStyle='#c9e6c1';octx.fillText(legend,lx,ly);
+  }
   octx.restore();
 }
 function drawStormLureFallback(t){
@@ -4009,6 +4056,7 @@ function updateProductionScrollCue() {
     list.scrollTop+list.clientHeight>=list.scrollHeight-threshold);
 }
 function updateAttackMoveButton(units=selectedObjects().filter(o=>!('w' in o))) {
+  syncTargetingFocus();
   const producer=selectedProductionBuilding();
   const active=producer?tab==='units':attackMoveMode==='attack'||(units.length>0&&units.every(unit=>
     unit.order?.type==='move'&&unit.order.attackMove));
@@ -4067,6 +4115,7 @@ function cancelDigInTargeting(){
   digInToken++;digInMode=false;digInSelectionKey='';digInPending=false;
   $('#battlefield-wrap')?.classList.remove('dig-in-targeting');
   if(!commandAbilityMode&&!attackMoveMode)hide('#attack-hint');
+  syncTargetingFocus();
 }
 function startDigInTargeting(){
   if(!game)return;
@@ -4092,8 +4141,9 @@ function startDigInTargeting(){
   digInSelectionKey=eligible.map(unit=>unit.id).sort().join('|');
   $('#cmd-deploy').classList.add('active');
   $('#battlefield-wrap').classList.add('dig-in-targeting');
-  $('#attack-hint').textContent='FACE THIS DIRECTION · NO MOVEMENT · ESC TO CANCEL';
+  $('#attack-hint').textContent=innerWidth<=670||matchMedia('(pointer: coarse)').matches?'DIG IN · TAP TO SET FACING':'FACE THIS DIRECTION · NO MOVEMENT · ESC TO CANCEL';
   show('#attack-hint');
+  syncTargetingFocus();
   toast('DIG IN · CHOOSE A FACING');
 }
 function issueDigInAt(x,y){
@@ -4102,7 +4152,7 @@ function issueDigInAt(x,y){
   const result=game.issueDigIn?.(x,y)||{ok:false,reason:'Dig In is unavailable in this battle.'};
   if(result?.pending){
     digInPending=true;
-    $('#attack-hint').textContent='DIG IN · WAITING FOR SERVER CONFIRMATION · ESC TO CANCEL';
+    $('#attack-hint').innerHTML=`DIG IN · WAITING FOR SERVER CONFIRMATION${targetingCancelCopy()}`;
     resultMessage(result,'INFANTRY DIG IN ORDERED','order',{
       onAccepted:()=>{
         if(digInToken!==token||!digInMode)return;
@@ -4113,7 +4163,7 @@ function issueDigInAt(x,y){
         digInPending=false;
         if(!ack?.ok){
           if(ack?.transportFailure)cancelDigInTargeting();
-          else $('#attack-hint').textContent='DIG IN · ORDER REJECTED · SELECT FACING · ESC TO CANCEL';
+          else $('#attack-hint').innerHTML=`DIG IN · ORDER REJECTED · SELECT FACING${targetingCancelCopy()}`;
         }
       }
     });
@@ -4475,6 +4525,7 @@ function updateMobileSquads() {
   }
 }
 function updateUI(force=false) {
+  syncTargetingFocus();
   if(!game){
     $('#ai-profile-badge').classList.add('hidden');
     resetAiProfileDisclosure();
@@ -5247,7 +5298,7 @@ function processEvents() {
       if(type==='stormcallPulse')audio.play('ionpulse');
     }
     if(type==='constructionReady'&&e.defId&&(!game.construction||game.construction.defId===e.defId)){
-      setRoutePlanMode(false);placeId=e.defId;placementToken++;placementPending=false;show('#placement-hint');toast(`${game.buildingDefs?.[e.defId]?.name||keyName(e.defId)} ready to place`);audio.play('constructionComplete');
+      setRoutePlanMode(false);placeId=e.defId;placementToken++;placementPending=false;setPlacementHint();show('#placement-hint');syncTargetingFocus();toast(`${game.buildingDefs?.[e.defId]?.name||keyName(e.defId)} ready to place`);audio.play('constructionComplete');
     }
     if(type==='unitReady'&&e.owner==='player')audio.play('unitReady');
     if(type==='doctrineReady'&&e.owner==='player'){
@@ -5332,7 +5383,7 @@ function processEvents() {
 function interruptMultiplayerMatch(replacedCode='') {
   if(currentMode!=='multiplayer'||!playing||gameEnded)return;
   const moved=Boolean(replacedCode);
-  gameEnded=true;paused=true;lobby=null;matchRoomCode=null;opponentReconnecting=false;
+  gameEnded=true;paused=true;syncTargetingFocus();lobby=null;matchRoomCode=null;opponentReconnecting=false;
   postMatchOpponent=null;postMatchFriendRequestPending=false;
   postMatchRematch=null;rematchOffer=null;rematchRequestPending=false;rematchResponsePending=false;rematchStatus='';
   renderPostMatchRematch();renderRematchOffer();
@@ -5500,7 +5551,7 @@ function renderSkirmishDebrief(victory) {
 }
 
 function finishGame(victory, terminalEvent=null) {
-  if(gameEnded||!game||!playing)return;gameEnded=true;paused=true;
+  if(gameEnded||!game||!playing)return;gameEnded=true;paused=true;syncTargetingFocus();
   cancelDigInTargeting();
   showPostMatchOpponent(terminalEvent);
   showPostMatchRematch(terminalEvent);
@@ -7020,7 +7071,7 @@ $('#production-list').addEventListener('click',e=>{
   const id=btn.dataset.build;
   if(btn.dataset.kind==='structures'){
     if(game.construction?.defId===id&&!game.construction.ready){toast('CONSTRUCTION IN PROGRESS');}
-    else if(game.construction?.defId===id&&game.construction.ready){setRoutePlanMode(false);placeId=id;placementToken++;placementPending=false;show('#placement-hint');toast('SELECT A BUILD SITE');}
+    else if(game.construction?.defId===id&&game.construction.ready){setRoutePlanMode(false);placeId=id;placementToken++;placementPending=false;setPlacementHint();show('#placement-hint');syncTargetingFocus();toast('SELECT A BUILD SITE');}
     else {const r=game.startConstruction?game.startConstruction(id):{ok:true};resultMessage(r,`Constructing ${game.buildingDefs?.[id]?.name||keyName(id)}`);}
   } else {
     const site=selectedProductionSite();
@@ -7095,6 +7146,7 @@ $('#formation-select').addEventListener('change',event=>{
   }
   selectedFormation=['line','column','screen'].includes(event.currentTarget.value)?event.currentTarget.value:'';
   formationPreviewCache={key:'',at:0,preview:null};
+  refreshFormationTargetHint();
 });
 $('#route-plan-toggle').addEventListener('click',()=>{
   if(game&&playing&&!paused&&!replayMode)setRoutePlanMode(!routePlanMode);
@@ -7233,7 +7285,7 @@ canvas.addEventListener('pointerup',e=>{
     issueDigInAt(pointer.wx,pointer.wy);
     return;
   }
-  if(commandAbilityMode){if(commandAbilityPending)return;const id=commandAbilityMode,token=commandAbilityToken;const result=game.useCommandAbility(id,pointer.wx,pointer.wy);if(result?.pending){commandAbilityPending=true;$('#attack-hint').innerHTML=`${COMMAND_ABILITIES[id].name.toUpperCase()} · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL`;resultMessage(result,`${COMMAND_ABILITIES[id].name.toUpperCase()} DEPLOYED`,id==='stormcall'?'stormcall':'order',{onAccepted:()=>{if(commandAbilityToken===token&&commandAbilityMode===id){cancelCommandAbility();updateUI(true);}},onSettled:ack=>{if(commandAbilityToken===token&&commandAbilityMode===id){commandAbilityPending=false;if(!ack?.ok){if(ack?.transportFailure)cancelCommandAbility();else $('#attack-hint').innerHTML=`${COMMAND_ABILITIES[id].name.toUpperCase()} · ORDER REJECTED · SELECT TARGET <span>·</span> ESC TO CANCEL`;}}}});}else if(resultMessage(result,`${COMMAND_ABILITIES[id].name.toUpperCase()} DEPLOYED`,id==='stormcall'?'stormcall':'order')){cancelCommandAbility();updateUI(true);}return;}
+  if(commandAbilityMode){if(commandAbilityPending)return;const id=commandAbilityMode,token=commandAbilityToken;const result=game.useCommandAbility(id,pointer.wx,pointer.wy);if(result?.pending){commandAbilityPending=true;$('#attack-hint').innerHTML=`${COMMAND_ABILITIES[id].name.toUpperCase()} · WAITING FOR SERVER CONFIRMATION${targetingCancelCopy()}`;resultMessage(result,`${COMMAND_ABILITIES[id].name.toUpperCase()} DEPLOYED`,id==='stormcall'?'stormcall':'order',{onAccepted:()=>{if(commandAbilityToken===token&&commandAbilityMode===id){cancelCommandAbility();updateUI(true);}},onSettled:ack=>{if(commandAbilityToken===token&&commandAbilityMode===id){commandAbilityPending=false;if(!ack?.ok){if(ack?.transportFailure)cancelCommandAbility();else $('#attack-hint').innerHTML=`${COMMAND_ABILITIES[id].name.toUpperCase()} · ORDER REJECTED · SELECT TARGET${targetingCancelCopy()}`;}}}});}else if(resultMessage(result,`${COMMAND_ABILITIES[id].name.toUpperCase()} DEPLOYED`,id==='stormcall'?'stormcall':'order')){cancelCommandAbility();updateUI(true);}return;}
   if(attackMoveMode){issueTargetOrder(pointer.wx,pointer.wy,e.shiftKey||routePlanMode);return;}
   if(e.pointerType==='touch'&&routePlanMode){issueContext(pointer.wx,pointer.wy,true);return;}
   if(e.ctrlKey&&selectedObjects().some(o=>game.unitDefs?.[o.defId]?.weapon)){resultMessage(game.issueForceFire(pointer.wx,pointer.wy),'FORCE FIRE ORDERED');return;}
@@ -7377,7 +7429,7 @@ window.addEventListener('keydown',e=>{
     }
     return;
   }
-  if(e.key==='Escape'){if(!$('#manual').classList.contains('hidden'))closeManual();else if(!$('#setup').classList.contains('hidden'))closeSetup();else if(placeId)cancelPlacement();else if(digInMode)cancelDigInTargeting();else if(commandAbilityMode)cancelCommandAbility();else if(attackMoveMode||routePlanMode){attackMoveMode=false;hide('#attack-hint');setRoutePlanMode(false);updateAttackMoveButton();}else if(playing)togglePause();return;}
+  if(e.key==='Escape'){if(!$('#manual').classList.contains('hidden'))closeManual();else if(!$('#setup').classList.contains('hidden'))closeSetup();else if(!cancelActiveTargeting()&&playing)togglePause();return;}
   if(!playing||paused||e.target.closest?.('input,select,textarea,[contenteditable="true"]'))return;
   if(['KeyW','KeyA','KeyS','KeyD','KeyQ'].includes(e.code)&&
     !(e.shiftKey&&['KeyA','KeyS'].includes(e.code))){

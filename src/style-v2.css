@@ -3955,3 +3955,41 @@ body:has(#end-modal:not(.hidden)),
   }
   .battlefield-wrap.dig-in-targeting:has(.mobile-squads[data-expanded="true"]) .placement-hint { bottom: 168px; }
 }
+
+/* Phone targeting focus: clear secondary callouts and keep the command deck usable. */
+.targeting-cancel { display: none; }
+@media (max-width: 670px) {
+  .battlefield-wrap.tactical-targeting #relay-locator,
+  .battlefield-wrap.tactical-targeting #salvage-locator,
+  .battlefield-wrap.tactical-targeting #ai-profile-badge,
+  .battlefield-wrap.tactical-targeting #campaign-guidance,
+  .battlefield-wrap.tactical-targeting > .mobile-squads { display: none !important; }
+
+  .battlefield-wrap.tactical-targeting #attack-hint:not(.hidden),
+  .battlefield-wrap.tactical-targeting #placement-hint:not(.hidden) {
+    top: 66px; bottom: auto; left: 10px; right: 10px; transform: none;
+    width: auto; max-width: none; max-height: 96px; overflow-y: auto;
+    padding: 8px 10px; border: 1px solid rgba(167, 214, 157, .62);
+    background: rgba(4, 15, 12, .94); color: #efffd9;
+    font-size: 12px; line-height: 1.35; text-align: left; white-space: normal;
+  }
+  .battlefield-wrap.tactical-targeting .targeting-cancel {
+    position: absolute; z-index: 22; right: 10px; bottom: 52px;
+    display: flex; min-width: 138px; min-height: 44px; align-items: center; justify-content: center;
+    padding: 0 12px; border: 1px solid #d3a276; background: rgba(39, 24, 17, .96);
+    color: #ffe4c1; font: 800 11px/1 "Barlow Condensed", sans-serif; letter-spacing: .09em;
+    box-shadow: 0 4px 14px #02080580; touch-action: manipulation;
+  }
+  .battlefield-wrap.tactical-targeting .targeting-cancel:active { border-color: #ffe4c1; background: #513725; }
+  .battlefield-wrap.tactical-targeting .targeting-cancel:focus-visible { outline: 2px solid var(--lime); outline-offset: 2px; }
+  #battlefield-wrap.tactical-targeting .toast-container {
+    top: auto; bottom: 52px; left: 10px; right: auto;
+    width: calc(100% - 168px); max-width: none; max-height: 44px; overflow: hidden;
+  }
+  #battlefield-wrap.tactical-targeting .toast-container .toast {
+    min-width: 0; max-height: 44px; padding: 6px 8px; overflow: hidden;
+    font-size: 10px; line-height: 1.3;
+  }
+  #battlefield-wrap.tactical-targeting .toast-container .toast:not(:last-child) { display: none; }
+  .battlefield-wrap.tactical-targeting .battlefield-picker { top: 134px; }
+}

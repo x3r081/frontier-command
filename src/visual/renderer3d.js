@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
+import { createGroundContactBatch } from './groundContact.js';
 import { getCampaignFieldOrderView } from '../game/campaign.js';
 import {
   unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
@@ -750,9 +751,13 @@ function rockFieldGeometry(game, style) {
 
 function waterMaterial(timeUniform,mapId) {
   const stormBasin=mapId==='storm-basin';
-  const material=mat(0xffffff,stormBasin?{roughness:0.84,metalness:0.07}:{roughness:0.27,metalness:0.31});
   const delta=mapId==='delta-crossing';
-  material.customProgramCacheKey=()=>`water-flow:${delta?'delta':stormBasin?'storm':'default'}:v3`;
+  // Water no longer receives the old per-tile instance colors. Keep its base
+  // pigment on the shared material so the continuous surface cannot turn white.
+  const color=delta?0x23565a:stormBasin?0x1c4d59:
+    mapId==='twin-passes'?0x243c58:mapId==='canyon-ring'?0x304850:0x224d50;
+  const material=mat(color,stormBasin?{roughness:0.84,metalness:0.07}:{roughness:0.27,metalness:0.31});
+  material.customProgramCacheKey=()=>`water-flow:${delta?'delta':stormBasin?'storm':'default'}:v4`;
   material.onBeforeCompile=shader=>{
     shader.uniforms.uWaterTime=timeUniform;
     shader.vertexShader=`varying vec2 vWaterXZ;\n${shader.vertexShader}`.replace(
@@ -1234,6 +1239,9 @@ export class Renderer3D {
     this.resourceCache = [];
     this.fogCache = [];
     this.entities = new Map();
+    this.groundContactBatch = null;
+    this.groundContactEntries = [];
+    this.groundContactPool = [];
     this.entitySyncLive = new Set();
     this.entitySyncSelected = new Set();
     this.entitySyncAcquiredTargets = new Set();
@@ -2122,6 +2130,7 @@ export class Renderer3D {
   }
 
   _buildTerrain(game) {
+    this._clearGroundContacts();
     this._clearVehicleTracks();
     for(const [id,visual] of [...this.collapseVisuals]) this._removeBuildingCollapse(id,visual);
     this._disposeGroup(this.terrainGroup);
@@ -5533,6 +5542,60 @@ export class Renderer3D {
     for(const [id,state] of this.entities) if(!live.has(id)) this._removeEntity(id,state);
   }
 
+  _clearGroundContacts() {
+    if(this.groundContactBatch) {
+      this.scene.remove(this.groundContactBatch.mesh);
+      this.groundContactBatch.dispose();
+      this.groundContactBatch=null;
+    }
+    if(this.groundContactEntries)this.groundContactEntries.length=0;
+  }
+
+  _syncGroundContacts(game) {
+    if(!this.groundContactBatch) {
+      const batch=createGroundContactBatch({capacity:384});
+      const groundState=this.groundReliefMaterials?.[0]?.userData.groundFlatZoneState;
+      const relief=groundState?{
+        key:'contact-terrain-relief-v1',
+        code:`uniform vec4 uGroundFlatZones[${GROUND_FLAT_ZONE_CAPACITY}];
+          uniform int uGroundFlatZoneCount; uniform float uGroundQuality;
+          ${groundReliefFunction(this.mapStyle)}`,
+        uniforms:{uGroundFlatZones:{value:groundState.vectors},
+          uGroundFlatZoneCount:groundState.countUniform,uGroundQuality:this.groundQualityUniform},
+        expression:'groundRelief(raisedWorld.xz)*0.82',
+      }:null;
+      followVisualSurface(batch.mesh.material,this.visualHeightUniforms,
+        relief?{displacement:relief}:{});
+      batch.mesh.renderOrder=1;
+      this.scene.add(batch.mesh);
+      this.groundContactBatch=batch;
+    }
+    const entries=this.groundContactEntries;
+    const pool=this.groundContactPool;
+    entries.length=0;
+    for(const unit of game.units) {
+      if(unit.hp<=0||unit.embarkedIn||!Number.isFinite(unit.x)||!Number.isFinite(unit.y))continue;
+      const def=game.unitDefs?.[unit.defId];
+      if(!def||def.flying||unit.owner==='enemy'&&!game.isVisible(unit))continue;
+      const state=this.entities.get(unit.id);
+      if(!state||state.building||!state.group.visible)continue;
+      const index=entries.length;
+      const entry=pool[index]||(pool[index]={});
+      entry.id=unit.id;entry.x=unit.x;entry.z=unit.y;entry.y=0.025;
+      entry.facing=state.group.rotation.y;
+      entry.infantry=def.armor==='infantry';
+      entry.radius=(def.radius||0.25)*state.group.scale.x;
+      entry.distance=(unit.x-this.centerX)**2+(unit.y-this.centerY)**2;
+      entries.push(entry);
+    }
+    const limit=this.quality==='eco'?96:this.quality==='balanced'?192:384;
+    if(entries.length>limit) {
+      entries.sort((a,b)=>a.distance-b.distance||a.id.localeCompare(b.id));
+      entries.length=limit;
+    }
+    this.groundContactBatch.sync(entries);
+  }
+
   _syncPowerStandbyCue(state,o) {
     const active=state.building&&o.progress>=1&&o.powerStandby===true&&o.powered===false;
     if(!active) {
@@ -7104,6 +7167,7 @@ export class Renderer3D {
     this._syncFog(game);
     this._syncBridgeVisuals(game);
     this._syncEntities(game,time);
+    this._syncGroundContacts(game);
     if(this.trackDirty) {
       this.trackMesh.instanceMatrix.needsUpdate=true;
       this.trackMesh.geometry.getAttribute('aTrackBirth').needsUpdate=true;
@@ -7144,6 +7208,7 @@ export class Renderer3D {
   }
 
   dispose() {
+    this._clearGroundContacts();
     this._disposeGroup(this.terrainGroup);
     this.fogTexture?.dispose();
     this.fogTexture=null;
