@@ -8,6 +8,7 @@ import {
   unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
   MOBILE_RALLY_RULES_VERSION,
   WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY,
+  ENGINEER_FIELD_REPAIR_RULES_VERSION, ENGINEER_ESCORT_RULES_VERSION,
 } from '../game/engine.js';
 
 // The game owns tile coordinates. This renderer only maps tile (x, y) to
@@ -4007,6 +4008,7 @@ export class Renderer3D {
   }
 
   _prepareAnimation(group, o) {
+    const entityRoot = group;
     const visual=group.userData.authoredVisual||group.userData.proceduralVisual||group;
     const authored=!!group.userData.authoredVisual;
     group=visual;
@@ -4081,6 +4083,36 @@ export class Renderer3D {
           return part ? { part, side: side === 'L' ? -1 : 1, segment,
             pose: part.rotation.clone() } : null;
         })).filter(Boolean);
+        if (authored && o.defId === 'engineer') {
+          animation.engineerToolArm = animation.arms.find(arm => arm.side > 0 && arm.segment === 'forearm') || null;
+          // The spanner is part of the authored right forearm. Keep this cue
+          // local to each Engineer and reuse it only while an actual repair
+          // channel is progressing; it never follows private target data.
+          const cue = new THREE.Group();
+          const ring = new THREE.Mesh(new THREE.RingGeometry(0.045, 0.067, 12),
+            new THREE.MeshBasicMaterial({ color: 0x62e8f0, transparent: true, opacity: 0.72,
+              depthWrite: false, toneMapped: false, side: THREE.DoubleSide }));
+          ring.rotation.x = -Math.PI / 2;
+          cue.add(ring);
+          const core = new THREE.Mesh(new THREE.OctahedronGeometry(0.034, 0),
+            new THREE.MeshBasicMaterial({ color: 0xbdfaff, transparent: true, opacity: 0.95,
+              depthWrite: false, toneMapped: false }));
+          cue.add(core);
+          const sparks = [];
+          for (let i = 0; i < 3; i++) {
+            const spark = new THREE.Mesh(new THREE.OctahedronGeometry(0.021, 0),
+              new THREE.MeshBasicMaterial({ color: i === 1 ? 0xffb84c : 0x82f5ff,
+                transparent: true, opacity: 0.9, depthWrite: false, toneMapped: false }));
+            cue.add(spark);
+            sparks.push(spark);
+          }
+          cue.visible = false;
+          entityRoot.add(cue);
+          animation.engineerRepairCue = cue;
+          animation.engineerRepairSparks = sparks;
+          animation.engineerRepairPoint = new THREE.Vector3();
+          animation.engineerRepairDirection = new THREE.Vector3();
+        }
         animation.lastInfantryShotId = null;
         animation.infantryShotAge = Infinity;
         animation.lastInfantryVisualTime = NaN;
@@ -4365,6 +4397,108 @@ export class Renderer3D {
     const phase = time * 2.5 + a.phase;
     let lightLevel = 1;
     if(a.carrierParts?.length) this._animateCarrierLoading(state,o,game,time);
+    let engineerRepairTarget = null;
+    let engineerRepairing = false;
+    if (o.defId === 'engineer' && a.engineerRepairCue) {
+      // In multiplayer, private Engineer progress/order data is omitted from
+      // opponent snapshots. Only animate a channel that is actually present
+      // on an observable Engineer and points to a visible, valid vehicle.
+      const observableEngineer = o.owner === 'player' ||
+        (typeof game.isVisible === 'function' && game.isVisible(o));
+      const order = o.order;
+      const hasProgress = Number.isFinite(o._fieldRepairProgress) && o._fieldRepairProgress > 0;
+      const replayVersion = Number.isFinite(game.replayVersion) ? game.replayVersion : null;
+      const explicitRepairEnabled = replayVersion == null || replayVersion >= ENGINEER_FIELD_REPAIR_RULES_VERSION;
+      const escortRepairEnabled = replayVersion == null || replayVersion >= ENGINEER_ESCORT_RULES_VERSION;
+      const supportedOrder = order?.type === 'fieldRepair' ? explicitRepairEnabled
+        : order?.type === 'follow' ? escortRepairEnabled : false;
+      if (observableEngineer && hasProgress && supportedOrder && order.targetId) {
+        const target = (game.units || []).find(unit => unit.id === order.targetId);
+        const targetObservable = target && (target.owner === 'player' ||
+          (typeof game.isVisible === 'function' && game.isVisible(target)));
+        const targetDefinition = game.unitDefs?.[target?.defId];
+        const targetArmor = targetDefinition?.armor;
+        const targetDistance = target ? Math.hypot(o.x - target.x, o.y - target.y) : Infinity;
+        if (target && targetObservable && target.owner === o.owner && target.hp > 0 && target.hp < target.maxHp &&
+            !target.embarkedIn && !targetDefinition?.flying && targetDistance <= 1.2 &&
+            ['light', 'heavy'].includes(targetArmor)) {
+          engineerRepairTarget = target;
+          engineerRepairing = true;
+        }
+      }
+      a.engineerRepairCue.visible = engineerRepairing;
+      if (engineerRepairing) {
+        const vehicle = engineerRepairTarget;
+        // Repair orders can leave the simulation-facing direction unchanged.
+        // Turn only the rendered Engineer so its authored tool points toward
+        // the patient; the next sync restores the unit's normal facing when
+        // this presentation-only channel ends.
+        state.group.rotation.y = -Math.atan2(vehicle.y - o.y, vehicle.x - o.x) - Math.PI / 2;
+        // Selection billboards were aligned before this work-pose override.
+        // Keep their labels facing the camera as the physical unit turns.
+        if (this.camera) {
+          if (state.selectionBeacon?.visible)
+            state.selectionBeacon.quaternion.copy(state.group.quaternion).invert().multiply(this.camera.quaternion);
+          if (state.healthBar?.group.visible)
+            state.healthBar.group.quaternion.copy(state.group.quaternion).invert().multiply(this.camera.quaternion);
+        }
+        const direction = a.engineerRepairDirection.set(o.x - vehicle.x, 0, o.y - vehicle.y);
+        const length = direction.length();
+        if (length > 1e-4) direction.multiplyScalar(1 / length);
+        else direction.set(1, 0, 0);
+        // The GLB bounds are model-local; battlefield units are enlarged for
+        // readability. Reuse the target's rendered scales when available and
+        // mirror the deterministic unit/strategic scale on its first frame.
+        const targetState = this.entities?.get(vehicle.id);
+        const targetVisual = targetState?.unitVisual;
+        const zoom = Number.isFinite(this.zoom) ? this.zoom : 1.25;
+        const targetDef = game.unitDefs?.[vehicle.defId];
+        const unitScale = vehicle.defId === 'guardian' ? 1.48 : vehicle.defId === 'mcv' ? 1.16
+          : targetDef?.armor === 'infantry' ? 1.45 : targetDef?.flying ? 1.24 : 1.31;
+        const strategicScale = vehicle.defId !== 'mcv' && !targetDef?.flying
+          ? 1 + 0.12 * clamp((1.25 - zoom) / 0.25, 0, 1) : 1;
+        const targetScaleX = targetState
+          ? Math.abs(targetState.group.scale.x * (targetVisual?.scale.x || 1))
+          : unitScale * strategicScale;
+        const targetScaleY = targetState
+          ? Math.abs(targetState.group.scale.y * (targetVisual?.scale.y || 1))
+          : unitScale * strategicScale;
+        const hull = vehicle.defId === 'guardian' ? { radius: 0.57, height: 0.628 }
+          : vehicle.defId === 'stealthTank' ? { radius: 0.79, height: 0.46 }
+          : vehicle.defId === 'harvester' ? { radius: 0.77, height: 0.57 }
+          // Use the artillery chassis work area, not the long barrel's full
+          // visual bounds; an Engineer channels from within close range.
+          : vehicle.defId === 'artillery' ? { radius: 0.62, height: 0.58 }
+          : { radius: 0.67, height: 0.46 };
+        const hullContactRadius = hull.radius * targetScaleX + 0.075;
+        // Enlarged infantry can overlap a vehicle's visual footprint. Keep
+        // the contact in front of the working hand, clear of the torso, and
+        // slightly to its tool side rather than inside the Engineer's chest.
+        const vehicleRadius = Math.min(hullContactRadius, Math.max(0.12, length - 0.40));
+        const contactX = vehicle.x + direction.x * vehicleRadius + direction.z * 0.16;
+        const contactY = vehicle.y + direction.z * vehicleRadius - direction.x * 0.16;
+        const vehicleTop = hull.height * targetScaleY + 0.155;
+        a.engineerRepairPoint.set(contactX,
+          this.visualHeightAt(contactX, contactY) + vehicleTop, contactY);
+        const cue = a.engineerRepairCue;
+        cue.parent.updateWorldMatrix(true, false);
+        cue.position.copy(cue.parent.worldToLocal(a.engineerRepairPoint));
+        const repairClock = Number.isFinite(game.time) ? game.time : time;
+        const reducedMotion = this.reducedMotionQuery?.matches ?? false;
+        const pulse = reducedMotion ? 0.5 : 0.5 + 0.5 * Math.sin(repairClock * 11 + a.phase);
+        cue.scale.setScalar(0.84 + pulse * 0.22);
+        for (let i = 0; i < a.engineerRepairSparks.length; i++) {
+          const spark = a.engineerRepairSparks[i];
+          spark.visible = this.quality !== 'eco';
+          if (!spark.visible) continue;
+          const angle = reducedMotion ? i * Math.PI * 2 / 3 : repairClock * 7 + i * Math.PI * 2 / 3 + a.phase;
+          spark.position.set(Math.cos(angle) * (0.055 + pulse * 0.018),
+            0.028 + (reducedMotion ? 0.012 : (0.01 + 0.025 * (0.5 + 0.5 * Math.sin(repairClock * 17 + i)))),
+            Math.sin(angle) * (0.055 + pulse * 0.018));
+          spark.rotation.set(angle, angle * 0.7, -angle * 0.4);
+        }
+      }
+    }
     if (a.infantry && (a.arms?.length || a.rigged)) {
       let shot = null;
       for (let i = (game.effects?.length || 0) - 1; i >= 0; i--) {
@@ -4423,6 +4557,19 @@ export class Renderer3D {
           (arm.segment === 'upper' ? upperKick : forearmKick);
         arm.part.rotation.y = arm.pose.y + recoil * (arm.side * (arm.segment === 'upper' ? 0.018 : 0.012));
         arm.part.rotation.z = arm.pose.z + swing * 0.025;
+        if (engineerRepairing && o.defId === 'engineer' && arm.side > 0) {
+          const repairClock = Number.isFinite(game.time) ? game.time : time;
+          const reducedMotion = this.reducedMotionQuery?.matches ?? false;
+          const tapping = reducedMotion ? 0 : Math.sin(repairClock * 8 + a.phase) * 0.055;
+          if (arm.segment === 'upper') {
+            arm.part.rotation.z -= 0.055;
+          } else if (arm === a.engineerToolArm) {
+            // Lift and angle the spanner toward the vehicle, with a small
+            // time-based working stroke. game.time freezes this when paused.
+            arm.part.rotation.x += 0.16 + tapping;
+            arm.part.rotation.z -= 0.12 + tapping * 0.55;
+          }
+        }
       }
     }
     if (o.defId === 'bunker') {

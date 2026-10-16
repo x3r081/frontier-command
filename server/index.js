@@ -8,7 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   INFANTRY_DIG_IN_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
-  ENGINEER_ESCORT_RULES_VERSION,
+  ENGINEER_ESCORT_RULES_VERSION, AI_FIELD_SUPPORT_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
@@ -90,10 +90,11 @@ const RANKED_SEASON = ENGINEER_ESCORT_RULES_VERSION;
 // Version 84 adds Counterbattery as a bonus sequel; only its campaign board
 // requires v84, while earlier campaign/skirmish boards and multiplayer stay put.
 // Version 85 adds Engineer Field Repair; v86 changes visibility-gated skirmish
-// Rocket priorities; v87 adds Engineer escort repairs in every solo mode and
-// multiplayer. The latest combat heal advances all comparison floors and season.
+// Rocket priorities; v87 adds Engineer escort repairs in all modes. Version 88
+// adds paid AI Engineer support in normal/hard skirmish only; campaign, Easy,
+// and the multiplayer season remain at v87.
 const CAMPAIGN_SCORE_FLOOR = ENGINEER_ESCORT_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = ENGINEER_ESCORT_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = AI_FIELD_SUPPORT_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = ENGINEER_ESCORT_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=

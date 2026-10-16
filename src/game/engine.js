@@ -93,6 +93,8 @@ export const MEDIC_ESCORT_RULES_VERSION = 83;
 export const ENGINEER_FIELD_REPAIR_RULES_VERSION = 85;
 export const AI_ROCKET_PRIORITY_RULES_VERSION = 86;
 export const ENGINEER_ESCORT_RULES_VERSION = 87;
+export const AI_FIELD_SUPPORT_RULES_VERSION = 88;
+export const AI_FIELD_SUPPORT_RESERVE = 1250;
 export const ENGINEER_FIELD_REPAIR_KITS = 2;
 export const ENGINEER_FIELD_REPAIR_AMOUNT = 120;
 export const ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS = 5;
@@ -397,6 +399,9 @@ export class Game {
     this.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
     this.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
     this.engineerEscortRulesVersion = ENGINEER_ESCORT_RULES_VERSION;
+    this.aiFieldSupportRulesVersion = AI_FIELD_SUPPORT_RULES_VERSION;
+    this._aiFieldSupportInvestment = null;
+    this._aiFieldSupportInvestmentCooldownUntil = 0;
     this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
@@ -4796,7 +4801,9 @@ export class Game {
       this._moveUnit(unit, point.x, point.y, dt, 0.2);
       return;
     }
-    const waiting = !workshop.powered ? 'power' : this._repairCreditsAvailable(unit.owner) < ENGINEER_FIELD_REPAIR_REFILL_COST
+    const repairCredits = unit._aiFieldSupport && this._aiFieldSupportEnabled()
+      ? this._aiFieldSupportCreditsAvailable(unit) : this._repairCreditsAvailable(unit.owner);
+    const waiting = !workshop.powered ? 'power' : repairCredits < ENGINEER_FIELD_REPAIR_REFILL_COST
       ? 'credits' : null;
     if (waiting !== unit._fieldRepairWaiting) {
       unit._fieldRepairWaiting = waiting;
@@ -4808,7 +4815,9 @@ export class Game {
       Math.max(0, unit._fieldRepairRefillProgress || 0) + dt);
     if (unit._fieldRepairRefillProgress + 0.000001 < ENGINEER_FIELD_REPAIR_REFILL_SECONDS) return;
     if (workshop.owner !== unit.owner || workshop.hp <= 0 || !workshop.powered ||
-        this._repairCreditsAvailable(unit.owner) < ENGINEER_FIELD_REPAIR_REFILL_COST) {
+        (unit._aiFieldSupport && this._aiFieldSupportEnabled()
+          ? this._aiFieldSupportCreditsAvailable(unit) : this._repairCreditsAvailable(unit.owner)) <
+          ENGINEER_FIELD_REPAIR_REFILL_COST) {
       unit._fieldRepairRefillProgress = 0;
       return;
     }
@@ -5626,6 +5635,8 @@ export class Game {
           aiEngineerRaid: q.aiEngineerRaid.raidId, approachX: q.aiEngineerRaid.approachX,
           approachY: q.aiEngineerRaid.approachY };
       }
+      if (u.owner === 'enemy' && u.defId === 'engineer' && q._aiFieldSupport === true &&
+          this._aiFieldSupportEnabled()) u._aiFieldSupport = true;
       if (u.defId === 'harvester') u.order = { type: 'harvest' };
       else if (!u._aiEngineerRaid && b.rally) {
         const unitDefinition = UNIT_DEFS[u.defId];
@@ -5670,6 +5681,17 @@ export class Game {
   _repairCreditsAvailable(owner) {
     return Math.max(0, (Number(this.credits[owner]) || 0) - this._aiEconomyReserve(owner) -
       this._aiRecommissionCreditReserve(owner));
+  }
+
+  _aiFieldSupportEnabled() {
+    return this.mode === 'skirmish' && ['normal', 'hard'].includes(this.difficulty) &&
+      (this.replayVersion == null || this.replayVersion >= AI_FIELD_SUPPORT_RULES_VERSION);
+  }
+
+  _aiFieldSupportCreditsAvailable(unit) {
+    const available = this._repairCreditsAvailable(unit?.owner || 'enemy');
+    return unit?._aiFieldSupport && this._aiFieldSupportEnabled()
+      ? Math.max(0, available - AI_FIELD_SUPPORT_RESERVE) : available;
   }
 
   _aiCanSpendCredits(owner, amount) {
@@ -7628,11 +7650,11 @@ export class Game {
     if (!repairTarget) return;
 
     let engineers = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 &&
-      unit.defId === 'engineer' && !unit.embarkedIn &&
+      unit.defId === 'engineer' && !unit.embarkedIn && !unit._aiFieldSupport &&
       ((!unit.order || ['idle', 'move'].includes(unit.order.type)) ||
         unit.order?.type === 'engineer' && unit.order.targetId === repairTarget.id));
     const queuedEngineer = this.buildings.some(building => building.owner === 'enemy' && building.hp > 0 &&
-      building.queue?.some(item => item.defId === 'engineer' && !item.aiEngineerRaid));
+      building.queue?.some(item => item.defId === 'engineer' && !item.aiEngineerRaid && !item._aiFieldSupport));
     if (!engineers.length && !queuedEngineer && this.credits.enemy >= UNIT_DEFS.engineer.cost + 450)
       this._queueUnit('enemy', 'engineer');
     engineers = engineers.filter(unit => !unit.order?.aiBridgeRepair ||
@@ -7885,6 +7907,167 @@ export class Game {
     return true;
   }
 
+  _aiFieldSupportTargetValid(unit, target) {
+    return !!unit && unit.owner === 'enemy' && unit.hp > 0 && unit.defId === 'engineer' &&
+      unit._aiFieldSupport === true && !unit.embarkedIn && !!target && target.owner === 'enemy' &&
+      target.hp > 0 && !target.embarkedIn && this.units.includes(target) &&
+      target.defId !== 'harvester' && this._isFieldRepairVehicle(target) && !!UNIT_DEFS[target.defId]?.weapon;
+  }
+
+  _aiFieldSupportRequirementsMet() {
+    if (!this._aiFieldSupportEnabled() || this.time < 75) return false;
+    const workshop = this.buildings.some(building => building.owner === 'enemy' && building.defId === 'serviceBay' &&
+      building.hp > 0 && building.progress >= 1 && building.powered);
+    const barracks = this.buildings.some(building => building.owner === 'enemy' && building.defId === 'barracks' &&
+      building.hp > 0 && building.progress >= 1 && building.powered);
+    const armor = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 && !unit.embarkedIn &&
+      unit.defId !== 'harvester' && this._isFieldRepairVehicle(unit) && !!UNIT_DEFS[unit.defId]?.weapon);
+    return workshop && barracks && armor.length >= 2;
+  }
+
+  _aiFieldSupportInvestmentSafe({ protectingEconomy = false, expansionPending = false } = {}) {
+    if (!this._aiFieldSupportEnabled() || this.time < 75 || protectingEconomy || expansionPending ||
+        this._aiUnderRelayDominionPressure() || this._aiFieldBunkerThreat() ||
+        this.power.enemy.ratio < 0.83 || this._aiEconomyReserve('enemy') > 0 ||
+        this._aiRecommissionCreditReserve('enemy') > 0) return false;
+    const hasBarracks = this.buildings.some(building => building.owner === 'enemy' &&
+      building.defId === 'barracks' && building.hp > 0 && building.progress >= 1 && building.powered);
+    const hasFactory = this.buildings.some(building => building.owner === 'enemy' &&
+      building.defId === 'factory' && building.hp > 0 && building.progress >= 1 && building.powered);
+    const workingHarvesters = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 &&
+      unit.defId === 'harvester' && !unit.embarkedIn && unit.order?.type === 'harvest');
+    const armor = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 && !unit.embarkedIn &&
+      unit.defId !== 'harvester' && this._isFieldRepairVehicle(unit) && !!UNIT_DEFS[unit.defId]?.weapon);
+    return hasBarracks && hasFactory && workingHarvesters.length >= 2 && armor.length >= 2 &&
+      this._aiFieldBunkerMobileDefenseCount() >= 4;
+  }
+
+  _aiFieldSupportInvestmentBudget() {
+    const completedPoweredWorkshop = this.buildings.some(building => building.owner === 'enemy' &&
+      building.defId === 'serviceBay' && building.hp > 0 && building.progress >= 1 && building.powered);
+    return (completedPoweredWorkshop ? 0 : BUILDING_DEFS.serviceBay.cost) + UNIT_DEFS.engineer.cost +
+      AI_FIELD_SUPPORT_RESERVE + this._aiEconomyReserve('enemy') + this._aiRecommissionCreditReserve('enemy');
+  }
+
+  _aiFieldSupportInvestmentTick({ protectingEconomy = false, expansionPending = false } = {}) {
+    if (!this._aiFieldSupportEnabled()) return false;
+    const supportExists = this.units.some(unit => unit.owner === 'enemy' && unit.hp > 0 &&
+      unit.defId === 'engineer' && unit._aiFieldSupport === true) ||
+      this.buildings.some(building => building.owner === 'enemy' && (building.queue || []).some(item =>
+        item.defId === 'engineer' && item._aiFieldSupport === true));
+    if (supportExists) {
+      this._aiFieldSupportInvestment = null;
+      return false;
+    }
+    const safe = this._aiFieldSupportInvestmentSafe({ protectingEconomy, expansionPending });
+    if (!safe) {
+      if (this._aiFieldSupportInvestment) {
+        this._aiFieldSupportInvestment = null;
+        this._aiFieldSupportInvestmentCooldownUntil = this.time + 90;
+      }
+      return false;
+    }
+    if (this.time < (this._aiFieldSupportInvestmentCooldownUntil || 0)) return false;
+    if (!this._aiFieldSupportInvestment) {
+      const pendingWorkshop = this.buildings.some(building => building.owner === 'enemy' &&
+        building.defId === 'serviceBay' && building.hp > 0 &&
+        (building.progress < 1 || !building.powered));
+      if (pendingWorkshop) return false;
+      if (this.credits.enemy < this._aiFieldSupportInvestmentBudget()) return false;
+      this._aiFieldSupportInvestment = { startedAt: this.time };
+    }
+    if (this.time - this._aiFieldSupportInvestment.startedAt >= 45) {
+      this._aiFieldSupportInvestment = null;
+      this._aiFieldSupportInvestmentCooldownUntil = this.time + 90;
+      return false;
+    }
+    return true;
+  }
+
+  _aiBuildFieldSupportInvestment() {
+    if (this.buildings.some(building => building.owner === 'enemy' && building.defId === 'serviceBay' &&
+        building.hp > 0)) return false;
+    const unfinishedBuilding = this.buildings.some(building => building.owner === 'enemy' &&
+      building.hp > 0 && building.progress < 1);
+    if (unfinishedBuilding) return false;
+    const missingReserve = this._aiEconomyReserve('enemy') + this._aiRecommissionCreditReserve('enemy');
+    const targetBudget = BUILDING_DEFS.serviceBay.cost + UNIT_DEFS.engineer.cost +
+      AI_FIELD_SUPPORT_RESERVE + missingReserve;
+    if (this.credits.enemy < targetBudget || !this._aiCanSpendCredits('enemy', BUILDING_DEFS.serviceBay.cost))
+      return false;
+    return this._aiBuild('serviceBay');
+  }
+
+  _aiFieldSupportTick() {
+    if (!this._aiFieldSupportEnabled()) return false;
+    const engineers = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 &&
+      unit.defId === 'engineer' && unit._aiFieldSupport === true && !unit.embarkedIn)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    const queued = this.buildings.some(building => building.owner === 'enemy' &&
+      (building.queue || []).some(item => item.defId === 'engineer' && item._aiFieldSupport === true));
+    const engineer = engineers[0];
+    if (!engineer && !queued) {
+      if (!this._aiFieldSupportRequirementsMet()) return false;
+      const cost = UNIT_DEFS.engineer.cost;
+      const protectedCredits = this._aiEconomyReserve('enemy') + this._aiRecommissionCreditReserve('enemy') +
+        AI_FIELD_SUPPORT_RESERVE;
+      if (this.credits.enemy - cost < protectedCredits || !this._aiCanSpendCredits('enemy', cost)) return false;
+      const barracks = this.buildings.filter(building => building.owner === 'enemy' &&
+        building.defId === 'barracks' && building.hp > 0 && building.progress >= 1 && building.powered &&
+        building.queue.length < 5).sort((a, b) => a.queue.length - b.queue.length || a.id.localeCompare(b.id))[0];
+      if (!barracks) return false;
+      const result = this._queueUnit('enemy', 'engineer', barracks.id);
+      if (!result.ok) return false;
+      const job = barracks.queue.at(-1);
+      if (job?.defId !== 'engineer') return false;
+      job._aiFieldSupport = true;
+      this._aiFieldSupportInvestment = null;
+      return true;
+    }
+    if (!engineer) return false;
+
+    if (engineer.order?.type === 'refillRepairKits' &&
+        engineer.fieldRepairKits < ENGINEER_FIELD_REPAIR_KITS) return true;
+    if (engineer.fieldRepairKits <= 0) {
+      const workshops = this.buildings.filter(building => building.owner === 'enemy' &&
+        building.defId === 'serviceBay' && building.hp > 0 && building.progress >= 1 && building.powered)
+        .map(workshop => ({ workshop, point: this._aiWorkshopApproach(engineer, workshop) }))
+        .filter(choice => choice.point)
+        .sort((a, b) => a.point.length - b.point.length || a.workshop.id.localeCompare(b.workshop.id));
+      if (!workshops.length || this._aiFieldSupportCreditsAvailable(engineer) < ENGINEER_FIELD_REPAIR_REFILL_COST)
+        return false;
+      const chosen = workshops[0];
+      engineer.order = { type: 'refillRepairKits', workshopId: chosen.workshop.id,
+        x: chosen.point.x, y: chosen.point.y };
+      engineer.path = []; engineer._pathGoal = null;
+      engineer._fieldRepairProgress = 0; engineer._fieldRepairRefillProgress = 0;
+      engineer._fieldRepairWaiting = null;
+      return true;
+    }
+
+    const currentTarget = engineer.order?.type === 'follow'
+      ? this.getEntity(engineer.order.targetId) : null;
+    if (this._aiFieldSupportTargetValid(engineer, currentTarget) && currentTarget.hp < currentTarget.maxHp)
+      return true;
+    const candidates = this.units.filter(target => this._aiFieldSupportTargetValid(engineer, target) &&
+      target.hp < target.maxHp && !target._aiRecovering)
+      .map(target => ({ target, distance: this._distanceToEntity(engineer.x, engineer.y, target),
+        damageRatio: (target.maxHp - target.hp) / Math.max(1, target.maxHp) }))
+      .filter(candidate => candidate.distance <= 14)
+      .sort((a, b) => b.damageRatio - a.damageRatio || a.distance - b.distance ||
+        a.target.id.localeCompare(b.target.id));
+    const target = candidates[0]?.target;
+    const nextOrder = target ? { type: 'follow', targetId: target.id }
+      : { type: 'guard', x: engineer.x, y: engineer.y };
+    if (engineer.order?.type === nextOrder.type &&
+        (nextOrder.type === 'guard' || engineer.order.targetId === nextOrder.targetId)) return false;
+    engineer.order = nextOrder;
+    engineer.path = []; engineer._pathGoal = null;
+    engineer._fieldRepairProgress = 0; engineer._fieldRepairLastTargetX = target?.x;
+    engineer._fieldRepairLastTargetY = target?.y; engineer._fieldRepairWaiting = null;
+    return !!target;
+  }
+
   _activateAIUnitAbility(unit, abilityId) {
     if (this.canUseUnitAbility(unit.id, abilityId, 'enemy').ok) {
       this._activateUnitAbility(unit, abilityId, 'enemy');
@@ -7973,6 +8156,7 @@ export class Game {
           ? UNIT_DEFS.mcv.cost + 200 : BUILDING_DEFS.refinery.cost + 200;
     }
     const protectingEconomy = reserveCommandRecovery || expansionCashGoal > 0 && this.credits.enemy < expansionCashGoal;
+    const fieldSupportInvestment = this._aiFieldSupportInvestmentTick({ protectingEconomy, expansionPending });
     this._aiReleaseInvalidFieldBunkerOrders();
     const combatUnits = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 && !u.embarkedIn &&
       !u._aiCommandRecovery &&
@@ -8013,6 +8197,7 @@ export class Game {
       this._aiBuild('refinery');
     else if (this._aiFieldBunkerTick(protectingEconomy || expansionPending &&
       this.credits.enemy < expansionCashGoal, { buildOnly: true })) { /* paid defensive structure */ }
+    else if (fieldSupportInvestment) this._aiBuildFieldSupportInvestment();
     else if (!count('radar') && this.credits.enemy > 1350) this._aiBuild('radar');
     else if (!count('tech') && count('radar') && this.credits.enemy >
       (this._aiExpansionEnabled() ? BUILDING_DEFS.tech.cost + 200 : 2400)) this._aiBuild('tech');
@@ -8044,7 +8229,7 @@ export class Game {
     this._aiEngineerCaptureRaidTick({ protectedEconomy: protectOutpostCash, combatUnits });
     const cap = this.difficulty === 'hard' ? 27 : this.difficulty === 'easy' ? 14 : 21;
     const queued = enemyBuildings.reduce((sum, b) => sum + b.queue.length, 0);
-    if (!protectOutpostCash && combatUnits.length + queued < cap) {
+    if (!protectOutpostCash && !fieldSupportInvestment && combatUnits.length + queued < cap) {
       const r = this._rand();
       const infantry = r < 0.38 || !count('factory');
       const recentIntel = this._aiIntel.filter(item => this.time - item.seen < 24);
@@ -8080,6 +8265,7 @@ export class Game {
             ? this.enemyFaction === 'aegis' ? 'guardian' : 'stealthTank' : r > 0.77 && count('radar') ? 'artillery' : 'lightTank');
       if (!this._queueUnit('enemy', choice).ok && choice !== 'rifle') this._queueUnit('enemy', 'rifle');
     }
+    this._aiFieldSupportTick();
     for (const b of enemyBuildings) {
       if (!b.captureOnly && b.hp < b.maxHp * 0.55 && this.credits.enemy > 300) b.repairing = true;
     }
@@ -8465,7 +8651,7 @@ export class Game {
     const assigned = new Set(this.units.filter(unit => unit.owner === 'enemy' &&
       ['recoverWreck', 'recommissionWreck'].includes(unit.order?.type)).map(unit => unit.order.wreckId));
     const engineers = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 &&
-      unit.defId === 'engineer' && !unit.embarkedIn && unit.order?.type === 'idle')
+      unit.defId === 'engineer' && !unit.embarkedIn && !unit._aiFieldSupport && unit.order?.type === 'idle')
       .sort((a, b) => a.id.localeCompare(b.id));
     for (const engineer of engineers) {
       if (this._aiRecommissionCreditReserve('enemy') > 0) return;
@@ -8662,7 +8848,7 @@ export class Game {
       });
     if (!candidates.length) return false;
     const idleEngineers = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 &&
-      unit.defId === 'engineer' && !unit.embarkedIn && unit.order?.type === 'idle' &&
+      unit.defId === 'engineer' && !unit.embarkedIn && !unit._aiFieldSupport && unit.order?.type === 'idle' &&
       !unit._aiCommandRecovery && !unit._relayAssignment).sort((a, b) => a.id.localeCompare(b.id));
     const barracks = this.buildings.filter(building => building.owner === 'enemy' && building.defId === 'barracks' &&
       building.hp > 0 && building.progress >= 1 && building.powered && building.queue.length === 0)
@@ -9048,6 +9234,11 @@ export class Game {
     if (game.replayVersion == null && data.aiRocketPriorityRulesVersion === AI_ROCKET_PRIORITY_RULES_VERSION &&
         data.engineerEscortRulesVersion !== ENGINEER_ESCORT_RULES_VERSION)
       game.replayVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
+    // Markerless v87 saves predate the paid Veteran/Elite Engineer support policy.
+    if (game.mode === 'skirmish' && game.replayVersion == null &&
+        data.engineerEscortRulesVersion === ENGINEER_ESCORT_RULES_VERSION &&
+        data.aiFieldSupportRulesVersion !== AI_FIELD_SUPPORT_RULES_VERSION)
+      game.replayVersion = ENGINEER_ESCORT_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -9200,6 +9391,18 @@ export class Game {
     game.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
     game.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
     game.engineerEscortRulesVersion = ENGINEER_ESCORT_RULES_VERSION;
+    game.aiFieldSupportRulesVersion = AI_FIELD_SUPPORT_RULES_VERSION;
+    const savedSupportInvestment = data._aiFieldSupportInvestment;
+    game._aiFieldSupportInvestment = game._aiFieldSupportEnabled() &&
+      data.aiFieldSupportRulesVersion === AI_FIELD_SUPPORT_RULES_VERSION && savedSupportInvestment &&
+      Number.isFinite(savedSupportInvestment.startedAt) && savedSupportInvestment.startedAt >= 0 &&
+      savedSupportInvestment.startedAt <= game.time && game.time - savedSupportInvestment.startedAt < 45
+      ? { startedAt: savedSupportInvestment.startedAt } : null;
+    game._aiFieldSupportInvestmentCooldownUntil = game._aiFieldSupportEnabled() &&
+      data.aiFieldSupportRulesVersion === AI_FIELD_SUPPORT_RULES_VERSION &&
+      Number.isFinite(data._aiFieldSupportInvestmentCooldownUntil) &&
+      data._aiFieldSupportInvestmentCooldownUntil > game.time
+      ? Math.min(data._aiFieldSupportInvestmentCooldownUntil, game.time + 90) : 0;
     game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
       data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
         building.owner === 'enemy' && building.defId === 'bunker');
@@ -9370,8 +9573,18 @@ export class Game {
     const engineerEscortDataEnabled = game._engineerFollowRepairEnabled() &&
       (data.engineerEscortRulesVersion === ENGINEER_ESCORT_RULES_VERSION ||
         game.replayVersion != null && game.replayVersion >= ENGINEER_ESCORT_RULES_VERSION);
+    const aiFieldSupportDataEnabled = game._aiFieldSupportEnabled() &&
+      (data.aiFieldSupportRulesVersion === AI_FIELD_SUPPORT_RULES_VERSION ||
+        game.replayVersion != null && game.replayVersion >= AI_FIELD_SUPPORT_RULES_VERSION);
     const assignedFieldRepairTargets = new Set();
+    let aiFieldSupportClaimed = false;
     for (const unit of game.units) {
+      const keepFieldSupport = aiFieldSupportDataEnabled && !aiFieldSupportClaimed &&
+        unit.owner === 'enemy' && unit.defId === 'engineer' && unit.hp > 0 && !unit.embarkedIn &&
+        unit._aiFieldSupport === true;
+      if (keepFieldSupport) aiFieldSupportClaimed = true;
+      if (keepFieldSupport) unit._aiFieldSupport = true;
+      else delete unit._aiFieldSupport;
       unit._recommissioned = game._wreckRecommissionEnabled() && unit._recommissioned === true;
       if (unit.order?.type === 'recommissionWreck') {
         const target = game.wrecks.find(wreck => wreck.id === unit.order.wreckId);
@@ -9604,6 +9817,11 @@ export class Game {
         building.powerStandby === true;
       if (building.defId === 'refinery') building._unloadHarvesterId ??= null;
       for (const item of building.queue || []) {
+        const keepSupportJob = aiFieldSupportDataEnabled && !aiFieldSupportClaimed &&
+          building.owner === 'enemy' && building.defId === 'barracks' && item.defId === 'engineer' &&
+          item._aiFieldSupport === true;
+        if (keepSupportJob) aiFieldSupportClaimed = true;
+        if (!keepSupportJob) delete item._aiFieldSupport;
         const job = item.aiEngineerRaid;
         const active = game._aiEngineerRaidState.active;
         if (building.owner === 'enemy' && item.defId === 'engineer' && active &&
