@@ -5959,6 +5959,30 @@ export class Renderer3D {
       }
       const flash=new THREE.PointLight(color,ion?6:fx.type==='muzzle'?2.4:4.2,ion?9:4.5);
       flash.position.y=0.65;flash.userData.flash=true;g.add(flash);
+    } else if(fx.type==='harvest') {
+      // Crystal extraction gets a small vertical read at normal RTS zoom.
+      // Keep it tile-local: the simulation effect is already fog-gated and
+      // does not need to reveal which Harvester is working here.
+      const ring=addMesh(g,new THREE.RingGeometry(0.31,0.38,28),new THREE.MeshBasicMaterial({
+        color:0x70f5d2,transparent:true,opacity:0.78,side:THREE.DoubleSide,depthWrite:false,
+        blending:THREE.AdditiveBlending,toneMapped:false
+      }),0,0.095,0,false);
+      ring.rotation.x=-Math.PI/2;
+      ring.userData.harvestRing=true;
+      const shardCount=this.quality==='eco'?2:3;
+      g.userData.harvestShardCount=shardCount;
+      for(let i=0;i<shardCount;i++) {
+        const shard=new THREE.Mesh(new THREE.OctahedronGeometry(0.105,0),new THREE.MeshBasicMaterial({
+          color:i===1?0xe6fff8:0x9cffe3,transparent:true,opacity:0.94,depthWrite:false,
+          blending:THREE.AdditiveBlending,toneMapped:false
+        }));
+        shard.position.set(Math.cos(i*Math.PI*2/shardCount)*0.13,0.18,
+          Math.sin(i*Math.PI*2/shardCount)*0.13);
+        shard.userData.harvestShard=true;
+        shard.userData.index=i;
+        shard.renderOrder=4;
+        g.add(shard);
+      }
     } else if(fx.type==='heal') {
       // A medic pulse needs a vertical read at command zoom: the ground ring
       // alone disappears beneath clustered infantry and crystal.
@@ -6143,10 +6167,28 @@ export class Renderer3D {
         ?clamp((g.userData.stormcallUntil-time)/(g.userData.stormcallUntil-g.userData.stormcallStart),0,1)
         :clamp((fx.ttl??0.5)/(fx.maxTtl||0.5),0,1);
       const r=fx.radius||0.4;
-      g.scale.setScalar(g.userData.stormcallVisual||fx.type==='breach'||fx.type==='interdict'?1:fx.type==='projectile'?1:
+      g.scale.setScalar(g.userData.stormcallVisual||fx.type==='breach'||fx.type==='interdict'||fx.type==='harvest'?1:fx.type==='projectile'?1:
         (fx.type==='wallCover'||fx.type==='wreckCover')?0.82:Math.max(0.15,r*(1.65-life*0.65)));
       if(g.userData.stormcallVisual) this._animateStormcallEffect(g,life,time);
-      if(fx.type==='breach') {
+      if(fx.type==='harvest') {
+        const age=1-life;
+        for(const object of g.children) {
+          if(object.userData.harvestRing) {
+            object.scale.setScalar(0.72+age*0.58);
+            object.material.opacity=0.78*life;
+          }
+          if(object.userData.harvestShard) {
+            const angle=object.userData.index*Math.PI*2/g.userData.harvestShardCount+time*0.65;
+            const radius=0.38+age*0.30;
+            object.position.set(Math.cos(angle)*radius,0.65+age*1.7+object.userData.index*0.14,
+              Math.sin(angle)*radius);
+            object.rotation.set(time*1.5+object.userData.index,time*1.9,time*1.2);
+            const size=0.94+0.10*Math.sin(time*7+object.userData.index);
+            object.scale.set(size*0.85,size*1.9,size*0.85);
+            object.material.opacity=0.94*Math.sin(Math.PI*age);
+          }
+        }
+      } else if(fx.type==='breach') {
         const pulse=0.86+0.14*(0.5+0.5*Math.sin(time*2.6));
         const fade=clamp(life*5.0,0,1);
         for(const object of g.children) if(object.userData.breachPart) {
@@ -6268,7 +6310,8 @@ export class Renderer3D {
         if(o.userData.healPart) o.material.opacity=o.userData.healBaseOpacity*life;
         if(o.material?.opacity!==undefined && o.userData.stormcallRing===undefined && !o.userData.stormcallGlow &&
           !o.userData.stormcallCorona && !o.userData.stormcallCore && !o.userData.projectileTrail &&
-          !o.userData.salvageRing && !o.userData.salvageShard && !o.userData.flashCore &&
+          !o.userData.salvageRing && !o.userData.salvageShard && !o.userData.harvestRing &&
+          !o.userData.harvestShard && !o.userData.flashCore &&
           !o.userData.burstSmoke && !o.userData.shockRing && !o.userData.impactDustWave &&
           !o.userData.muzzlePlume && !o.userData.wallCoverRing && !o.userData.healRing &&
           !o.userData.healPart && !o.userData.wallCoverStreaks && !o.userData.wallCoverCore &&
