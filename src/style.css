@@ -16,3 +16,14 @@
 .campaign-mission-bonus{grid-template-columns:74px 1fr 26px}
 .campaign-mission-bonus .campaign-index{font-size:22px;letter-spacing:.04em}
 @media(max-width:670px){.campaign-mission-bonus{grid-template-columns:52px 1fr 18px}.campaign-mission-bonus .campaign-index{font-size:16px}}
+/* Compact formation control shares the existing selection header row. */
+.selected-header{justify-content:flex-start;gap:8px;white-space:nowrap}
+.selected-header #selection-count{margin-left:auto}
+.selected-header .formation-control{display:flex;align-items:center;gap:4px;color:#91ab98;font-size:9px;letter-spacing:.1em}
+.formation-control select{height:21px;max-width:84px;padding:0 17px 0 5px;border:1px solid #47644f;border-radius:2px;background:#0c1b14;color:#d9ebd5;font:700 10px "Barlow Condensed",sans-serif;letter-spacing:.06em}
+.formation-control select:focus-visible{outline:2px solid var(--lime);outline-offset:2px}
+.selected-header #match-pace-toggle{height:21px;padding:0 6px;border:1px solid #47644f;background:#102019;color:#a9c9ae;font:700 9px "Barlow Condensed",sans-serif;letter-spacing:.06em;white-space:nowrap}
+.selected-header #match-pace-toggle.active{border-color:var(--lime);background:#263d29;color:var(--lime)}
+@media(max-width:670px){.selected-header{gap:6px;padding:0 10px}.formation-control select{max-width:76px}.selected-header #match-pace-toggle{padding:0 4px;font-size:8px}}
+@media(pointer:coarse),(max-width:670px){.command-panel .selected-header:has(#formation-control:not(.hidden)){flex:0 0 48px;height:48px;min-height:48px;gap:6px;padding-inline:8px}.selected-header #match-pace-toggle,.formation-control select{height:44px;min-height:44px}.selected-header #match-pace-toggle{padding-inline:7px;font-size:10px}.formation-control select{max-width:76px;padding-inline:5px}}
+@media(max-width:360px){.selected-header{gap:4px;padding-inline:7px}.formation-control>span:first-child{display:none}.formation-control select{max-width:68px}.selected-header #match-pace-toggle{padding-inline:5px;font-size:9px}}

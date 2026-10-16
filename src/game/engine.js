@@ -44,6 +44,7 @@ export const WRECK_LIFETIME_SECONDS = 120;
 export const WRECK_RECOVERY_SECONDS = 4;
 export const WRECK_RECOMMISSION_RULES_VERSION = 72;
 export const WRECK_COVER_RULES_VERSION = 75;
+export const TACTICAL_FORMATION_RULES_VERSION = 76;
 export const WRECK_COVER_DAMAGE_MULTIPLIER = 0.8;
 export const WRECK_COVER_RADIUS = 0.55;
 export const WRECK_COVER_PROXIMITY = 1.6;
@@ -371,6 +372,7 @@ export class Game {
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     this.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
     this.wreckCoverRulesVersion = WRECK_COVER_RULES_VERSION;
+    this.tacticalFormationRulesVersion = TACTICAL_FORMATION_RULES_VERSION;
     this.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     this.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
     this.siegeExpansionRulesVersion = SIEGE_EXPANSION_RULES_VERSION;
@@ -1410,6 +1412,210 @@ export class Game {
     }
     this._event('order', { order: 'forceMove', queued: !!queue, ids: units.map(u => u.id), x, y,
       ...(matchPace ? { matchPace: true } : {}) });
+    return { ok: true };
+  }
+
+  _tacticalFormationOrigins(units, queue = false) {
+    const origins = new Map();
+    for (const unit of units) {
+      const queued = queue && Array.isArray(unit.order?.queue) ? unit.order.queue : [];
+      const lastQueuedMove = [...queued].reverse().find(order =>
+        ['move', 'forceMove'].includes(order?.type) && this._validatePoint(order.x, order.y));
+      const currentMove = queue && ['move', 'forceMove'].includes(unit.order?.type) &&
+        this._validatePoint(unit.order.x, unit.order.y) ? unit.order : null;
+      const source = lastQueuedMove || currentMove;
+      origins.set(unit.id, source ? { x: source.x, y: source.y } : { x: unit.x, y: unit.y });
+    }
+    return origins;
+  }
+
+  _tacticalFormationRole(unit) {
+    const def = UNIT_DEFS[unit.defId] || {};
+    if (def.role === 'artillery' || def.role === 'siege' || def.role === 'antiarmor' || !def.weapon)
+      return 'rear';
+    if (def.role === 'recon' || unit.defId === 'scout' || unit.defId === 'flamer') return 'middle';
+    if (def.armor !== 'infantry') return 'front';
+    return 'middle';
+  }
+
+  _tacticalFormationSlots(units, x, y, formationId, origins = this._tacticalFormationOrigins(units), facing) {
+    if (!units.length) return { facing: Number.isFinite(facing) ? facing : 0, slots: [] };
+    let originX = 0, originY = 0;
+    for (const unit of units) {
+      const origin = origins.get(unit.id) || unit;
+      originX += origin.x; originY += origin.y;
+    }
+    originX /= units.length; originY /= units.length;
+    const travelX = x - originX, travelY = y - originY;
+    if (facing == null) facing = Math.hypot(travelX, travelY) > 1e-6
+      ? Math.atan2(travelY, travelX)
+      : (units.slice().sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)))[0]?.facing || 0);
+    const forwardX = Math.cos(facing), forwardY = Math.sin(facing);
+    const rightX = -forwardY, rightY = forwardX;
+    const spacing = Math.max(1.5, ...units.map(unit => (UNIT_DEFS[unit.defId]?.radius || 0.3) * 2 + 0.18));
+    let ordered = [...units].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+    const roleById = new Map();
+    if (formationId === 'screen') {
+      for (const unit of ordered) roleById.set(unit.id, this._tacticalFormationRole(unit));
+      const band = { front: 0, middle: 1, rear: 2 };
+      ordered.sort((a, b) => band[roleById.get(a.id)] - band[roleById.get(b.id)] ||
+        Number(a.id.slice(1)) - Number(b.id.slice(1)));
+    } else for (const unit of ordered) roleById.set(unit.id, formationId);
+    const slotCount = ordered.length;
+    // Keep normal squads narrow. Army-size columns add lanes rather than
+    // compressing vehicle spacing or extending beyond an entire battlefield.
+    let lanes = formationId === 'column'
+      ? Math.min(7, Math.max(Math.min(3, slotCount), Math.ceil(slotCount / 21))) : Math.min(8, slotCount);
+    if (formationId === 'screen') lanes = Math.min(8, slotCount);
+    const result = [];
+    for (let index = 0; index < slotCount; index++) {
+      const unit = ordered[index];
+      let slotIndex = index;
+      if (formationId === 'screen') {
+        // Each role occupies a compact band, in front-to-rear order.
+        const role = roleById.get(unit.id);
+        const preceding = ordered.slice(0, index).filter(other => roleById.get(other.id) === role).length;
+        const bandSize = ordered.filter(other => roleById.get(other.id) === role).length;
+        const bandWidth = Math.min(8, Math.max(1, bandSize));
+        const row = Math.floor(preceding / bandWidth);
+        const col = preceding % bandWidth;
+        const lateral = (col - (Math.min(bandSize, bandWidth) - 1) / 2) * spacing;
+        const priorBands = ['front', 'middle', 'rear'].slice(0, ['front', 'middle', 'rear'].indexOf(role));
+        const bandDepth = priorBands.reduce((sum, priorRole) => {
+          const count = ordered.filter(other => roleById.get(other.id) === priorRole).length;
+          return sum + (count ? Math.ceil(count / 8) : 0) * spacing;
+        }, 0);
+        const depth = bandDepth + row * spacing;
+        result.push({ id: unit.id, x: x - forwardX * depth + rightX * lateral,
+          y: y - forwardY * depth + rightY * lateral, role });
+        continue;
+      }
+      const row = Math.floor(slotIndex / lanes), col = slotIndex % lanes;
+      const rowSize = Math.min(lanes, slotCount - row * lanes);
+      const lateral = (col - (rowSize - 1) / 2) * spacing;
+      const depth = row * spacing;
+      result.push({ id: unit.id, x: x - forwardX * depth + rightX * lateral,
+        y: y - forwardY * depth + rightY * lateral, role: roleById.get(unit.id) });
+    }
+    return { facing, slots: result };
+  }
+
+  getFormationPreview(x, y, formationId, queue = false) {
+    if (!this._validatePoint(x, y) || !['line', 'column', 'screen'].includes(formationId) ||
+        typeof queue !== 'boolean' || (queue && this.replayVersion != null &&
+        this.replayVersion < QUEUED_ORDERS_RULES_VERSION) ||
+        (this.replayVersion != null && this.replayVersion < TACTICAL_FORMATION_RULES_VERSION)) return null;
+    const selectedUnits = this._selectedCommandUnits();
+    if (queue && !this._canQueueUnitOrders(selectedUnits)) return null;
+    const units = selectedUnits.filter(unit => !unit.embarkedIn &&
+      !UNIT_DEFS[unit.defId]?.flying);
+    if (!units.length) return null;
+    const plan = this._tacticalFormationSlots(units, x, y, formationId,
+      this._tacticalFormationOrigins(units, queue));
+    return { facing: plan.facing, slots: plan.slots.map(slot => ({ ...slot })) };
+  }
+
+  _tacticalFormationDestinations(units, x, y, formationId, origins, plan = null) {
+    const result = new Map();
+    const ground = units.filter(unit => !unit.embarkedIn && !UNIT_DEFS[unit.defId]?.flying);
+    const aircraft = units.filter(unit => UNIT_DEFS[unit.defId]?.flying);
+    for (const unit of aircraft) result.set(unit.id, { x, y });
+    if (!ground.length) return { destinations: result, facing: plan?.facing ?? 0 };
+    plan ||= this._tacticalFormationSlots(ground, x, y, formationId, origins);
+    const byId = new Map(plan.slots.map(slot => [slot.id, slot]));
+    const components = this._groundComponents();
+    const selected = new Set(units.map(unit => unit.id));
+    const occupied = new Map();
+    for (const other of this.units) {
+      if (other.hp <= 0 || other.embarkedIn || selected.has(other.id) || UNIT_DEFS[other.defId]?.flying) continue;
+      const key = Math.floor(other.y) * this.width + Math.floor(other.x);
+      if (!occupied.has(key)) occupied.set(key, []);
+      occupied.get(key).push(other);
+    }
+    const reserved = new Set();
+    const sortedGround = [...ground].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
+    for (const unit of sortedGround) {
+      const preferred = byId.get(unit.id) || { x, y };
+      const origin = origins.get(unit.id) || unit;
+      const start = Math.floor(origin.y) * this.width + Math.floor(origin.x);
+      let component = this._inBounds(Math.floor(origin.x), Math.floor(origin.y)) ? components[start] : -1;
+      if (component < 0) {
+        const currentStart = Math.floor(unit.y) * this.width + Math.floor(unit.x);
+        component = this._inBounds(Math.floor(unit.x), Math.floor(unit.y)) ? components[currentStart] : -1;
+      }
+      let best = null;
+      for (let ty = 0; ty < this.height; ty++) for (let tx = 0; tx < this.width; tx++) {
+        const index = ty * this.width + tx;
+        if (component < 0 || components[index] !== component || reserved.has(index)) continue;
+        const px = tx + 0.5, py = ty + 0.5;
+        let blocked = false;
+        for (let yy = Math.max(0, ty - 1); yy <= Math.min(this.height - 1, ty + 1) && !blocked; yy++)
+          for (let xx = Math.max(0, tx - 1); xx <= Math.min(this.width - 1, tx + 1) && !blocked; xx++)
+            for (const other of occupied.get(yy * this.width + xx) || [])
+              if (dist(px, py, other.x, other.y) < UNIT_DEFS[other.defId].radius +
+                  UNIT_DEFS[unit.defId].radius + 0.15) { blocked = true; break; }
+        if (blocked) continue;
+        const score = (px - preferred.x) ** 2 + (py - preferred.y) ** 2 +
+          0.025 * ((px - x) ** 2 + (py - y) ** 2);
+        if (!best || score < best.score) best = { x: px, y: py, score, index };
+      }
+      if (!best) {
+        // If every reachable tile is occupied, choose the nearest unreserved
+        // passable point and let normal unit separation handle the crowding.
+        for (let ty = 0; ty < this.height; ty++) for (let tx = 0; tx < this.width; tx++) {
+          const index = ty * this.width + tx;
+          if (component < 0 || components[index] !== component || reserved.has(index)) continue;
+          const px = tx + 0.5, py = ty + 0.5;
+          const score = (px - preferred.x) ** 2 + (py - preferred.y) ** 2;
+          if (!best || score < best.score) best = { x: px, y: py, index, score };
+        }
+      }
+      if (best) { reserved.add(best.index); result.set(unit.id, { x: best.x, y: best.y }); }
+      else result.set(unit.id, { x: unit.x, y: unit.y });
+    }
+    return { destinations: result, facing: plan.facing };
+  }
+
+  issueFormationMove(x, y, formationId, movement = 'move', queue = false, matchPace = false) {
+    // Validate the entire public call before reading any mutable planning state.
+    if (!this._validatePoint(x, y)) return { ok: false, reason: 'Destination is outside the map.' };
+    if (!['line', 'column', 'screen'].includes(formationId))
+      return { ok: false, reason: 'Choose line, column, or screen formation.' };
+    if (!['move', 'attackMove', 'forceMove'].includes(movement))
+      return { ok: false, reason: 'Choose move, attackMove, or forceMove.' };
+    if (typeof queue !== 'boolean' || typeof matchPace !== 'boolean')
+      return { ok: false, reason: 'Queue and Match Pace must be enabled or disabled.' };
+    if (this.replayVersion != null && this.replayVersion < TACTICAL_FORMATION_RULES_VERSION)
+      return { ok: false, reason: `Tactical formations require replay version ${TACTICAL_FORMATION_RULES_VERSION}.` };
+    if (queue && this.replayVersion != null && this.replayVersion < QUEUED_ORDERS_RULES_VERSION)
+      return { ok: false, reason: 'Queued orders are unavailable in this replay.' };
+    const paceError = this._validateMatchPace(matchPace);
+    if (paceError) return paceError;
+    const units = this._selectedCommandUnits();
+    if (!units.length) return { ok: false, reason: 'Select units first.' };
+    if (queue && !this._canQueueUnitOrders(units))
+      return { ok: false, reason: `A squad can queue at most ${MAX_QUEUED_ORDERS} orders.` };
+    const origins = this._tacticalFormationOrigins(units, queue);
+    const plan = this._tacticalFormationSlots(units.filter(unit => !UNIT_DEFS[unit.defId]?.flying),
+      x, y, formationId, origins);
+    const placed = this._tacticalFormationDestinations(units, x, y, formationId, origins, plan);
+    const pace = matchPace ? this._matchedPace(units.filter(unit => !UNIT_DEFS[unit.defId]?.flying)) : null;
+    for (const unit of units) {
+      const point = placed.destinations.get(unit.id) || { x, y };
+      const def = UNIT_DEFS[unit.defId];
+      if (unit.defId === 'harvester') this._releaseHarvesterDock(unit);
+      const emptyAircraftWithoutPad = movement === 'move' && def?.flying &&
+        Number.isFinite(def.ammoMax) && unit.ammo < 1 && !this._nearestHelipad(unit.owner, unit.x, unit.y);
+      const orderType = movement === 'forceMove' || emptyAircraftWithoutPad ? 'forceMove' : 'move';
+      const order = { type: orderType, ...point,
+        ...(movement === 'attackMove' ? { attackMove: true } : {}),
+        ...(!def?.flying && !unit.embarkedIn ? { formationFacing: placed.facing } : {}),
+        ...(pace && !def?.flying && !unit.embarkedIn ? { pace } : {}) };
+      this._queueOrIssueUnitOrder(unit, order, queue);
+      if (!queue) { unit.path = []; unit._pathGoal = null; }
+    }
+    this._event('order', { order: `formation:${formationId}:${movement}`, queued: queue,
+      ids: units.map(unit => unit.id), x, y, ...(matchPace ? { matchPace: true } : {}) });
     return { ok: true };
   }
 
@@ -3973,7 +4179,11 @@ export class Game {
     if (ghostRunActive) {
       if (order.type === 'move' || order.type === 'forceMove') {
         if (this._moveUnit(u, order.x, order.y, dt, 0.28)) {
-          if (!this._advanceQueuedOrder(u, order)) { u.order = { type: 'idle' }; u.path = []; }
+          if (!this._advanceQueuedOrder(u, order)) {
+            if ((this.replayVersion == null || this.replayVersion >= TACTICAL_FORMATION_RULES_VERSION) &&
+                Number.isFinite(order.formationFacing)) u.facing = order.formationFacing;
+            u.order = { type: 'idle' }; u.path = [];
+          }
         }
       }
       return;
@@ -4144,7 +4354,11 @@ export class Game {
     }
     if (order.type === 'move' || order.type === 'forceMove') {
       const arrived = this._moveUnit(u, order.x, order.y, dt, 0.28);
-      if (arrived && !this._advanceQueuedOrder(u, order)) { u.order = { type: 'idle' }; u.path = []; }
+      if (arrived && !this._advanceQueuedOrder(u, order)) {
+        if ((this.replayVersion == null || this.replayVersion >= TACTICAL_FORMATION_RULES_VERSION) &&
+            Number.isFinite(order.formationFacing)) u.facing = order.formationFacing;
+        u.order = { type: 'idle' }; u.path = [];
+      }
     } else if (order.type === 'guard') {
       this._moveUnit(u, order.x, order.y, dt, 0.35);
     } else if (order.type === 'patrol') {
@@ -7796,10 +8010,16 @@ export class Game {
     // before v75 so their recorded direct-fire damage remains unchanged.
     if (game.replayVersion == null && data.wreckCoverRulesVersion !== WRECK_COVER_RULES_VERSION)
       game.replayVersion = WRECK_COVER_RULES_VERSION - 1;
+    // Markerless v75 saves already carry every prior rules marker. Pin them
+    // before formations so loading them cannot silently change their replay.
+    if (game.replayVersion == null && data.wreckCoverRulesVersion === WRECK_COVER_RULES_VERSION &&
+        data.tacticalFormationRulesVersion !== TACTICAL_FORMATION_RULES_VERSION)
+      game.replayVersion = TACTICAL_FORMATION_RULES_VERSION - 1;
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     game.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
     game.wreckCoverRulesVersion = WRECK_COVER_RULES_VERSION;
+    game.tacticalFormationRulesVersion = TACTICAL_FORMATION_RULES_VERSION;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -8053,6 +8273,13 @@ export class Game {
            !Number.isFinite(unit.order.pace) || unit.order.pace <= 0 || unit.order.pace > 10 ||
            (game.replayVersion != null && game.replayVersion < MATCHED_PACE_RULES_VERSION)))
         delete unit.order.pace;
+      if (game.replayVersion == null || game.replayVersion >= TACTICAL_FORMATION_RULES_VERSION) {
+        if (unit.order && Object.hasOwn(unit.order, 'formationFacing')) {
+          if (['move', 'forceMove'].includes(unit.order.type) && Number.isFinite(unit.order.formationFacing))
+            unit.order.formationFacing = Math.atan2(Math.sin(unit.order.formationFacing), Math.cos(unit.order.formationFacing));
+          else delete unit.order.formationFacing;
+        }
+      } else if (unit.order) delete unit.order.formationFacing;
       if (unit.order && Object.hasOwn(unit.order, 'queue')) {
         const raw = game.replayVersion != null && game.replayVersion < QUEUED_ORDERS_RULES_VERSION
           ? [] : Array.isArray(unit.order.queue) ? unit.order.queue.slice(0, MAX_QUEUED_ORDERS) : [];
@@ -8062,6 +8289,10 @@ export class Game {
             return [{ type: 'attack', targetId: order.targetId }];
           if (['move', 'forceMove'].includes(order.type) && game._validatePoint(order.x, order.y))
             return [{ type: order.type, x: order.x, y: order.y,
+              ...(game.replayVersion == null || game.replayVersion >= TACTICAL_FORMATION_RULES_VERSION
+                ? Number.isFinite(order.formationFacing)
+                  ? { formationFacing: Math.atan2(Math.sin(order.formationFacing), Math.cos(order.formationFacing)) } : {}
+                : {}),
               ...(game.replayVersion == null || game.replayVersion >= MATCHED_PACE_RULES_VERSION
                 ? Number.isFinite(order.pace) && order.pace > 0 && order.pace <= 10 ? { pace: order.pace } : {}
                 : {}),

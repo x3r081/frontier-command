@@ -1,13 +1,13 @@
 import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, COMMAND_ABILITIES,
   DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, UNIT_PROMOTION_DEFS, UNIT_PROMOTION_RULES_VERSION,
   PRODUCTION_SITE_RULES_VERSION, POWER_STANDBY_RULES_VERSION, WRECK_RECOMMISSION_RULES_VERSION,
-  INFANTRY_DIG_IN_RULES_VERSION,
+  INFANTRY_DIG_IN_RULES_VERSION, TACTICAL_FORMATION_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 75;
+export const SOLO_REPLAY_VERSION = 76;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -26,6 +26,11 @@ const wreckId = value => typeof value === 'string' && /^wreck[1-9][0-9]{0,8}$/.t
 // Only public, player-issued gameplay commands belong in a replay. Selection is
 // captured as command context rather than recorded as a separate command.
 export const SOLO_COMMAND_METHODS = Object.freeze({
+  issueFormationMove: args => args.length >= 3 && args.length <= 6 &&
+    xPoint(args[0]) && yPoint(args[1]) && ['line', 'column', 'screen'].includes(args[2]) &&
+    (args.length < 4 || ['move', 'attackMove', 'forceMove'].includes(args[3])) &&
+    (args.length < 5 || typeof args[4] === 'boolean') &&
+    (args.length < 6 || typeof args[5] === 'boolean'),
   issueMove: args => args.length >= 2 && args.length <= 5 && xPoint(args[0]) && yPoint(args[1]) &&
     (args.length < 3 || typeof args[2] === 'boolean') &&
     (args.length < 4 || typeof args[3] === 'boolean') &&
@@ -252,6 +257,9 @@ export function createSoloPlayback(envelope, commands, completedTicks, replayVer
   if (replayVersion < INFANTRY_DIG_IN_RULES_VERSION && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueDigIn'))
     throw new TypeError(`Infantry Dig In requires replay version ${INFANTRY_DIG_IN_RULES_VERSION}.`);
+  if (replayVersion < TACTICAL_FORMATION_RULES_VERSION && Array.isArray(commands) &&
+      commands.some(command => command?.method === 'issueFormationMove'))
+    throw new TypeError(`Tactical formations require replay version ${TACTICAL_FORMATION_RULES_VERSION}.`);
   if (replayVersion < 21 && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueServiceAtWorkshop'))
     throw new TypeError('Workshop service orders require replay version 21.');

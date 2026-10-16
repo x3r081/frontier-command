@@ -69,6 +69,8 @@ const RANKED_SEASON = 74;
 // Reclaimed campaign operation. Version 74 adds infantry field entrenchment
 // and defensive AI use. Version 75 adds neutral wreck cover for infantry.
 // All solo boards advance; multiplayer starts Season 74.
+// Version 76 adds optional formation destinations. Default simulation and
+// comparison floors remain v75; multiplayer retains Season 74.
 const CAMPAIGN_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
 const SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
@@ -1119,7 +1121,7 @@ function startMatch(lobby) {
   return true;
 }
 
-const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
+const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
   'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
@@ -1127,10 +1129,10 @@ function command(lobby, member, message) {
   if (!game || game.status !== 'playing') return { ok: false, reason: 'No active match.' };
   if (!commandNames.has(message.command)) return { ok: false, reason: 'Unknown command.' };
   if (message.queue !== undefined && (typeof message.queue !== 'boolean' ||
-      !['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack'].includes(message.command)))
+      !['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack'].includes(message.command)))
     return { ok: false, reason: 'Invalid queued order.' };
   if (message.matchPace !== undefined && (typeof message.matchPace !== 'boolean' ||
-      !['issueMove', 'issueForceMove', 'issueReverseMove'].includes(message.command)))
+      !['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove'].includes(message.command)))
     return { ok: false, reason: 'Invalid matched pace order.' };
   const ids = Array.isArray(message.ids) ? message.ids.filter(id => typeof id === 'string').slice(0, 100) : [];
   member.selection = ids.filter(id => game.getEntity(id)?.owner === member.side);
@@ -1142,6 +1144,11 @@ function command(lobby, member, message) {
       case 'issueMove': return game.issueMove(n(message.x), n(message.y), Boolean(message.attackMove), message.queue === true, message.matchPace === true);
       case 'issueForceMove': return game.issueForceMove(n(message.x), n(message.y), message.queue === true, message.matchPace === true);
       case 'issueReverseMove': return game.issueReverseMove(n(message.x), n(message.y), message.queue === true, message.matchPace === true);
+      case 'issueFormationMove': return typeof message.x === 'number' && typeof message.y === 'number' &&
+          typeof message.formationId === 'string' && typeof message.movement === 'string'
+        ? game.issueFormationMove(message.x, message.y, message.formationId, message.movement,
+          message.queue === true, message.matchPace === true)
+        : { ok: false, reason: 'Choose a valid formation and destination.' };
       case 'issueAttack': return game.issueAttack(message.targetId, message.queue === true);
       case 'issueHarvest': return game.issueHarvest();
       case 'issueBloomExpedition': return game.issueBloomExpedition();

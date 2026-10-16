@@ -2385,6 +2385,30 @@ test('websocket movement dispatch enforces ownership, queues, and matched pace o
     assert.equal((await nextMessage(host, message => message.type === 'command_result' &&
       message.requestId === 'pace-wrong-command')).ok, false, 'the option belongs only to movement commands');
 
+    const formation = async (requestId, extra = {}) => {
+      sendSocket(host, { type: 'command', requestId, command: 'issueFormationMove',
+        ids: [ownTank.id, ownScout.id, foreignTank.id], ...destination,
+        formationId: 'screen', movement: 'forceMove', matchPace: true, ...extra });
+      return nextMessage(host, message => message.type === 'command_result' && message.requestId === requestId);
+    };
+    assert.equal((await formation('formation-own')).ok, true);
+    assert.ok(Number.isFinite(ownTank.order.formationFacing));
+    assert.equal(ownTank.order.pace, ownScout.order.pace);
+    assert.deepEqual(foreignTank.order, foreignOrder, 'formation commands cannot move the opponent');
+    assert.equal((await formation('formation-queue', { queue: true, formationId: 'column',
+      x: destination.x + 4 })).ok, true);
+    assert.ok(Number.isFinite(ownTank.order.queue.at(-1).formationFacing));
+    const ownOrder = structuredClone(ownTank.order);
+    for (const [requestId, extra] of [
+      ['formation-invalid-id', { formationId: 'unknown' }],
+      ['formation-invalid-move', { movement: 'reverse' }],
+      ['formation-string-point', { x: String(destination.x) }],
+      ['formation-invalid-queue', { queue: 'true' }],
+      ['formation-invalid-pace', { matchPace: 1 }],
+      ['formation-foreign-only', { ids: [foreignTank.id] }],
+    ]) assert.equal((await formation(requestId, extra)).ok, false, requestId);
+    assert.deepEqual(ownTank.order, ownOrder, 'rejected formation commands leave orders intact');
+
     const hostEnded = nextMessage(host, message => message.type === 'match_end');
     const guestEnded = nextMessage(guest, message => message.type === 'match_end');
     sendSocket(host, { type: 'leave_lobby' });
