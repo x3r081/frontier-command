@@ -56,6 +56,7 @@ export const AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION = 64;
 export const AI_ASSAULT_COORDINATION_RULES_VERSION = 65;
 export const AIR_SERVICE_RULES_VERSION = 66;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
+export const PRODUCTION_SITE_RULES_VERSION = 67;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
@@ -2137,10 +2138,16 @@ export class Game {
     return { ok: true, producers };
   }
 
-  _queueUnit(owner, defId) {
+  _queueUnit(owner, defId, producerId) {
+    const explicitProducer = producerId !== undefined;
+    if (explicitProducer && this.replayVersion != null && this.replayVersion < PRODUCTION_SITE_RULES_VERSION)
+      return { ok: false, reason: 'Production site selection requires replay version 67.' };
     const check = this.canQueueUnit(defId, owner);
     if (!check.ok) return check;
-    const producer = [...check.producers].sort((a, b) => a.queue.length - b.queue.length)[0];
+    const producer = explicitProducer
+      ? check.producers.find(building => building.id === producerId)
+      : [...check.producers].sort((a, b) => a.queue.length - b.queue.length)[0];
+    if (!producer) return { ok: false, reason: 'Select an available production building.' };
     if (producer.queue.length >= 5) return { ok: false, reason: 'Production queue is full.' };
     this.credits[owner] -= UNIT_DEFS[defId].cost;
     producer.queue.push({ defId, progress: 0 });
@@ -2148,7 +2155,7 @@ export class Game {
     return { ok: true, buildingId: producer.id };
   }
 
-  queueUnit(defId) { return this._queueUnit(this.commandOwner || 'player', defId); }
+  queueUnit(defId, producerId) { return this._queueUnit(this.commandOwner || 'player', defId, producerId); }
 
   cancelQueuedUnit(buildingId, index = -1) {
     const owner = this.commandOwner || 'player';

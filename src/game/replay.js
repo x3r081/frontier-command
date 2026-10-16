@@ -1,11 +1,12 @@
 import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, COMMAND_ABILITIES,
   DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, UNIT_PROMOTION_DEFS, UNIT_PROMOTION_RULES_VERSION,
+  PRODUCTION_SITE_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 66;
+export const SOLO_REPLAY_VERSION = 67;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -60,7 +61,8 @@ export const SOLO_COMMAND_METHODS = Object.freeze({
   startConstruction: args => args.length === 1 && defId(args[0], BUILDING_DEFS),
   cancelConstruction: noArgs,
   issueBuild: args => args.length === 3 && defId(args[0], BUILDING_DEFS) && xPoint(args[1]) && yPoint(args[2]),
-  queueUnit: args => args.length === 1 && defId(args[0], UNIT_DEFS),
+  queueUnit: args => (args.length === 1 || args.length === 2) && defId(args[0], UNIT_DEFS) &&
+    (args.length < 2 || entityId(args[1])),
   chooseDoctrine: args => args.length === 1 && defId(args[0], DOCTRINE_DEFS),
   chooseTacticalPackage: args => args.length === 1 && defId(args[0], TACTICAL_PACKAGE_DEFS),
   setRelayProtocol: args => args.length === 2 && relayId(args[0]) &&
@@ -227,6 +229,9 @@ export function createSoloPlayback(envelope, commands, completedTicks, replayVer
   if (replayVersion < 66 && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueRearm'))
     throw new TypeError('Early aircraft rearm requires replay version 66.');
+  if (replayVersion < PRODUCTION_SITE_RULES_VERSION && Array.isArray(commands) && commands.some(command =>
+      command?.method === 'queueUnit' && command.args?.length === 2))
+    throw new TypeError('Production site selection requires replay version 67.');
   if (replayVersion < 9 && envelope?.supplyId !== undefined && envelope.supplyId !== 'none')
     throw new TypeError('Campaign supply packages require replay version 9.');
   if (replayVersion < 10 && Array.isArray(commands) &&

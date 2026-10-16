@@ -1126,7 +1126,11 @@ function command(lobby, member, message) {
       case 'startConstruction': return game.startConstruction(message.defId);
       case 'cancelConstruction': return game.cancelConstruction();
       case 'issueBuild': return game.issueBuild(message.defId, n(message.x), n(message.y));
-      case 'queueUnit': return game.queueUnit(message.defId);
+      case 'queueUnit': return message.producerId === undefined
+        ? game.queueUnit(message.defId)
+        : typeof message.producerId === 'string' && message.producerId.length > 0
+          ? game.queueUnit(message.defId, message.producerId)
+          : { ok: false, reason: 'Select a valid production building.' };
       case 'cancelQueuedUnit': return game.cancelQueuedUnit(message.buildingId, Number.isInteger(message.index) ? message.index : -1);
       case 'setRally': return game.setRally(message.buildingId, n(message.x), n(message.y));
       case 'toggleRepair': return game.toggleRepair(message.buildingId);

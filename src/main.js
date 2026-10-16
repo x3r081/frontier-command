@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -1079,6 +1079,30 @@ function activateBattlefieldObject(key, { additive = false } = {}) {
   renderBattlefieldPicker();
 }
 function selectedBuilding() { return selectedObjects().find(o => 'w' in o && o.owner === 'player'); }
+function selectedProductionBuilding() {
+  const selected=selectedObjects();
+  const building=selected.length===1?selected[0]:null;
+  return building?.owner==='player'&&building.hp>0&&building.progress>=1&&
+    ['barracks','factory','helipad'].includes(building.defId)?building:null;
+}
+function selectedProductionSite() {
+  return game&&(game.replayVersion==null||game.replayVersion>=PRODUCTION_SITE_RULES_VERSION)
+    ?selectedProductionBuilding():null;
+}
+function unitProductionView(id,def=game.unitDefs[id]) {
+  const site=selectedProductionSite();
+  const producers=site?[site]:game.buildings.filter(building=>building.owner==='player'&&
+    building.hp>0&&building.defId===def.producer);
+  const producer=producers.find(building=>building.queue?.some(item=>item.defId===id));
+  const queueIndex=producer?.queue.findLastIndex(item=>item.defId===id)??-1;
+  const queueCount=producers.reduce((count,building)=>count+(building.queue?.filter(item=>item.defId===id).length||0),0);
+  const check=game.canQueueUnit(id);
+  if(check.ok&&site&&!check.producers.some(building=>building.id===site.id))
+    return {site,producer,queueIndex,queueCount,ok:false,reason:'Selected production site is unavailable.'};
+  if(check.ok&&(site?site.queue.length>=5:check.producers.every(building=>building.queue.length>=5)))
+    return {site,producer,queueIndex,queueCount,ok:false,reason:site?'Selected site queue is full.':'Production queues are full.'};
+  return {site,producer,queueIndex,queueCount,ok:check.ok,reason:check.reason};
+}
 function isTroopCarrier(unit) {
   const def=game?.unitDefs?.[unit?.defId];
   return def?.role==='transport'&&Number(def.capacity)>0;
@@ -2457,7 +2481,7 @@ function issueContext(wx, wy, queue = false) {
   else if (hit && hit.owner === 'enemy') resultMessage(game.issueAttack(hit.id));
   else if (getCell(wx, wy)?.resource > 0 && own.some(o => /harvester/.test(o.defId))) resultMessage(issueMoveCommand(wx, wy));
   else if (own.some(o => 'w' in o) && !own.some(o => !('w' in o))) {
-    const b = own.find(o=>['barracks','factory'].includes(o.defId)); if (b&&game.setRally) resultMessage(game.setRally(b.id, wx, wy),'RALLY POINT SET');
+    const b = own.find(o=>['barracks','factory','helipad'].includes(o.defId)); if (b&&game.setRally) resultMessage(game.setRally(b.id, wx, wy),'RALLY POINT SET');
   } else resultMessage(issueMoveCommand(wx, wy));
 }
 function attemptPlacement(wx, wy) {
@@ -2520,6 +2544,7 @@ function targetOrderHint(mode,label,prompt){
 }
 function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   if(!game)return;
+  if(mode==='rally'&&!selectedProductionBuilding()){toast('SELECT A COMPLETED PRODUCTION BUILDING',true);return;}
   if(!['attack','forceMove','reverseMove'].includes(mode))setRoutePlanMode(false);
   if(placeId)cancelPlacement();
   commandAbilityToken++;commandAbilityMode=null;commandAbilityPending=false;
@@ -2546,6 +2571,11 @@ function issueTargetOrder(wx,wy,queue=false){
       {ok:false,reason:'Choose a wreck, bridge, or structure.'}; success=wreck?'WRECK RECOVERY ORDERED':'ENGINEER ORDERED';
   }
   else if(mode==='patrol'){result=game.issuePatrol(wx,wy);success='PATROL ROUTE SET';}
+  else if(mode==='rally'){
+    const building=selectedProductionBuilding();
+    result=building?game.setRally(building.id,wx,wy):{ok:false,reason:'Select a completed production building.'};
+    success='RALLY POINT SET';
+  }
   else if(mode==='follow'){
     const target=objectAt(wx,wy);
     result=target?game.issueFollow(target.id):{ok:false,reason:'Select a friendly unit or structure to follow.'};success='ESCORT ORDERED';
@@ -3126,6 +3156,14 @@ function missionUplinkTargets(){
 }
 function selectedOrderMinimapCues(selectedIds,cw,ch){
   const cues=[];
+  for(const building of game.buildings){
+    if(!selectedIds.has(building.id)||building.owner!=='player'||building.hp<=0||building.progress<1||
+      !['barracks','factory','helipad'].includes(building.defId)||
+      !Number.isFinite(building.rally?.x)||!Number.isFinite(building.rally?.y))continue;
+    cues.push({fromX:(building.x+building.w/2)*cw,fromY:(building.y+building.h/2)*ch,
+      toX:building.rally.x*cw,toY:building.rally.y*ch,color:'#79e8df'});
+    if(cues.length>=24)break;
+  }
   let inspected=0;
   for(const unit of game.units){
     if(!selectedIds.has(unit.id))continue;
@@ -3340,11 +3378,13 @@ function updateBlueprintDetails() {
   const {id,kind}=blueprintInspect;
   const def=(kind==='structures'?game.buildingDefs:game.unitDefs)?.[id];
   if(!def||tab!==kind){closeBlueprintDetails();return;}
-  const check=kind==='structures'?game.canBuild(id):game.canQueueUnit(id);
+  const site=kind==='units'?selectedProductionSite():null;
+  if(site&&def.producer!==site.defId){closeBlueprintDetails();return;}
+  const check=kind==='structures'?game.canBuild(id):unitProductionView(id,def);
   const required=def.prerequisites||def.requires||[];
   const prerequisites=(Array.isArray(required)?required:[required]).filter(Boolean)
     .map(requirement=>game.buildingDefs?.[requirement]?.name||keyName(requirement));
-  let availability=check?.ok?'Available. Choose the main card to order.':check?.reason||'Unavailable.';
+  let availability=check?.ok?site?`Queues at the selected ${game.buildingDefs[site.defId].name}.`:'Available. Choose the main card to order.':check?.reason||'Unavailable.';
   if(kind==='structures'&&game.construction?.defId===id)
     availability=game.construction.ready?'Ready to place. Choose the main card, then a build site.':
       `Constructing · ${Math.round((game.construction.progress||0)*100)}%.`;
@@ -3369,10 +3409,10 @@ function showBlueprintDetails(id,kind) {
     button.setAttribute('aria-expanded',String(button.dataset.blueprintInfo===id&&button.dataset.kind===kind)));
 }
 function productionCard(id,def,kind) {
-  const cost=def.cost||0, check=kind==='structures'?game.canBuild(id):game.canQueueUnit(id);
-  const producer=kind==='units'?game.buildings.find(b=>b.owner==='player'&&b.queue?.some(q=>q.defId===id||q===id)):null;
-  const queueIndex=producer?producer.queue.findLastIndex(q=>(q.defId||q)===id):-1;
-  const queueCount=producer?.queue.filter(q=>(q.defId||q)===id).length||0;
+  const cost=def.cost||0, check=kind==='structures'?game.canBuild(id):unitProductionView(id,def);
+  const producer=check.producer;
+  const queueIndex=check.queueIndex??-1;
+  const queueCount=check.queueCount||0;
   const queue=kind==='units'?queueIndex>=0:game.construction?.defId===id;
   const enabled=(check?.ok && (kind!=='structures'||!game.construction))||(kind==='structures'&&queue);
   const reason=kind==='structures'&&queue&&!game.construction?.ready?'IN PRODUCTION':enabled?'':check?.reason||'BUILDING IN PROGRESS';
@@ -3381,8 +3421,22 @@ function productionCard(id,def,kind) {
   const description=productionDescription(id,def);
   const card=`<button class="production-item ${queue?'queued':''}" data-build="${id}" data-kind="${kind}" ${enabled?'':'disabled'} title="${description}${reason?` · ${reason}`:''}">${assetHTML(id)}<span class="item-text"><strong>${def.name||keyName(id)}</strong><small>◈ ${fmt(cost)}</small><em>${reason||def.role||description}</em></span>${queue&&kind==='structures'?'<span class="queue-badge">'+(game.construction?.ready?'READY':'BUILDING')+'</span>':''}${queue&&kind==='units'?`<span class="queue-badge" aria-hidden="true">×${queueCount}</span>`:''}${queue&&kind==='structures'?`<span class="queue-progress" style="width:${progressPct}%"></span>`:''}</button>`;
   const info=`<button class="blueprint-info-button" type="button" data-blueprint-info="${id}" data-kind="${kind}" aria-label="Inspect ${def.name||keyName(id)} blueprint" aria-controls="blueprint-details" aria-expanded="${blueprintInspect?.id===id&&blueprintInspect?.kind===kind}" title="Inspect blueprint without ordering">i</button>`;
-  const cancel=queue&&kind==='units'?`<button class="queue-cancel-button" type="button" data-cancel-queue="${producer.id}" data-queue-index="${queueIndex}" aria-label="Cancel most recent ${def.name||keyName(id)} order" title="Cancel most recent order">×</button>`:'';
+  const cancelSite=producer?`${game.buildingDefs[producer.defId].name}, sector ${Math.floor(producer.x+producer.w/2)}, ${Math.floor(producer.y+producer.h/2)}`:'';
+  const cancel=queue&&kind==='units'?`<button class="queue-cancel-button" type="button" data-cancel-queue="${producer.id}" data-queue-index="${queueIndex}" aria-label="Cancel most recent ${def.name||keyName(id)} order at ${cancelSite}" title="Cancel most recent order at ${cancelSite}">×</button>`:'';
   return `<div class="production-card-group${queue&&kind==='units'?' unit-queue-card':''}">${card}${info}${cancel}</div>`;
+}
+function updateProductionSite() {
+  const site=tab==='units'?selectedProductionSite():null;
+  const panel=$('#production-site');
+  panel.classList.toggle('hidden',!site);
+  if(!site)return;
+  const name=game.buildingDefs[site.defId].name.toUpperCase();
+  const sector=`${Math.floor(site.x+site.w/2)}//${Math.floor(site.y+site.h/2)}`;
+  $('#production-site-name').textContent=`${name} · ${sector}`;
+  const active=site.queue?.[0];
+  const task=active?`${game.unitDefs[active.defId].name.toUpperCase()} ${Math.floor(active.progress*100)}%`:'READY';
+  $('#production-site-status').textContent=`${task} · ${site.queue.length}/5 QUEUED`;
+  panel.title=`New unit orders use this ${name.toLowerCase()}. Rally: ${Math.floor(site.rally.x)}, ${Math.floor(site.rally.y)}.`;
 }
 function updateSupportSellHint() {
   const button=$('#production-list [data-support="sell"]');
@@ -3407,12 +3461,13 @@ function updateBlueprintView() {
 }
 function renderProduction(force=false) {
   if(!game)return;
+  updateProductionSite();
   updateBlueprintView();
   updateBlueprintDetails();
   if(!lastProductionSignature||lastProductionTab!==tab){$('#production-list').scrollTop=0;lastProductionTab=tab;}
   $('#production-list').classList.toggle('support-mode',tab==='support'||tab==='research');
   $('#production-list').classList.toggle('research-mode',tab==='research');
-  const signature=JSON.stringify([tab,Math.floor((game.credits?.player||0)/25),game.construction?.defId,game.construction?.ready,
+  const signature=JSON.stringify([tab,selectedProductionSite()?.id,Math.floor((game.credits?.player||0)/25),game.construction?.defId,game.construction?.ready,
     game.power?.player?.production,game.power?.player?.consumption,
     game.buildings.filter(b=>b.owner==='player').map(b=>[b.defId,b.queue?.map(q=>q.defId)]),
     tab==='support'?Math.floor((game.superweapon?.player||0)*20):0,
@@ -3557,7 +3612,8 @@ function renderProduction(force=false) {
     if(id==='power'&&(game.power?.player?.production||0)<(game.power?.player?.consumption||0))return -1;
     return STRUCTURE_PRIORITY[id]??20+(d.sort??d.cost??0)/10000;
   };
-  const entries=Object.entries(defs).filter(([id,d])=>id!=='command'&&availableForFaction(d))
+  const site=tab==='units'?selectedProductionSite():null;
+  const entries=Object.entries(defs).filter(([id,d])=>id!=='command'&&availableForFaction(d)&&(!site||d.producer===site.defId))
     .sort((a,b)=>rank(a)-rank(b)||(a[1].cost||0)-(b[1].cost||0));
   const list=$('#production-list'), scrollTop=list.scrollTop;
   const focusedInfo=document.activeElement?.closest?.('[data-blueprint-info]');
@@ -3578,11 +3634,21 @@ function updateProductionScrollCue() {
     list.scrollTop+list.clientHeight>=list.scrollHeight-threshold);
 }
 function updateAttackMoveButton(units=selectedObjects().filter(o=>!('w' in o))) {
-  const active=attackMoveMode==='attack'||(units.length>0&&units.every(unit=>
+  const producer=selectedProductionBuilding();
+  const active=producer?tab==='units':attackMoveMode==='attack'||(units.length>0&&units.every(unit=>
     unit.order?.type==='move'&&unit.order.attackMove));
   const button=$('#cmd-attack');
+  button.querySelector('span').textContent=producer?'▣':'⌖';
+  button.lastChild.textContent=producer?'PRODUCE':'ATTACK';
+  button.title=producer?'Open unit production for the selected building':'Attack move (Shift+A)';
   button.classList.toggle('active',active);
   button.setAttribute('aria-pressed',String(active));
+  if(producer){
+    const rallyButton=$('#cmd-move');
+    const targeting=attackMoveMode==='rally';
+    rallyButton.classList.toggle('active',targeting);
+    rallyButton.setAttribute('aria-pressed',String(targeting));
+  }
 }
 function matchPaceGroundUnits(units=selectedObjects().filter(object=>!('w' in object))) {
   return units.filter(unit=>unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
@@ -3619,6 +3685,9 @@ function updateSelectionCard() {
   $('#selection-count').textContent=`${String(selected.length).padStart(2,'0')} ACTIVE`;
   $('#mobile-deck-peek').textContent=`COMMAND DECK · ${String(selected.length).padStart(2,'0')} ACTIVE`;
   const units=selected.filter(o=>!('w' in o));
+  const productionBuilding=selectedProductionBuilding();
+  $('#command-actions').setAttribute('aria-label',productionBuilding?'Selected production building commands':'Selected unit commands');
+  $('#command-actions').classList.toggle('production-commands',!!productionBuilding);
   updateMatchPaceControl(units);
   updateRoutePlanControl(units);
   const bloomHarvesters=units.filter(unit=>unit.owner==='player'&&unit.hp>0&&unit.defId==='harvester'&&
@@ -3705,13 +3774,17 @@ function updateSelectionCard() {
   const disrupted=suppressedUnits.length>0;
   $('#selection-card').classList.toggle('is-disrupted',disrupted);
   for(const [button,order] of [['#cmd-move','forceMove'],['#cmd-guard','guard'],['#cmd-patrol','patrol'],['#cmd-follow','follow'],['#cmd-force','forceFire'],['#cmd-board','board'],['#cmd-unload','unload']]) {
-    const active=units.length>0&&units.every(unit=>unit.order?.type===order);
+    const active=button==='#cmd-move'&&productionBuilding?attackMoveMode==='rally':units.length>0&&units.every(unit=>unit.order?.type===order);
     $(button).classList.toggle('active',active);
     $(button).setAttribute('aria-pressed',String(active));
   }
   updateAttackMoveButton(units);
   for(const id of ['attack','move','guard','patrol','follow','stop','harvest','scatter','force','board','unload','deploy'])
     $(`#cmd-${id}`).disabled=units.length===0 || (id==='deploy'&&!units.some(unit=>unit.defId==='mcv')) || (id==='harvest'&&!units.some(unit=>unit.defId==='harvester')) || (id==='force'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.weapon)) || (id==='board'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.armor==='infantry')) || (id==='unload'&&!units.some(unit=>isTroopCarrier(unit)&&unit.passengerIds?.length));
+  const moveButton=$('#cmd-move');
+  moveButton.lastChild.textContent=productionBuilding?'RALLY':'MOVE';
+  moveButton.title=productionBuilding?'Set this building’s reinforcement rally point (M)':'Force move without engaging (M or Alt+click)';
+  if(productionBuilding){$('#cmd-attack').disabled=false;moveButton.disabled=false;}
   if(fieldUnit)fieldButton.disabled=!game.canUseUnitAbility?.(fieldUnit.id,fieldAbility)?.ok;
   const armed=units.filter(unit=>unit.owner==='player'&&game.unitDefs?.[unit.defId]?.weapon);
   const stances=new Set(armed.map(unit=>unit.stance||'aggressive'));
@@ -5596,7 +5669,7 @@ function installMultiplayerCommandAdapters(target){
     issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
     issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
     issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
-    issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:defId=>({defId}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
+    issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:(defId,producerId)=>({defId,...(producerId!==undefined?{producerId}:{})}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
     useUnitAbility:(unitId,abilityId)=>({unitId,abilityId}),
     cancelQueuedUnit:(buildingId,index)=>({buildingId,index}),setRally:(buildingId,x,y)=>({buildingId,x,y}),
@@ -6237,7 +6310,10 @@ $('#production-list').addEventListener('click',e=>{
     if(game.construction?.defId===id&&!game.construction.ready){toast('CONSTRUCTION IN PROGRESS');}
     else if(game.construction?.defId===id&&game.construction.ready){setRoutePlanMode(false);placeId=id;placementToken++;placementPending=false;show('#placement-hint');toast('SELECT A BUILD SITE');}
     else {const r=game.startConstruction?game.startConstruction(id):{ok:true};resultMessage(r,`Constructing ${game.buildingDefs?.[id]?.name||keyName(id)}`);}
-  } else resultMessage(game.queueUnit(id),`Training ${game.unitDefs?.[id]?.name||keyName(id)}`);
+  } else {
+    const site=selectedProductionSite();
+    resultMessage(site?game.queueUnit(id,site.id):game.queueUnit(id),`Training ${game.unitDefs?.[id]?.name||keyName(id)}${site?` at ${game.buildingDefs[site.defId].name}`:''}`);
+  }
   updateUI(true);
 });
 $('#blueprint-details-close').addEventListener('click',()=>closeBlueprintDetails(true));
@@ -6246,8 +6322,8 @@ $('#production-list').addEventListener('contextmenu',e=>{
   const id=btn.dataset.build;
   if(btn.dataset.kind==='structures'&&game.construction?.defId===id){resultMessage(game.cancelConstruction(),'CONSTRUCTION CANCELED');cancelPlacement(false);}
   else if(btn.dataset.kind==='units'){
-    const producer=game.buildings.find(b=>b.owner==='player'&&b.queue?.some(q=>q.defId===id));
-    if(producer)resultMessage(game.cancelQueuedUnit(producer.id,producer.queue.findLastIndex(q=>q.defId===id)),'UNIT ORDER CANCELED');
+    const view=unitProductionView(id);
+    if(view.producer)resultMessage(game.cancelQueuedUnit(view.producer.id,view.queueIndex),'UNIT ORDER CANCELED');
   }
   updateUI(true);
 });
@@ -6280,8 +6356,21 @@ $('#promotion-modal').addEventListener('click',event=>{
   });
   if(!result?.pending&&accepted){closeTrackedDialog('#promotion-modal');updateUI(true);}
 });
-$('#cmd-attack').addEventListener('click',()=>startTargetOrder('attack','ATTACK MOVE'));
-$('#cmd-move').addEventListener('click',()=>startTargetOrder('forceMove','FORCE MOVE'));
+$('#cmd-attack').addEventListener('click',()=>{
+  if(selectedProductionBuilding()){
+    closeBlueprintDetails();tab='units';
+    document.querySelectorAll('.tab').forEach(button=>button.classList.toggle('active',button.dataset.tab===tab));
+    setMobileDeckExpanded(true);updateUI(true);
+  }else startTargetOrder('attack','ATTACK MOVE');
+});
+function activateMoveOrRally(){
+  startTargetOrder(selectedProductionBuilding()?'rally':'forceMove',selectedProductionBuilding()?'RALLY POINT':'FORCE MOVE');
+}
+$('#cmd-move').addEventListener('click',activateMoveOrRally);
+$('#production-site-auto').addEventListener('click',()=>{
+  game?.select([]);updateUI(true);
+  $('#production-list [data-build]:not(:disabled)')?.focus({preventScroll:true});
+});
 $('#cmd-reverse').addEventListener('click',()=>startTargetOrder('reverseMove','REVERSE MOVE'));
 $('#match-pace-toggle').addEventListener('click',()=>{
   if(!playing||paused||!matchPaceAvailable())return;
@@ -6568,7 +6657,7 @@ window.addEventListener('keydown',e=>{
   if(e.code==='KeyV')startTargetOrder('force','FORCE FIRE');
   if(e.code==='KeyM'){
     if(e.shiftKey&&reverseMoveUnits().length)startTargetOrder('reverseMove','REVERSE MOVE');
-    else if(!e.shiftKey)startTargetOrder('forceMove','FORCE MOVE');
+    else if(!e.shiftKey)activateMoveOrRally();
   }
   if(e.code==='KeyN'){e.preventDefault();if(!e.repeat)cycleUnits();}
   if(e.code==='KeyH'){

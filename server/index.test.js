@@ -1479,6 +1479,66 @@ test('live multiplayer Bloom Expedition dispatch filters selections to the authe
   host.close(); guest.close();
 });
 
+test('authenticated websocket queueUnit routes to the selected production site and preserves default routing', async () => {
+  const a = await createProfile('Production Site Host'); const b = await createProfile('Production Site Guest');
+  const host = await openSocket(a.token); const guest = await openSocket(b.token);
+  await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'hello')));
+  sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+  const room = await nextMessage(host, message => message.type === 'lobby');
+  sendSocket(guest, { type: 'join_lobby', code: room.code });
+  await Promise.all([
+    nextMessage(host, message => message.type === 'lobby' && message.players.length === 2),
+    nextMessage(guest, message => message.type === 'lobby' && message.players.length === 2),
+  ]);
+  sendSocket(host, { type: 'set_ready', ready: true }); sendSocket(guest, { type: 'set_ready', ready: true });
+  await nextMessage(host, message => message.type === 'lobby' && message.players.every(player => player.ready));
+  sendSocket(host, { type: 'start_match' });
+  await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'match_start')));
+
+  const game = lobbies.get(room.code).game;
+  game.credits.player = 5000;
+  const ownBarracks = game.buildings.filter(building => building.owner === 'player' &&
+    building.defId === 'barracks' && building.hp > 0 && building.progress >= 1);
+  const foreignBarracks = game.buildings.find(building => building.owner === 'enemy' &&
+    building.defId === 'barracks' && building.hp > 0 && building.progress >= 1);
+  assert.ok(ownBarracks.length && foreignBarracks, 'the live match provides completed barracks on both seats');
+  const chosen = ownBarracks[0];
+  const shorter = game._createBuilding('player', 'barracks', 2, 2, 1);
+  chosen.queue = [{ defId: 'rifle', progress: 0 }, { defId: 'rifle', progress: 0 }];
+  shorter.queue = [];
+  const chosenQueueBefore = structuredClone(chosen.queue);
+  const shorterQueueBefore = structuredClone(shorter.queue);
+  const creditsBefore = game.credits.player;
+
+  sendSocket(host, { type: 'command', requestId: 'queue-explicit-site', command: 'queueUnit',
+    defId: 'rifle', producerId: chosen.id });
+  const explicit = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'queue-explicit-site');
+  assert.equal(explicit.ok, true);
+  assert.equal(explicit.buildingId, chosen.id, 'the requested production site gets the unit despite a shorter queue elsewhere');
+  assert.equal(chosen.queue.length, chosenQueueBefore.length + 1);
+  assert.deepEqual(shorter.queue, shorterQueueBefore);
+
+  const foreignQueueBefore = structuredClone(foreignBarracks.queue);
+  const creditsAfterExplicit = game.credits.player;
+  sendSocket(host, { type: 'command', requestId: 'queue-foreign-site', command: 'queueUnit',
+    defId: 'rifle', producerId: foreignBarracks.id });
+  const foreign = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'queue-foreign-site');
+  assert.equal(foreign.ok, false, 'the authenticated host cannot route production to the guest site');
+  assert.deepEqual(foreignBarracks.queue, foreignQueueBefore);
+  assert.equal(game.credits.player, creditsAfterExplicit);
+
+  sendSocket(host, { type: 'command', requestId: 'queue-default-site', command: 'queueUnit', defId: 'rifle' });
+  const defaultRoute = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'queue-default-site');
+  assert.equal(defaultRoute.ok, true);
+  assert.equal(defaultRoute.buildingId, shorter.id, 'omitting producerId retains shortest-queue routing');
+  sendSocket(host, { type: 'leave_lobby' });
+  await nextMessage(guest, message => message.type === 'match_end');
+  host.close(); guest.close();
+});
+
 test('authenticated websocket aircraft rearm checks ownership, pad power, and ammunition', async () => {
   const a = await createProfile('Rearm Order Host'); const b = await createProfile('Rearm Order Guest');
   const host = await openSocket(a.token); const guest = await openSocket(b.token);

@@ -5654,6 +5654,38 @@ export class Renderer3D {
     for(const [id,marker] of this.orderMarkers) if(!live.has(id)) this._removeOrderMarker(id,marker);
   }
 
+  _syncProductionRally(game,time) {
+    const selected=new Set(game.selection||[]);
+    const building=(game.buildings||[]).find(item=>
+      item.owner==='player'&&item.hp>0&&item.progress>=1&&
+      ['barracks','factory','helipad'].includes(item.defId)&&selected.has(item.id)&&
+      Number.isFinite(item.rally?.x)&&Number.isFinite(item.rally?.y));
+    if(!building) {
+      if(this.productionRallyMarker)this.productionRallyMarker.group.visible=false;
+      return;
+    }
+
+    let marker=this.productionRallyMarker;
+    if(!marker) {
+      marker=this._makeOrderMarker('rally');
+      marker.group.visible=false;
+      this.productionRallyMarker=marker;
+    }
+    marker.group.visible=true;
+    const startX=building.x+building.w/2,startY=building.y+building.h/2;
+    const endX=building.rally.x,endY=building.rally.y;
+    const positions=marker.line.geometry.attributes.position;
+    for(let i=0;i<positions.count;i++) {
+      const along=i/(positions.count-1),x=startX+(endX-startX)*along,z=startY+(endY-startY)*along;
+      positions.setXYZ(i,x,this.visualHeightAt(x,z)+0.12,z);
+    }
+    positions.needsUpdate=true;
+    marker.line.computeLineDistances();
+    this._setGroundPosition(marker.ring,endX,0.15,endY);
+    this._setGroundPosition(marker.core,endX,0.16,endY);
+    marker.ring.scale.setScalar(1+0.08*Math.sin(time*3.4));
+  }
+
   _removeOrderMarker(id,marker) {
     this.orderGroup.remove(marker.group);
     marker.group.traverse(obj=>{if(obj.geometry)obj.geometry.dispose();if(obj.material)obj.material.dispose();});
@@ -6331,6 +6363,7 @@ export class Renderer3D {
     if(this.trackTimeUniform) this.trackTimeUniform.value=time;
     this._syncRangeIndicator(game,time);
     this._syncOrders(game,time);
+    this._syncProductionRally(game,time);
     this._syncFieldOrder(game,time);
     this._syncCampaignRouteMarker(game,time);
     this._syncEffects(game,time);
