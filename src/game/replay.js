@@ -6,11 +6,13 @@ import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, C
   TARGET_PRIORITY_RULES_VERSION, TARGET_PRIORITY_OPTIONS, ENGINEER_FIELD_REPAIR_RULES_VERSION,
   COMBAT_ESCORT_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
-import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, COUNTERBATTERY_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
+import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
+  CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
+  COUNTERBATTERY_RULES_VERSION, DEAD_SIGNAL_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = COMBAT_ESCORT_RULES_VERSION;
+export const SOLO_REPLAY_VERSION = DEAD_SIGNAL_RULES_VERSION;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -120,6 +122,9 @@ export function validateSoloEnvelope(envelope, replayVersion = SOLO_REPLAY_VERSI
   if (envelope.mode === 'campaign' && envelope.scenarioId === 'counterbattery' &&
       replayVersion < COUNTERBATTERY_RULES_VERSION)
     throw new TypeError(`Counterbattery requires replay version ${COUNTERBATTERY_RULES_VERSION}.`);
+  if (envelope.mode === 'campaign' && envelope.scenarioId === 'dead-signal' &&
+      replayVersion < DEAD_SIGNAL_RULES_VERSION)
+    throw new TypeError(`Dead Signal requires replay version ${DEAD_SIGNAL_RULES_VERSION}.`);
   if (envelope.mode === 'campaign' && envelope.faction !== scenarios[scenarioIndex].faction)
     throw new TypeError('Campaign faction does not match its mission.');
   if (envelope.mode === 'campaign') {

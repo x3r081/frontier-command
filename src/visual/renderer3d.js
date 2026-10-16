@@ -3,6 +3,7 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { createGroundContactBatch } from './groundContact.js';
+import { createEnvironmentTarget, environmentIntensityForQuality } from './environmentLighting.js';
 import { getCampaignFieldOrderView } from '../game/campaign.js';
 import {
   unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
@@ -268,7 +269,7 @@ function compactStaticModel(root, preserve=()=>false) {
   }
 }
 
-const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rocket','engineer','medic','flamer']);
+const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rocket','rocketVesper','engineer','medic','flamer']);
 const ARTILLERY_MODEL_KEYS = new Set(['artillery','vesperArtillery']);
 function preserveMovingModelPart(key,object) {
   const name=object.name.replace(/_/g,' ').replace(/(\d{3})$/,'.$1');
@@ -1140,6 +1141,11 @@ export class Renderer3D {
     this.renderer.shadowMap.enabled = true;
     this.renderer.shadowMap.type = THREE.PCFShadowMap;
     this.scene = new THREE.Scene();
+    this.scene.environmentIntensity = 0;
+    this.environmentTarget = null;
+    this.environmentStyle = null;
+    this.environmentRequested = false;
+    this.environmentBaseIntensity = 0;
     this.scene.background = new THREE.Color(SKY);
     this.scene.fog = new THREE.FogExp2(SKY, 0.007);
     // One camera-facing sky card adds a soft, theater-colored horizon behind
@@ -1340,16 +1346,16 @@ export class Renderer3D {
       salvageDrop:'salvage-pod.glb',
       lightTank:'striker-tank.glb', vesperLightTank:'vesper-striker-tank.glb', apc:'apc.glb',
       harvester:'harvester.glb', vesperHarvester:'vesper-harvester.glb', crystal:'crystal-cluster.glb',
-      scout:'scout.glb', scoutVesper:'vesper-scout.glb', rifle:'rifle-infantry.glb', rocket:'rocket-infantry.glb',
+      scout:'scout.glb', scoutVesper:'vesper-scout.glb', rifle:'rifle-infantry.glb', rocket:'rocket-infantry.glb', rocketVesper:'vesper-rocket-infantry.glb',
       engineer:'engineer.glb', medic:'medic.glb', flamer:'flamer.glb',
       mcv:'mcv.glb', vesperMcv:'vesper-mcv.glb', stealthTank:'stealth-tank.glb', buggy:'recon-buggy.glb', vesperBuggy:'vesper-recon-buggy.glb',
       artillery:'siege-crawler.glb', vesperArtillery:'vesper-siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='vesperArtillery'?'?rev=89':key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=key==='vesperArtillery'?'?rev=89':key==='rocketVesper'?'?rev=98':key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
-        if(['rifle','rocket'].includes(key)) gltf.scene.traverse(object=>{
+        if(['rifle','rocket','rocketVesper'].includes(key)) gltf.scene.traverse(object=>{
           if(!object.isSkinnedMesh) return;
           object.geometry.computeBoundingSphere();
           // The bind-pose bounds omit a small amount of knee and weapon travel.
@@ -1928,6 +1934,7 @@ export class Renderer3D {
   setGraphicsQuality(quality) {
     if (!Object.hasOwn(GRAPHICS_QUALITY, quality) || quality === this.quality) return false;
     this.quality = quality;
+    if(this.mapStyle) this._setTheaterEnvironment(this.mapStyle,quality);
     this.groundQualityUniform.value = quality === 'eco' ? 0 : quality === 'balanced' ? 1 : 2;
     this.vegetationWindMotionUniform.value=quality==='eco'||(this.reducedMotionQuery?.matches??false)?0:1;
     const trackCapacity=GRAPHICS_QUALITY[quality].trackCapacity;
@@ -1983,6 +1990,21 @@ export class Renderer3D {
     }
     this.resize(this.width, this.height, window.devicePixelRatio || 1);
     return true;
+  }
+
+  _setTheaterEnvironment(style, quality = this.quality) {
+    const wantsEnvironment = quality !== 'eco';
+    if(this.environmentStyle !== style || wantsEnvironment !== this.environmentRequested) {
+      this.scene.environment = null;
+      this.environmentTarget?.dispose();
+      this.environmentTarget = null;
+      this.environmentStyle = style;
+      this.environmentRequested = wantsEnvironment;
+      if(wantsEnvironment) this.environmentTarget = createEnvironmentTarget(this.renderer,style);
+    }
+    this.environmentBaseIntensity = environmentIntensityForQuality(quality);
+    this.scene.environment = this.environmentTarget?.texture || null;
+    this.scene.environmentIntensity = this.environmentBaseIntensity;
   }
 
   setView(centerX, centerY, zoom = 1) {
@@ -2151,6 +2173,7 @@ export class Renderer3D {
     this.terrainGame = game;
     this._buildVisualHeightField(game);
     this.mapStyle = MAP_STYLES[game.mapId] || MAP_STYLES['shard-valley'];
+    this._setTheaterEnvironment(this.mapStyle);
     this.skyTexture?.dispose();
     this.skyTexture=this._makeSkyTexture(this.mapStyle);
     this.skyBackdrop.material.map=this.skyTexture;
@@ -3965,6 +3988,7 @@ export class Renderer3D {
       radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
     const modelKey=o.defId==='guardian'&&o.faction!=='aegis'?'none':
       o.defId==='scout'&&o.faction==='vesper'?'scoutVesper':
+      o.defId==='rocket'&&o.faction==='vesper'?'rocketVesper':
       o.defId==='buggy'&&o.faction==='vesper'?'vesperBuggy':
       o.defId==='lightTank'&&o.faction==='vesper'?'vesperLightTank':
       o.defId==='artillery'&&o.faction==='vesper'?'vesperArtillery':
@@ -3972,10 +3996,10 @@ export class Renderer3D {
       o.defId==='harvester'&&o.faction==='vesper'?'vesperHarvester':(vesperStructure||o.defId);
     const source=this.assetModels.get(modelKey);
     if(!source) return null;
-    const visual=['rifle','rocket'].includes(modelKey)
+    const visual=['rifle','rocket','rocketVesper'].includes(modelKey)
       ? SkeletonUtils.clone(source)
       : source.clone(true);
-    if(['rifle','rocket'].includes(modelKey)) shareClonedSkeletons(visual);
+    if(['rifle','rocket','rocketVesper'].includes(modelKey)) shareClonedSkeletons(visual);
     // Blender structures use a roughly three-tile foundation; fit each one to
     // its actual simulation footprint so small defenses do not mask neighbors.
     if('w' in o){
@@ -5701,7 +5725,7 @@ export class Renderer3D {
       const building='w' in o;
       live.add(o.id);
       let state=this.entities.get(o.id);
-      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',lightTank:'vesperLightTank',artillery:'vesperArtillery',mcv:'vesperMcv',
+      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',lightTank:'vesperLightTank',rocket:'rocketVesper',artillery:'vesperArtillery',mcv:'vesperMcv',
         refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
         radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
       const assetVersion=this.assetVersions.get(assetKey||o.defId)||0;
@@ -7439,6 +7463,7 @@ export class Renderer3D {
     const qualityScale=this.quality==='ultra'?1:this.quality==='balanced'?0.65:0;
     const stormFlash=storm?.phase==='surge'?qualityScale*Math.max(flashEnvelope(0.18,0.12),flashEnvelope(0.43,0.17)*0.62):0;
     const mood=baseMood+stormFlash*0.14;
+    this.scene.environmentIntensity=this.environmentBaseIntensity*Math.max(0,1-mood*0.38-stormFlash*0.10);
     this.scene.background.copy(this.clearSky).lerp(this.stormSky,mood);
     this.scene.fog.color.copy(this.clearSky).lerp(this.stormSky,mood);
     this.sun.color.copy(this.sunBaseColor).lerp(this.stormLight,mood*0.75+stormFlash*0.2);
@@ -7722,6 +7747,9 @@ export class Renderer3D {
     this._disposeGroup(this.entityGroup);
     this._disposeGroup(this.orderGroup);
     this._disposeGroup(this.effectGroup);
+    this.scene.environment = null;
+    this.environmentTarget?.dispose();
+    this.environmentTarget = null;
     this.collapseVisuals.clear();
     this.scene.remove(this.rangeIndicator);
     this.rangeIndicator.geometry.dispose();

@@ -273,11 +273,12 @@ test('route module exposes catalog-independent display order and branch choices 
   assert.deepEqual(campaignNextChoices('ghost-channel'), ['red-ledger']);
   assert.deepEqual(campaignNextChoices('iron-current'), ['red-ledger']);
   assert.deepEqual(campaignNextChoices('unknown'), []);
-  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-2), 'iron-reclaimed');
+  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-2), 'counterbattery');
   assert.deepEqual(campaignNextChoices('after-the-dawn'), ['iron-reclaimed']);
   assert.deepEqual(campaignNextChoices('iron-reclaimed'), ['counterbattery']);
-  assert.deepEqual(campaignNextChoices('counterbattery'), []);
-  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-1), 'counterbattery');
+  assert.deepEqual(campaignNextChoices('counterbattery'), ['dead-signal']);
+  assert.deepEqual(campaignNextChoices('dead-signal'), []);
+  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-1), 'dead-signal');
 });
 
 test('Iron Reclaimed unlock requires the same-difficulty After the Dawn record', () => {
@@ -295,6 +296,9 @@ test('Counterbattery unlock and rewards follow only the same-difficulty Iron Rec
   assert.equal(campaignMissionUnlocked(local, 'normal', 16), false,
     'even an oversized legacy progress counter cannot unlock the new bonus mission');
   assert.equal(campaignMissionUnlocked(local, 'hard', 16), false);
+  assert.equal(campaignMissionUnlocked(local, 'normal', 17), false,
+    'legacy progress cannot unlock Dead Signal without a Counterbattery record');
+  assert.equal(campaignMissionUnlocked(local, 'hard', 17), false);
 
   const ironOrder = CAMPAIGN_FIELD_ORDERS[15][0].id;
   const survivor = { defId: 'guardian', faction: 'aegis', veterancy: 1, promotion: null };
@@ -315,6 +319,9 @@ test('Counterbattery unlock and rewards follow only the same-difficulty Iron Rec
   assert.equal(saveCampaignResult(local, 'normal', 16, 'counterbattery', {
     mission: 'counterbattery', stars: 3,
   }), true);
+  assert.equal(campaignMissionUnlocked(local, 'normal', 17), true);
+  assert.equal(campaignMissionUnlocked(local, 'hard', 17), false,
+    'Dead Signal requires Counterbattery completion at the requested difficulty');
   assert.equal(campaignProgressAtDifficulty(local, 'normal'), 15,
     'winning Counterbattery also leaves ordinary campaign progression unchanged');
 });

@@ -12,7 +12,8 @@ import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
-  COUNTERBATTERY_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
+  COUNTERBATTERY_RULES_VERSION, DEAD_SIGNAL_RULES_VERSION,
+  getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
 import { validateCampaignVeteran, campaignVeteranSourceIds } from '../src/game/campaignVeteran.js';
 import { validateSoloEnvelope, validateSoloReplay, MAX_SOLO_TICKS, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
@@ -105,7 +106,8 @@ const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
     : score.mode === 'campaign' && score.scoreVersion >=
         Math.max(CAMPAIGN_SCORE_FLOOR,
           score.scenarioId === 'iron-reclaimed' ? IRON_RECLAIMED_RULES_VERSION : 0,
-          score.scenarioId === 'counterbattery' ? COUNTERBATTERY_RULES_VERSION : 0) &&
+          score.scenarioId === 'counterbattery' ? COUNTERBATTERY_RULES_VERSION : 0,
+          score.scenarioId === 'dead-signal' ? DEAD_SIGNAL_RULES_VERSION : 0) &&
         score.scoreVersion <= SCORE_VERSION);
 const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;

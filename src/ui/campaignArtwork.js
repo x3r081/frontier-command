@@ -43,7 +43,7 @@ const MISSION_SCENES = Object.freeze({
   'three-points-of-light': 'relay', 'dawn-of-the-free': 'relay', 'last-ember': 'relay',
   'ashes-in-transit': 'extraction',
   'last-light': 'airlift', 'after-the-dawn': 'airlift',
-  'iron-reclaimed': 'recovery', counterbattery: 'counterbattery',
+  'iron-reclaimed': 'recovery', counterbattery: 'counterbattery', 'dead-signal': 'relay',
 });
 
 export function campaignArtworkForMission(missionId) {

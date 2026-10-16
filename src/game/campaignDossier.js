@@ -26,7 +26,7 @@ export function campaignDossierView(storage, dossier, profileId, difficulty) {
     const verifiedStars = completed.has(definition.id) && Number.isInteger(rawVerifiedStars)
       ? Math.max(1, Math.min(3, rawVerifiedStars)) : completed.has(definition.id) ? 1 : 0;
     const localCompleted = localStars > 0 ||
-      !['ghost-channel', 'iron-current', 'iron-reclaimed'].includes(definition.id) && index < localProgress;
+      !['ghost-channel', 'iron-current', 'iron-reclaimed', 'counterbattery', 'dead-signal'].includes(definition.id) && index < localProgress;
     const verifiedCompleted = completed.has(definition.id);
     return {
       id: definition.id,

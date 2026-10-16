@@ -8,6 +8,7 @@ const IRON_CURRENT_RELAY_ASSAULT_RULES_VERSION = 55;
 const DAWN_FREE_SHIELD_REFORM_RULES_VERSION = 60;
 export const IRON_RECLAIMED_RULES_VERSION = 73;
 export const COUNTERBATTERY_RULES_VERSION = 84;
+export const DEAD_SIGNAL_RULES_VERSION = 90;
 const DAWN_FREE_RELAY_COUNTERATTACK_DELAY = 9;
 const DAWN_FREE_SHIELD_WARNING_DURATION = 7;
 
@@ -131,6 +132,12 @@ export const CAMPAIGN_MISSIONS = Object.freeze([
     objective: 'Destroy both Vesper Siege Crawlers within 210 seconds. The Command Yard must survive.',
     mechanic: 'COUNTERBATTERY ASSAULT',
   }),
+  Object.freeze({
+    id: 'dead-signal', title: 'Bonus Operation: Dead Signal', faction: 'vesper',
+    briefing: 'Aegis has repurposed a Stormcall relay to erase the last Vesper withdrawal team. Protect the Striker, use the friendly shelter relay when the ion front arrives, then take the source relay. Contesting the source before the pulse cancels the call; otherwise survive the strike and seize the relay once the storm passes.',
+    objective: 'Keep the starting Striker alive. Cancel the Aegis Stormcall by contesting its relay before the pulse, or shelter through the ion strike. After the ion front passes, secure the source relay uncontested for 8 seconds before the deadline.',
+    mechanic: 'STORMCALL INTERDICTION',
+  }),
 ]);
 
 // The public catalog deliberately contains only display and identity fields.
@@ -153,6 +160,7 @@ const FIELD_ORDER_RULES = Object.freeze([
   [{ type: 'raid', target: 'lightTank' }, { type: 'relay', relay: 1 }],
   [{ type: 'raid', target: 'buggy' }, { type: 'raid', target: 'rocket' }],
   [{ type: 'raid', target: 'harvester' }, { type: 'relay', relay: 2 }],
+  [{ type: 'stormcallCancel' }, { type: 'engineerKitSurvives' }],
 ]);
 
 const FIELD_ORDER_TITLES = Object.freeze([
@@ -173,6 +181,7 @@ const FIELD_ORDER_TITLES = Object.freeze([
   ['Break the Forward Tank', 'Secure the Midpass Signal'],
   ['Clear the Route Patrol', 'Silence the Pass Rocket Team'],
   ['Cut the Siege Supply', 'Claim the East Relay'],
+  ['Contest the Stormcall Source', 'Preserve the Engineer’s Field Kit'],
 ]);
 
 const FIELD_TARGET_NAMES = Object.freeze({ buggy: 'enemy buggy', harvester: 'enemy harvester',
@@ -188,8 +197,12 @@ export const CAMPAIGN_FIELD_ORDERS = Object.freeze(CAMPAIGN_MISSIONS.map((missio
         : `Order an attack on the marked ${FIELD_TARGET_NAMES[rule.target]}, then destroy it.`
       : rule.type === 'waypoint'
         ? 'Fly a surviving dropship to the southeast waypoint on the east bank.'
-        : rule.type === 'relaySweep'
+      : rule.type === 'relaySweep'
           ? 'Capture and hold all three Resonance Relays for 10 seconds.'
+          : rule.type === 'stormcallCancel'
+            ? 'Contest the marked source relay before the Aegis Stormcall pulse resolves.'
+            : rule.type === 'engineerKitSurvives'
+              ? 'Keep the Engineer alive with at least one field repair kit through mission completion.'
           : `Capture Resonance Relay ${rule.relay + 1}.`,
     rewardText: index === 5 || index === 12 || index === 13 || index === 15
       ? 'Field refit: +25% maximum health and restore 35% health to surviving units.'
@@ -265,10 +278,21 @@ export function getCampaignFieldOrderView(game) {
   else if (rule.type === 'waypoint') progressText = 'Dropship has not reached the southeast waypoint';
   else if (rule.type === 'relaySweep') progressText =
     `All relays held: ${Math.floor(state.fieldOrderHoldElapsed || 0)} / ${rule.holdDuration} seconds`;
+  else if (rule.type === 'stormcallCancel') progressText =
+    ['cancelled', 'preempted'].includes(state.callStatus) ? 'Stormcall canceled before the pulse' :
+      state.callStatus === 'fired' ? 'The Stormcall pulse already resolved' : 'Contest the source relay before the pulse';
+  else if (rule.type === 'engineerKitSurvives') {
+    const engineer = game.getEntity(state.engineerId);
+    progressText = live(engineer)
+      ? `Engineer alive · ${Math.max(0, engineer.fieldRepairKits || 0)} / 2 kits remaining`
+      : 'Engineer lost';
+  }
   else progressText = `Relay ${rule.relay + 1}: ${game.relays?.[rule.relay]?.owner === 'player' ? 'secured' : 'not secured'}`;
   const entity = rule.type === 'raid' ? game.getEntity(state.fieldOrderTargetId)
     : rule.type === 'waypoint' ? rule
-      : rule.type === 'relaySweep' ? null : game.relays?.[rule.relay];
+      : rule.type === 'relaySweep' ? null
+        : rule.type === 'stormcallCancel' ? game.relays?.find(relay => relay.id === state.sourceRelayId)
+          : rule.type === 'engineerKitSurvives' ? game.getEntity(state.engineerId) : game.relays?.[rule.relay];
   const target = Number.isFinite(entity?.x) && Number.isFinite(entity?.y)
     ? { x: entity.x, y: entity.y } : null;
   return { ...selected.spec, status, progressText, target };
@@ -337,6 +361,45 @@ export function getCounterbatteryView(game) {
     total: ids.length,
     yardAlive: livingBuildings(game, 'player', 'command').length > 0,
     targets,
+  };
+}
+
+/** Public objective/timing view for the fixed Stormcall source and shelter. */
+export function getDeadSignalView(game) {
+  if (game?.mode !== 'campaign' || game.campaignMission !== 17) return null;
+  const state = game.campaignState || {};
+  const source = game.relays?.find(relay => relay.id === state.sourceRelayId);
+  const shelter = game.relays?.find(relay => relay.id === state.shelterRelayId);
+  const striker = game.getEntity(state.strikerId);
+  let secondsUntil = null;
+  if (state.callStatus === 'warning') {
+    secondsUntil = Math.max(0, 10 - Math.max(0, Number(game.storm?.phaseTime) || 0));
+  } else if (state.callStatus === 'armed') {
+    const lure = game.storm?.lure;
+    const distance = lure ? Math.hypot(game.storm.x - lure.x, game.storm.y - lure.y) : 0;
+    const warningLeft = game.storm?.phase === 'warning'
+      ? Math.max(0, 10 - Math.max(0, Number(game.storm.phaseTime) || 0)) : 0;
+    const warningTravel = Math.max(0, distance - 0.6 - warningLeft * 1.1);
+    secondsUntil = lure?.pulseResolved ? 0 : lure
+      ? warningLeft + warningTravel / 0.65 : null;
+  }
+  return {
+    id: 'dead-signal', phase: state.phase || 'approach-source', phaseLabel: state.phaseLabel || 'Approach the source relay',
+    secondsLeft: Math.max(0, (Number(state.deadline) || 210) - (Number(state.elapsed) || 0)),
+    call: { status: ['warning', 'armed', 'cancelled', 'fired', 'preempted'].includes(state.callStatus)
+      ? state.callStatus : 'warning', secondsUntil },
+    sourceRelay: source ? { id: source.id, x: source.x, y: source.y, owner: source.owner,
+      contested: !!source.contested } : null,
+    shelterRelay: shelter ? { id: shelter.id, x: shelter.x, y: shelter.y, owner: shelter.owner,
+      contested: !!shelter.contested, protocol: shelter.protocol || 'shelter' } : null,
+    holdElapsed: Math.max(0, Number(state.holdElapsed) || 0), holdDuration: 8,
+    striker: { alive: live(striker), hpPercent: live(striker) && striker.maxHp > 0
+      ? Math.max(0, Math.min(100, Math.round(striker.hp / striker.maxHp * 100))) : 0 },
+    markers: {
+      source: source ? { x: source.x, y: source.y, radius: 2.8 } : null,
+      shelter: shelter ? { x: shelter.x, y: shelter.y, radius: 2.3 } : null,
+      callTarget: state.callTarget ? { ...state.callTarget } : null,
+    },
   };
 }
 
@@ -530,7 +593,7 @@ const SCENARIOS = [
     walls: [['rock', 28, 0, 30, 47, [[15, 22], [32, 39]]],
       ['water', 34, 11, 39, 13], ['water', 34, 39, 40, 41]],
     fields: [[17, 25, 3], [42, 18, 3], [43, 34, 3]],
-    player: { buildings: [['power', 4, 34], ['serviceBay', 8, 34]], units: [
+    player: { buildings: [['power', 4, 34], ['command', 5, 34], ['serviceBay', 9, 34]], units: [
       ['engineer', 12.5, 34.5], ['rifle', 13.5, 31.5], ['rifle', 14.5, 37.5], ['scout', 17.5, 33.5],
     ] },
     enemy: { buildings: [], units: [
@@ -553,12 +616,26 @@ const SCENARIOS = [
       units: [['harvester', 55.5, 18.5, 'harvest'], ['artillery', 46.5, 18.5], ['artillery', 47, 35.5],
         ['rocket', 42.5, 15.5], ['rifle', 42.5, 21.5], ['rocket', 43.5, 32.5], ['rifle', 43.5, 38.5]] },
   },
+  {
+    // A fixed postwar force must contest the Stormcall source or shelter through
+    // its pulse before it can hold the relay and extract the surviving Striker.
+    walls: [['rock', 19, 4, 20, 19], ['water', 39, 31, 45, 34]],
+    fields: [[11, 40, 3], [35, 35, 3], [49, 17, 3], [55, 8, 3]],
+    player: { buildings: [['power', 4, 34], ['serviceBay', 8, 34]], units: [
+      ['engineer', 15.5, 36.5], ['rifle', 18.5, 34.5], ['rocket', 17.5, 31.5],
+      ['lightTank', 18.5, 29.5], ['lightTank', 15.5, 27.5], ['scout', 22.5, 29.5],
+    ] },
+    enemy: { buildings: [['command', 52, 7], ['power', 58, 9], ['refinery', 54, 13],
+      ['barracks', 48, 13], ['factory', 48, 6]], units: [
+      ['rifle', 35.5, 21.5], ['rocket', 36.5, 23.5], ['buggy', 39.5, 27.5],
+    ] },
+  },
 ];
 
 // A completed operation always earns its campaign star. The second recognizes
 // a surviving command yard; the third rewards finishing inside the operation's
 // par time. Keeping the result on Game makes it travel with ordinary saves.
-const MEDAL_PAR_SECONDS = Object.freeze([300, 360, 300, 330, 300, 300, 420, 110, 170, 210, 150, 360, 160, 145, 190, 240, 165]);
+const MEDAL_PAR_SECONDS = Object.freeze([300, 360, 300, 330, 300, 300, 420, 110, 170, 210, 150, 360, 160, 145, 190, 240, 165, 75]);
 
 export function getCampaignResult(game, index = game?.campaignMission) {
   if (!game || !Number.isInteger(index) || index < 0 || index >= CAMPAIGN_MISSIONS.length ||
@@ -568,6 +645,8 @@ export function getCampaignResult(game, index = game?.campaignMission) {
     : index === 15
       ? live(game.getEntity(game.campaignState?.engineerId)) &&
         live(game.getEntity(game.campaignState?.recommissionedVehicleId))
+    : index === 17
+      ? live(game.getEntity(game.campaignState?.strikerId))
     : index === 5
     ? live(game.getEntity(game.campaignState?.escortId))
     : index === 10
@@ -973,6 +1052,49 @@ function prepareMission(game, index, replayVersion = null) {
     return;
   }
 
+  if (index === 17) {
+    state.deadSignalRulesVersion = DEAD_SIGNAL_RULES_VERSION;
+    state.deadline = 210;
+    state.phase = 'stormcall-armed';
+    state.phaseLabel = 'Stormcall armed';
+    state.callStatus = 'armed';
+    state.callTarget = { x: 27.5, y: 25.5 };
+    state.callThreatEnded = false;
+    state.holdElapsed = 0;
+    state.sourceRelayId = 'relay2';
+    state.shelterRelayId = 'relay1';
+    state.strikerId = livingUnits(game, 'player', 'lightTank')[0]?.id ?? null;
+    state.engineerId = livingUnits(game, 'player', 'engineer')[0]?.id ?? null;
+    const source = game.relays.find(relay => relay.id === state.sourceRelayId);
+    const shelter = game.relays.find(relay => relay.id === state.shelterRelayId);
+    if (!source || !shelter) throw new Error('Dead Signal requires the authored source and shelter relays.');
+    const relocateRelay = (relay, x, y) => {
+      const oldTile = game.terrain[Math.floor(relay.y)]?.[Math.floor(relay.x)];
+      if (oldTile) oldTile.buildable = true;
+      relay.x = x; relay.y = y;
+      const tile = game.terrain[Math.floor(y)]?.[Math.floor(x)];
+      if (!tile?.walkable) throw new Error('Dead Signal relay site must remain reachable.');
+      tile.buildable = false;
+    };
+    relocateRelay(source, 30.5, 25.5);
+    // Relay control progress is signed by owner: player at +1, enemy at -1.
+    // Starting at +1 made the enemy-owned objective impossible to capture.
+    source.owner = 'enemy'; source.progress = -1; source.contested = false; source.protocol = 'shelter';
+    shelter.owner = 'player'; shelter.progress = 1; shelter.contested = false; shelter.protocol = 'shelter';
+    const striker = game.getEntity(state.strikerId);
+    if (striker) striker.hp = Math.round(striker.maxHp * 0.72);
+    game.storm.x = 24.5; game.storm.y = 22.5; game.storm.radius = 5.5;
+    game.storm.phase = 'warning'; game.storm.phaseTime = 0; game.storm.cycle = 0;
+    game.storm.waypoint = 0; game.storm.lure = null;
+    game.commandEnergy.player = 30; game.commandEnergy.enemy = 75;
+    game.commandCooldowns.enemy.stormcall = 0;
+    game.credits.player = 0; game.credits.enemy = 0;
+    const call = game._useCommandAbility('enemy', 'stormcall', state.callTarget.x, state.callTarget.y);
+    if (!call.ok) throw new Error(`Dead Signal authored Stormcall is not legal: ${call.reason}`);
+    game._refreshPower(); game._updateFog();
+    return;
+  }
+
   game.credits.player = 5200;
   state.targetId = livingBuildings(game, 'enemy', 'command')[0]?.id ?? null;
   game._updateFog();
@@ -1033,6 +1155,9 @@ export function createCampaignGame(index = 0, difficulty = 'normal', seed = 8021
   }
   if (index === 16 && replayVersion !== null && replayVersion < COUNTERBATTERY_RULES_VERSION) {
     throw new RangeError(`Counterbattery requires replay rules version ${COUNTERBATTERY_RULES_VERSION}.`);
+  }
+  if (index === 17 && replayVersion !== null && replayVersion < DEAD_SIGNAL_RULES_VERSION) {
+    throw new RangeError(`Dead Signal requires replay rules version ${DEAD_SIGNAL_RULES_VERSION}.`);
   }
   if (!CAMPAIGN_DOCTRINES.some(doctrine => doctrine.id === doctrineId)) {
     throw new RangeError(`Unknown campaign doctrine: ${doctrineId}`);
@@ -1171,6 +1296,11 @@ function updateFieldOrder(game, index, dt) {
   } else if (rule.type === 'waypoint') {
     achieved = game.units.some(unit => unit.owner === 'player' && unit.defId === 'dropship' && live(unit) &&
       Math.hypot(unit.x - rule.x, unit.y - rule.y) <= rule.radius);
+  } else if (rule.type === 'stormcallCancel') {
+    achieved = ['cancelled', 'preempted'].includes(state.callStatus);
+  } else if (rule.type === 'engineerKitSurvives') {
+    const engineer = game.getEntity(state.engineerId);
+    achieved = state.missionObjectiveComplete === true && live(engineer) && engineer.fieldRepairKits >= 1;
   } else {
     const relay = game.relays[rule.relay];
     achieved = relay?.owner === 'player';
@@ -1497,6 +1627,10 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
     ? state.counterbatteryRulesVersion === COUNTERBATTERY_RULES_VERSION
     : replayVersion >= COUNTERBATTERY_RULES_VERSION);
   if (index === 16 && !counterbatteryRulesActive) return false;
+  const deadSignalRulesActive = index === 17 && (replayVersion === null
+    ? state.deadSignalRulesVersion === DEAD_SIGNAL_RULES_VERSION
+    : replayVersion >= DEAD_SIGNAL_RULES_VERSION);
+  if (index === 17 && !deadSignalRulesActive) return false;
   const ironReclaimedRulesActive = index === 15 && (replayVersion === null
     ? state.ironReclaimedRulesVersion === IRON_RECLAIMED_RULES_VERSION
     : replayVersion >= IRON_RECLAIMED_RULES_VERSION);
@@ -2095,6 +2229,45 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
       state.crawlerIds.every(id => !live(game.getEntity(id)));
     if (!complete && state.elapsed + 1e-9 >= (state.deadline || 210))
       return failMission(game, 'The Siege Crawlers completed their barrage before both were destroyed.');
+  } else if (index === 17) {
+    const striker = game.getEntity(state.strikerId);
+    const source = game.relays.find(relay => relay.id === state.sourceRelayId);
+    if (!live(striker)) return failMission(game, 'The starting Striker was lost before the source relay was secured.');
+    if (!source) return failMission(game, 'The Stormcall source relay was lost from the mission record.');
+    if (!game.units.some(unit => unit.owner === 'player' && live(unit) && game.unitDefs[unit.defId]?.weapon))
+      return failMission(game, 'The withdrawal force was wiped out before it could secure the source relay.');
+
+    if (state.callStatus === 'armed') {
+      const cancellation = game.events.findLast?.(event => event.type === 'stormcallCanceled' &&
+        event.owner === 'enemy' && event.relayId === state.sourceRelayId);
+      const pulse = game.events.findLast?.(event => event.type === 'stormcallPulse' &&
+        event.owner === 'enemy' && event.relayId === state.sourceRelayId);
+      if (cancellation) state.callStatus = 'cancelled';
+      else if (pulse || game.storm.lure?.relayId === state.sourceRelayId && game.storm.lure.pulseResolved)
+        state.callStatus = 'fired';
+      else if (source.owner !== 'enemy' || source.contested) state.callStatus = 'preempted';
+    }
+    state.callThreatEnded = state.callThreatEnded ||
+      (['cancelled', 'fired', 'preempted'].includes(state.callStatus) && game.storm.phase === 'recovery');
+    if (state.callThreatEnded) {
+      state.phase = 'secure-source';
+      state.phaseLabel = 'Secure the source relay';
+    } else if (state.callStatus === 'cancelled' || state.callStatus === 'preempted' || state.callStatus === 'fired') {
+      state.phase = 'weather-passing';
+      state.phaseLabel = 'Weather passing';
+    } else if (state.callStatus === 'armed') {
+      state.phase = 'stormcall-armed';
+      state.phaseLabel = 'Stormcall armed';
+    }
+    state.holdElapsed = source.owner === 'player' && !source.contested && state.callThreatEnded
+      ? (state.holdElapsed || 0) + (Number.isFinite(dt) && dt > 0 ? Math.min(dt, 10) : 0) : 0;
+    if (state.holdElapsed > 0) {
+      state.phase = 'hold-source';
+      state.phaseLabel = 'Hold the source relay';
+    }
+    complete = state.holdElapsed + 1e-9 >= 8 && live(striker);
+    if (!complete && state.elapsed + 1e-9 >= (state.deadline || 210))
+      return failMission(game, 'The source relay was not secured before the withdrawal window closed.');
   }
 
   // Campaign objectives differ from total elimination. Suppress the engine's
@@ -2105,6 +2278,10 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
   }
   if (!complete) return false;
 
+  if (index === 17) {
+    state.missionObjectiveComplete = true;
+    updateFieldOrder(game, index, 0);
+  }
   const finalFieldOrder = selectedFieldOrder(game, index);
   if (finalFieldOrder && state.fieldOrderStatus === 'active') state.fieldOrderStatus = 'failed';
   game.campaignComplete = true;

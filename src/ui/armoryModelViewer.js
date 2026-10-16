@@ -1,7 +1,7 @@
 const MODEL_CATALOG = Object.freeze({
   scout: { aegis: 'scout.glb', vesper: 'vesper-scout.glb' },
   rifle: { all: 'rifle-infantry.glb?rev=76' },
-  rocket: { all: 'rocket-infantry.glb?rev=76' },
+  rocket: { aegis: 'rocket-infantry.glb?rev=76', vesper: 'vesper-rocket-infantry.glb?rev=98' },
   engineer: { all: 'engineer.glb?rev=1' },
   harvester: { aegis: 'harvester.glb', vesper: 'vesper-harvester.glb' },
   mcv: { aegis: 'mcv.glb?rev=85', vesper: 'vesper-mcv.glb?rev=85' },
@@ -80,6 +80,7 @@ export function mountArmoryModelViewer(container, {
   let pointer = null;
   let visible = true;
   let THREERef = null;
+  let environmentTarget = null;
   let fitRadius = 1.6;
   let modelCenterY = 0.72;
 
@@ -109,6 +110,9 @@ export function mountArmoryModelViewer(container, {
   const fallback = reason => {
     if (disposed) return;
     cancelRender();
+    if (scene) scene.environment = null;
+    environmentTarget?.dispose();
+    environmentTarget = null;
     resizeObserver?.disconnect();
     resizeObserver = null;
     if (renderer) {
@@ -162,6 +166,9 @@ export function mountArmoryModelViewer(container, {
     stage.removeEventListener('pointercancel', onPointerEnd);
     controls.removeEventListener('click', onControlClick);
     if (renderer) {
+      if (scene) scene.environment = null;
+      environmentTarget?.dispose();
+      environmentTarget = null;
       renderer.dispose();
       renderer.renderLists?.dispose();
       renderer.forceContextLoss?.();
@@ -224,8 +231,12 @@ export function mountArmoryModelViewer(container, {
     return cleanup;
   }
 
-  Promise.all([import('three'), import('three/addons/loaders/GLTFLoader.js')])
-    .then(async ([THREE, loaderModule]) => {
+  Promise.all([
+    import('three'),
+    import('three/addons/loaders/GLTFLoader.js'),
+    import('../visual/environmentLighting.js'),
+  ])
+    .then(async ([THREE, loaderModule, environmentLighting]) => {
       if (disposed) return;
       THREERef = THREE;
       const loader = new loaderModule.GLTFLoader();
@@ -318,6 +329,9 @@ export function mountArmoryModelViewer(container, {
       renderer.toneMappingExposure = 1.15;
       renderer.shadowMap.enabled = true;
       renderer.shadowMap.type = THREE.PCFShadowMap;
+      environmentTarget = environmentLighting.createEnvironmentTarget(renderer,environmentLighting.DEFAULT_ENVIRONMENT_STYLE);
+      scene.environment = environmentTarget?.texture || null;
+      scene.environmentIntensity = environmentLighting.environmentIntensityForQuality('ultra');
       renderer.domElement.className = 'armory-model-canvas';
       renderer.domElement.setAttribute('role', 'img');
       renderer.domElement.setAttribute('aria-label', `${name} three-dimensional model preview. Drag to rotate; use the model controls to rotate or zoom.`);

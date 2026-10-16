@@ -17,7 +17,7 @@ import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESER
   TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, COUNTERBATTERY_RULES_VERSION,
-  createCampaignGame, updateCampaign } from '../src/game/campaign.js';
+  DEAD_SIGNAL_RULES_VERSION, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
 import { deriveCampaignVeteran } from '../src/game/campaignVeteran.js';
 import { createSoloPlayback, createSoloRecorder, validateSoloEnvelope, validateSoloReplay,
   SOLO_REPLAY_VERSION } from '../src/game/replay.js';
@@ -487,7 +487,7 @@ test('leaderboard validates filters and ranks only compatible verified scores', 
   assert.equal(history[1].score, 7410);
 });
 
-test('current combat escort rules advance every solo floor and ranked season', async () => {
+test('current Dead Signal replay version preserves v89 solo floors and ranked season', async () => {
   const profile = await createProfile('Assembly Floor');
   const base = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis',
     seconds: 42, kills: 2, completedAt: 900, verified: true };
@@ -500,6 +500,8 @@ test('current combat escort rules advance every solo floor and ranked season', a
       scoreVersion: ENGINEER_FIELD_REPAIR_RULES_VERSION },
     { ...base, id: `assembly-campaign-v${ENGINEER_ESCORT_RULES_VERSION}`, mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: ENGINEER_ESCORT_RULES_VERSION },
+    { ...base, id: `assembly-campaign-v${COMBAT_ESCORT_RULES_VERSION}`, mode: 'campaign', scenarioId: 'first-harvest',
+      scoreVersion: COMBAT_ESCORT_RULES_VERSION },
     { ...base, id: `assembly-campaign-v${SOLO_REPLAY_VERSION}`, mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: SOLO_REPLAY_VERSION },
     ...['easy', 'normal', 'hard'].flatMap(difficulty => [
@@ -522,26 +524,28 @@ test('current combat escort rules advance every solo floor and ranked season', a
   try {
     const campaign = await api('/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token);
     assert.deepEqual((await campaign.json()).entries.map(entry => entry.id).sort(),
-      [`assembly-campaign-v${SOLO_REPLAY_VERSION}`],
-      'campaign comparison begins at the current combat escort rules');
+      [`assembly-campaign-v${COMBAT_ESCORT_RULES_VERSION}`, `assembly-campaign-v${SOLO_REPLAY_VERSION}`],
+      'campaign retains its v89 floor while accepting current rules');
     for (const difficulty of ['easy', 'normal', 'hard']) {
       const response = await api(`/api/leaderboard?mode=skirmish&difficulty=${difficulty}&scenarioId=shard-valley`, profile.token);
-      const comparable = [`assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION}`];
+      const comparable = [`assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION - 1}`,
+        `assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION}`];
       assert.deepEqual((await response.json()).entries.map(entry => entry.id).sort(), comparable.sort(),
         `${difficulty} uses its rules-specific comparison floor`);
     }
     const multiplayerRating = await api('/api/multiplayer/rating', profile.token);
     assert.equal((await multiplayerRating.json()).season, COMBAT_ESCORT_RULES_VERSION,
-      'combat escort advances ranked play');
+      'the mission-specific floor does not change ranked play');
     assert.ok(SOLO_REPLAY_VERSION >= WRECK_RECOMMISSION_RULES_VERSION,
       'the current replay version includes the global solo comparison floor');
     assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
     assert.equal(COUNTERBATTERY_RULES_VERSION, 84);
-    assert.equal(SOLO_REPLAY_VERSION, COMBAT_ESCORT_RULES_VERSION);
+    assert.equal(SOLO_REPLAY_VERSION, DEAD_SIGNAL_RULES_VERSION);
     assert.equal(AI_ROCKET_PRIORITY_RULES_VERSION, 86);
     assert.equal(ENGINEER_ESCORT_RULES_VERSION, 87);
     assert.equal(AI_FIELD_SUPPORT_RULES_VERSION, 88);
     assert.equal(COMBAT_ESCORT_RULES_VERSION, 89);
+    assert.equal(DEAD_SIGNAL_RULES_VERSION, 90);
     assert.equal(validateSoloReplay({ mode: 'campaign', difficulty: 'normal', faction: 'aegis',
       seed: 1, scenarioId: 'first-harvest' }, [], 0, AI_ROCKET_PRIORITY_RULES_VERSION), true,
     'archived v86 campaign replays remain valid after the Engineer escort update');
@@ -1172,7 +1176,7 @@ test('v80 AI bunker history remains stored below the shared v89 comparison floor
   assert.equal(AI_FIELD_BUNKER_RULES_VERSION, 80);
   assert.equal(GARRISON_RULES_VERSION, 79);
   assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
-  assert.equal(SOLO_REPLAY_VERSION, COMBAT_ESCORT_RULES_VERSION);
+  assert.equal(SOLO_REPLAY_VERSION, DEAD_SIGNAL_RULES_VERSION);
   const profile = await createProfile('Bunker AI Ranking');
   const common = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis', seconds: 100,
     kills: 4, completedAt: 100, verified: true, result: 'victory' };
@@ -1264,7 +1268,7 @@ test('Iron Reclaimed records a server-verified public-command victory on its own
 });
 
 test('Counterbattery tickets retain archived unlocks under the current campaign floor', async () => {
-  assert.equal(SOLO_REPLAY_VERSION, COMBAT_ESCORT_RULES_VERSION);
+  assert.equal(SOLO_REPLAY_VERSION, DEAD_SIGNAL_RULES_VERSION);
   assert.ok(SOLO_REPLAY_VERSION >= COUNTERBATTERY_RULES_VERSION);
   const profile = await createProfile('Counterbattery Unlock');
   const start = (difficulty = 'normal', carryoverId = 'none') => api('/api/scores/runs', profile.token, {
@@ -1340,6 +1344,59 @@ test('Counterbattery tickets retain archived unlocks under the current campaign 
   } finally {
     if (runId) store.runs = store.runs.filter(run => run.id !== runId);
     store.scores = store.scores.filter(score => score !== iron && !boardRows.includes(score));
+  }
+});
+
+test('Dead Signal tickets require a same-difficulty Counterbattery victory and use its version-90 floor', async () => {
+  assert.equal(SOLO_REPLAY_VERSION, DEAD_SIGNAL_RULES_VERSION);
+  assert.equal(COMBAT_ESCORT_RULES_VERSION, 89, 'ordinary campaign and skirmish floors stay at v89');
+  const profile = await createProfile('Dead Signal Unlock');
+  const start = (difficulty = 'normal', faction = 'vesper') => api('/api/scores/runs', profile.token, {
+    method: 'POST', body: json({ mode: 'campaign', difficulty, faction, scenarioId: 'dead-signal' }),
+  });
+  assert.equal((await start()).status, 403, 'the bonus operation is locked without Counterbattery');
+  assert.equal((await start('hard')).status, 403, 'a Normal victory does not unlock Hard');
+  assert.equal((await start('normal', 'aegis')).status, 400, 'the mission requires its Vesper faction');
+
+  const archivedCounterbattery = { id: 'dead-signal-unlock-counterbattery-v84',
+    profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal', faction: 'aegis',
+    scenarioId: 'counterbattery', scoreVersion: COUNTERBATTERY_RULES_VERSION,
+    verified: true, result: 'victory', completedAt: 201 };
+  const boardRows = [
+    { id: 'dead-signal-board-v89', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'vesper', scenarioId: 'dead-signal', scoreVersion: 89, verified: true,
+      result: 'victory', seconds: 90, completedAt: 202 },
+    { id: 'dead-signal-board-v90', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'vesper', scenarioId: 'dead-signal', scoreVersion: 90, verified: true,
+      result: 'victory', seconds: 90, completedAt: 203 },
+  ];
+  store.scores.push(archivedCounterbattery, ...boardRows);
+  let runId;
+  try {
+    const progress = await (await api('/api/campaign/progress', profile.token)).json();
+    assert.ok(progress.difficulties.normal.unlockedMissionIds.includes('dead-signal'),
+      'an archived v84 Counterbattery victory still unlocks Dead Signal at Normal');
+    assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('dead-signal'));
+    assert.ok(store.scores.includes(archivedCounterbattery), 'the archived unlock remains in score history');
+    assert.equal((await start('hard')).status, 403,
+      'a same-profile Normal Counterbattery victory cannot issue a Hard ticket');
+
+    const response = await start();
+    assert.equal(response.status, 201);
+    const ticket = await response.json();
+    runId = ticket.runId;
+    const locked = store.runs.find(run => run.id === runId);
+    assert.equal(locked.scenarioId, 'dead-signal');
+    assert.equal(locked.faction, 'vesper');
+    assert.equal(locked.rulesVersion, DEAD_SIGNAL_RULES_VERSION);
+
+    const entries = (await (await api(
+      '/api/leaderboard?mode=campaign&scenarioId=dead-signal', profile.token)).json()).entries;
+    assert.deepEqual(entries.map(entry => entry.id), ['dead-signal-board-v90'],
+      'version-89 Dead Signal scores are excluded from this mission-specific board');
+  } finally {
+    if (runId) store.runs = store.runs.filter(run => run.id !== runId);
+    store.scores = store.scores.filter(score => score !== archivedCounterbattery && !boardRows.includes(score));
   }
 });
 
@@ -1612,6 +1669,18 @@ test('replay envelope defaults old skirmish runs and rejects invalid or campaign
     seed: 12, scenarioId: CAMPAIGN_MISSIONS[0].id, skirmishOpening: 'established' }), /cannot have a skirmish opening/i);
   assert.throws(() => validateSoloEnvelope({ mode: 'campaign', difficulty: 'easy', faction: 'aegis',
     seed: 12, scenarioId: CAMPAIGN_MISSIONS[0].id, victoryMode: 'elimination' }), /cannot have a skirmish victory mode/i);
+});
+
+test('Dead Signal requires its version-90 minimum and the authored Vesper faction', () => {
+  const envelope = { mode: 'campaign', difficulty: 'normal', faction: 'vesper', seed: 9017,
+    scenarioId: 'dead-signal', doctrineId: 'standard', fieldOrderId: 'none', carryoverId: 'none',
+    supplyId: 'none', routePayoffId: 'none', campaignVeteran: null };
+  assert.equal(DEAD_SIGNAL_RULES_VERSION, 90);
+  assert.equal(validateSoloEnvelope(envelope, DEAD_SIGNAL_RULES_VERSION), 17);
+  assert.throws(() => validateSoloEnvelope(envelope, DEAD_SIGNAL_RULES_VERSION - 1),
+    /Dead Signal requires replay version 90/i);
+  assert.throws(() => validateSoloEnvelope({ ...envelope, faction: 'aegis' }, DEAD_SIGNAL_RULES_VERSION),
+    /faction does not match/i);
 });
 
 test('ranked score finish rejects a nonterminal replay without recording client supplied statistics', async () => {

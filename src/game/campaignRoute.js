@@ -17,6 +17,7 @@ export const CAMPAIGN_ROUTE_ORDERED_IDS = Object.freeze([
   'after-the-dawn',
   'iron-reclaimed',
   'counterbattery',
+  'dead-signal',
 ]);
 
 const NEXT_CHOICES = Object.freeze({
@@ -36,7 +37,8 @@ const NEXT_CHOICES = Object.freeze({
   'dawn-of-the-free': Object.freeze(['after-the-dawn']),
   'after-the-dawn': Object.freeze(['iron-reclaimed']),
   'iron-reclaimed': Object.freeze(['counterbattery']),
-  counterbattery: Object.freeze([]),
+  counterbattery: Object.freeze(['dead-signal']),
+  'dead-signal': Object.freeze([]),
 });
 
 /** Return stable mission IDs immediately reachable after a completed mission. */

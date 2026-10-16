@@ -11,7 +11,7 @@ export const CAMPAIGN_DIFFICULTY_PROGRESS_KEY = 'frontier-command-campaign-diffi
 const DIFFICULTIES = new Set(['easy', 'normal', 'hard']);
 const LEGACY_CAMPAIGN_KEY = 'frontier-command-campaign-v1';
 const BRANCH_IDS = new Set(['ghost-channel', 'iron-current']);
-const BONUS_IDS = new Set(['iron-reclaimed', 'counterbattery']);
+const BONUS_IDS = new Set(['iron-reclaimed', 'counterbattery', 'dead-signal']);
 
 function legacyProgress(storage) {
   const value = Number(storage.getItem(LEGACY_CAMPAIGN_KEY));
@@ -209,6 +209,7 @@ export function campaignMissionUnlocked(storage, difficulty, index) {
   // The sequel bonus is difficulty-scoped to its immediately preceding bonus
   // victory. A legacy linear progress counter must never unlock it by itself.
   if (index === 16) return campaignRecord(storage, difficulty, 'iron-reclaimed') > 0;
+  if (index === 17) return campaignRecord(storage, difficulty, 'counterbattery') > 0;
   const progress = campaignProgressAtDifficulty(storage, difficulty);
   const legacyPreForkSave = storage.getItem(CAMPAIGN_ROUTE_SCHEMA_KEY) === null && progress >= 4;
   if (index === 13 || index === 14) {

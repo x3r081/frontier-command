@@ -4,8 +4,8 @@ import { campaignDossierView } from '../src/game/campaignDossier.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS } from '../src/game/campaign.js';
 import { saveCampaignResult } from '../src/game/campaignProgress.js';
 
-const storage = () => {
-  const values = new Map();
+const storage = (seed = {}) => {
+  const values = new Map(Object.entries(seed));
   return {
     getItem: key => values.has(key) ? values.get(key) : null,
     setItem: (key, value) => values.set(key, String(value)),
@@ -44,6 +44,15 @@ test('profile and difficulty changes cannot borrow another commander’s verifie
     .mission(indexOf('last-light')).unlocked, false);
   assert.equal(campaignDossierView(local, dossier, 'commander-a', 'hard')
     .mission(indexOf('last-light')).unlocked, false);
+});
+
+test('legacy linear progress does not mark Dead Signal complete or unlock it', () => {
+  const local = storage({ 'frontier-command-campaign-v1': '999' });
+  const view = campaignDossierView(local, null, 'commander-a', 'normal');
+  const deadSignal = view.mission(indexOf('dead-signal'));
+  assert.equal(deadSignal.localCompleted, false);
+  assert.equal(deadSignal.completed, false);
+  assert.equal(deadSignal.localUnlocked, false);
 });
 
 test('local practice stays playable alongside a different verified campaign route', () => {
