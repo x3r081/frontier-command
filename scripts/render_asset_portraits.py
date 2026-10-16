@@ -44,7 +44,8 @@ def strip_png_source_metadata(path):
 ASSETS = {
     "scout": ("scout", "all"), "scout-vesper": ("vesper-scout", "vesper"), "rifle": ("rifle-infantry", "all"),
     "rocket": ("rocket-infantry", "all"), "engineer": ("engineer", "all"),
-    "harvester": ("harvester", "all"), "harvester-vesper": ("vesper-harvester", "vesper"), "mcv": ("mcv", "all"),
+    "harvester": ("harvester", "all"), "harvester-vesper": ("vesper-harvester", "vesper"),
+    "mcv": ("mcv", "aegis"), "mcv-vesper": ("vesper-mcv", "vesper"),
     "apc": ("apc", "all"),
     "buggy": ("recon-buggy", "all"), "buggy-vesper": ("vesper-recon-buggy", "vesper"), "lightTank": ("striker-tank", "all"),
     "artillery": ("siege-crawler", "all"), "guardian": ("aegis-heavy-tank-game", "aegis"),
@@ -126,7 +127,7 @@ def setup_render(meshes, faction, asset_id=None):
     # These vehicles carry their defining equipment at the front of the hull.
     front_view = asset_id in {"apache", "harvester", "guardian", "stealthTank", "serviceBay",
                               "lightTank", "rifle", "rocket", "engineer", "power", "scout-vesper", "harvester-vesper",
-                              "radar-vesper", "tech-vesper", "buggy-vesper", "factory"}
+                              "radar-vesper", "tech-vesper", "buggy-vesper", "factory", "mcv", "mcv-vesper"}
     if asset_id in {"barracks", "barracks-vesper", "bunker", "bunker-vesper"}:
         # Barracks and bunker entrances are authored on Blender -Y so the
         # tactical camera sees them from Three.js +Z after glTF axis conversion.

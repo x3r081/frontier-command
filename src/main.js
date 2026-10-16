@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -46,9 +46,10 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
-  ? id === 'bunker' ? 'bunker-vesper'
+  ? id === 'mcv' ? 'mcv-vesper'
+    : id === 'bunker' ? 'bunker-vesper'
     : id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
       : id === 'buggy' ? 'buggy-vesper'
@@ -1005,7 +1006,7 @@ function reverseMoveUnits(units=selectedObjects()) {
 function battlefieldPickerIsOpen() { return !$('#battlefield-picker-panel').classList.contains('hidden'); }
 function updateBattlefieldPickerAddSquadControl() {
   const button=$('#battlefield-picker-add-squad');
-  button.closest('.battlefield-picker-squad-tools').classList.toggle('hidden',['board','bunkerAttack'].includes(attackMoveMode));
+  button.closest('.battlefield-picker-squad-tools').classList.toggle('hidden',['board','bunkerAttack','rally'].includes(attackMoveMode));
   button.classList.toggle('active',battlefieldPickerAddSquadMode);
   button.setAttribute('aria-pressed',String(battlefieldPickerAddSquadMode));
   button.disabled=!game||!playing||paused||replayMode;
@@ -1100,6 +1101,8 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
       ariaLabel:`Board ${entry.ariaLabel.replace(/^Select friendly /,'')}`}));
   if(attackMoveMode==='bunkerAttack')return entries.filter(entry=>entry.entity?.owner==='enemy')
     .map(entry=>({...entry,ariaLabel:`Target ${entry.ariaLabel.replace(/^Center camera on visible enemy /,'')}`}));
+  if(attackMoveMode==='rally'&&mobileRallyAvailable())return entries.filter(entry=>isFriendlyRallyUnit(entry.entity))
+    .map(entry=>({...entry,ariaLabel:`Rally reinforcements to ${entry.ariaLabel.replace(/^Select friendly /,'')}`}));
   return [...intelEntries, ...entries];
 }
 function renderBattlefieldPicker() {
@@ -1142,11 +1145,12 @@ function renderBattlefieldPicker() {
     if (current !== button) list.insertBefore(button.closest('li'), list.children[index] || null);
   });
   const boarding=attackMoveMode==='board', bunkerAttack=attackMoveMode==='bunkerAttack';
+  const rallying=attackMoveMode==='rally'&&mobileRallyAvailable();
   $('#battlefield-picker-empty').classList.toggle('hidden', entries.length > 0);
   $('#battlefield-picker-empty').textContent=boarding?'No completed friendly carriers or Field Bunkers.':
-    bunkerAttack?'No enemy targets in current sight.':'No friendly forces or visible objects.';
+    bunkerAttack?'No enemy targets in current sight.':rallying?'No friendly rally units. Choose a fixed point on the battlefield.':'No friendly forces or visible objects.';
   $('#battlefield-picker-panel .battlefield-picker-heading strong').textContent = boarding?
-    'CHOOSE CARRIER OR FIELD BUNKER':bunkerAttack?'CHOOSE VISIBLE ENEMY TARGET':contacts.length
+    'CHOOSE CARRIER OR FIELD BUNKER':bunkerAttack?'CHOOSE VISIBLE ENEMY TARGET':rallying?'CHOOSE FRIENDLY RALLY UNIT':contacts.length
       ? 'OBJECTS & LAST-SEEN INTEL' : 'VISIBLE OBJECTS';
   updateBattlefieldPickerIntelBadge(contacts);
   if (removedFocused) (list.querySelector('button') || $('#battlefield-picker-toggle')).focus();
@@ -1179,7 +1183,7 @@ function activateBattlefieldObject(key, { additive = false } = {}) {
     renderBattlefieldPicker();
     return;
   }
-  if(['board','bunkerAttack'].includes(attackMoveMode)){
+  if(['board','bunkerAttack','rally'].includes(attackMoveMode)){
     issueTargetOrder(x,y,false,entry.entity);
     renderBattlefieldPicker();
     return;
@@ -1306,6 +1310,23 @@ function activateGuardCommand() {
   resultMessage(game?.issueGuard?.(),'GUARD POSITION SET');
 }
 function selectedBuilding() { return selectedObjects().find(o => 'w' in o && o.owner === 'player'); }
+function mobileRallyAvailable(){
+  return !!game&&!replayMode&&(game.replayVersion==null||game.replayVersion>=MOBILE_RALLY_RULES_VERSION)&&
+    typeof game.setRallyTarget==='function';
+}
+function isFriendlyRallyUnit(unit){
+  return !!unit&&!('w' in unit)&&unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
+    game.unitDefs?.[unit.defId]?.speed>0;
+}
+function productionRallyUnit(building){
+  if(!building?.rallyTargetId||game.replayVersion!=null&&game.replayVersion<MOBILE_RALLY_RULES_VERSION)return null;
+  const unit=game.getEntity(building.rallyTargetId);
+  return isFriendlyRallyUnit(unit)?unit:null;
+}
+function productionRallyOrder(building,x,y,target){
+  return mobileRallyAvailable()&&isFriendlyRallyUnit(target)
+    ?game.setRallyTarget(building.id,target.id):game.setRally(building.id,x,y);
+}
 function garrisonRulesInGame() {
   return !!game&&(game.replayVersion==null||game.replayVersion>=GARRISON_RULES_VERSION)&&!!game.buildingDefs?.bunker;
 }
@@ -2888,7 +2909,9 @@ function issueContext(wx, wy, queue = false) {
   else if (hit && hit.owner === 'enemy') resultMessage(game.issueAttack(hit.id));
   else if (getCell(wx, wy)?.resource > 0 && own.some(o => /harvester/.test(o.defId))) resultMessage(issueMoveCommand(wx, wy));
   else if (own.some(o => 'w' in o) && !own.some(o => !('w' in o))) {
-    const b = own.find(o=>['barracks','factory','helipad'].includes(o.defId)); if (b&&game.setRally) resultMessage(game.setRally(b.id, wx, wy),'RALLY POINT SET');
+    const b = own.find(o=>['barracks','factory','helipad'].includes(o.defId));
+    if(b&&game.setRally)resultMessage(productionRallyOrder(b,wx,wy,hit),
+      mobileRallyAvailable()&&isFriendlyRallyUnit(hit)?'MOBILE REINFORCEMENT RALLY SET':'FIXED RALLY POINT SET');
   } else resultMessage(issueMoveCommand(wx, wy));
 }
 function attemptPlacement(wx, wy) {
@@ -3019,6 +3042,7 @@ function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
     return;
   }
   if(mode==='rally'&&!selectedProductionBuilding()){toast('SELECT A COMPLETED PRODUCTION BUILDING',true);return;}
+  if(mode==='rally'&&mobileRallyAvailable())prompt='SELECT GROUND OR FRIENDLY UNIT';
   if(!['attack','forceMove','reverseMove'].includes(mode))setRoutePlanMode(false);
   if(placeId)cancelPlacement();
   commandAbilityToken++;commandAbilityMode=null;commandAbilityPending=false;
@@ -3115,8 +3139,9 @@ function issueTargetOrder(wx,wy,queue=false,targetOverride=null){
   else if(mode==='patrol'){result=game.issuePatrol(wx,wy);success='PATROL ROUTE SET';}
   else if(mode==='rally'){
     const building=selectedProductionBuilding();
-    result=building?game.setRally(building.id,wx,wy):{ok:false,reason:'Select a completed production building.'};
-    success='RALLY POINT SET';
+    const target=targetOverride||objectAt(wx,wy);
+    result=building?productionRallyOrder(building,wx,wy,target):{ok:false,reason:'Select a completed production building.'};
+    success=mobileRallyAvailable()&&isFriendlyRallyUnit(target)?'MOBILE REINFORCEMENT RALLY SET':'FIXED RALLY POINT SET';
   }
   else if(mode==='follow'){
     const target=objectAt(wx,wy);
@@ -3861,8 +3886,9 @@ function selectedOrderMinimapCues(selectedIds,cw,ch){
     if(!selectedIds.has(building.id)||building.owner!=='player'||building.hp<=0||building.progress<1||
       !['barracks','factory','helipad'].includes(building.defId)||
       !Number.isFinite(building.rally?.x)||!Number.isFinite(building.rally?.y))continue;
+    const rallyUnit=productionRallyUnit(building);
     cues.push({fromX:(building.x+building.w/2)*cw,fromY:(building.y+building.h/2)*ch,
-      toX:building.rally.x*cw,toY:building.rally.y*ch,color:'#79e8df'});
+      toX:(rallyUnit?.x??building.rally.x)*cw,toY:(rallyUnit?.y??building.rally.y)*ch,color:rallyUnit?'#79e8df':'#ffd28d'});
     if(cues.length>=24)break;
   }
   let inspected=0;
@@ -4158,7 +4184,12 @@ function updateProductionSite() {
   const active=site.queue?.[0];
   const task=site.powerStandby===true?`PAUSED · STANDBY${active?` · ${Math.floor(active.progress*100)}%`:''}`:active?`${game.unitDefs[active.defId].name.toUpperCase()} ${Math.floor(active.progress*100)}%`:'READY';
   $('#production-site-status').textContent=`${task} · ${site.queue.length}/5 QUEUED`;
-  panel.title=`New unit orders use this ${name.toLowerCase()}. Rally: ${Math.floor(site.rally.x)}, ${Math.floor(site.rally.y)}.`;
+  const rallyUnit=productionRallyUnit(site);
+  const rallyName=rallyUnit?game.unitDefs[rallyUnit.defId].name:null;
+  $('#production-site-rally').textContent=rallyUnit?`REINFORCE ${rallyName.toUpperCase()}`:
+    `FIXED RALLY ${Math.floor(site.rally.x)}//${Math.floor(site.rally.y)}`;
+  panel.title=rallyUnit?`Armed reinforcements rendezvous with ${rallyName}, then follow. Choose ground with RALLY (M) to restore a fixed point. Unarmed units keep their ordinary orders.`:
+    `New unit orders use this ${name.toLowerCase()}. Rally: ${Math.floor(site.rally.x)}, ${Math.floor(site.rally.y)}. Use RALLY (M) to choose ground or a friendly moving unit.`;
   updateProductionRepeatControls(site);
 }
 function resetProductionRepeatControls() {
@@ -4769,7 +4800,7 @@ function updateSelectionCard() {
     $(`#cmd-${id}`).disabled=units.length===0 || (id==='deploy'&&!units.some(unit=>unit.defId==='mcv')&&!digInUnits.length) || (id==='harvest'&&!units.some(unit=>unit.defId==='harvester')) || (id==='force'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.weapon)) || (id==='board'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.armor==='infantry')) || (id==='unload'&&!units.some(unit=>isTroopCarrier(unit)&&unit.passengerIds?.length));
   const moveButton=$('#cmd-move');
   moveButton.lastChild.textContent=productionBuilding?'RALLY':'MOVE';
-  moveButton.title=productionBuilding?'Set this building’s reinforcement rally point (M)':'Force move without engaging (M or Alt+click)';
+  moveButton.title=productionBuilding?(mobileRallyAvailable()?'Rally armed reinforcements to a friendly mobile unit, or choose ground for a fixed point (M).':'Set this building’s reinforcement rally point (M)'):'Force move without engaging (M or Alt+click)';
   moveButton.setAttribute('aria-label',moveButton.title);
   if(productionBuilding){$('#cmd-attack').disabled=false;moveButton.disabled=false;}
   if(fieldBunker){
@@ -4883,9 +4914,11 @@ function updateSelectionCard() {
       `REARMING · ${Math.ceil((unitDef.ammoMax-first.ammo)/unitDef.rearmRate)}S`:
     unitDef?.flying&&Number.isFinite(unitDef.ammoMax)&&first.ammo<1?`NO AMMUNITION · ${unitOrder}`:null;
   const singleDigInCooldown=digInUnits.includes(first)&&first.abilityCooldown>0?Math.ceil(first.abilityCooldown):0;
+  const reinforcementState=first.owner==='player'&&first._productionRally?
+    first._productionRally.stage==='approach'?'RENDEZVOUS WITH RALLY UNIT':'FOLLOWING RALLY UNIT':null;
   const tacticalState=fieldActive||digInStatus||(singleDigInCooldown?`DIG IN COOLDOWN · ${singleDigInCooldown}S`:
     disrupted?`WEAPON DISRUPTED · ${Math.ceil(first.suppressedUntil-game.time)}S`:
-    fieldHint||recommissionState||serviceOrderState||harvesterState||aircraftState||
+    fieldHint||recommissionState||serviceOrderState||harvesterState||aircraftState||reinforcementState||
     (serviceSupported?`FIELD REPAIRS ACTIVE · ${unitOrder}`:refinerySupported?'NETWORK SUPPORTED · +20% EXTRACTION':first.defId==='stealthTank'&&first.revealedUntil<=(game?.time||0)?'CLOAKED · AMBUSH READY':isTroopCarrier(first)?`PASSENGERS ${first.passengerIds?.length||0}/${unitDef.capacity} · ${unitOrder}`:unitOrder));
   const workshopState=first.defId==='serviceBay'?(first.powered?'FIELD REPAIRS ONLINE':'FIELD REPAIRS OFFLINE'):null;
   const groupSummary=selected.length>1&&units.length?(()=>{
@@ -4906,7 +4939,8 @@ function updateSelectionCard() {
     const digInLine=digInUnits.length?` · DIG IN ${digInReadyUnits.length}/${digInUnits.length} READY${digInStates.length?` · ${digInStates[0]}`:''}`:'';
     return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${paceLabel?` · ${paceLabel}`:''}${routed?` · ${routed} ROUTED`:''}${digInLine}`;
   })():'';
-  const subtitleBase=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?first.powerStandby===true?'PAUSED · STANDBY':workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
+  const rallyLeader=productionBuilding?productionRallyUnit(productionBuilding):null;
+  const subtitleBase=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?first.powerStandby===true?'PAUSED · STANDBY':rallyLeader?`REINFORCE ${game.unitDefs[rallyLeader.defId].name.toUpperCase()}`:workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
   const coverHintText=digInStatus||singleDigInCooldown||fieldActive||recommissionState||serviceOrderState
     ?'NEAR WRECK':'WRECK NEARBY · KEEP BEHIND HULL';
   const subtitle=`${subtitleBase}${wreckCoverHint?` · ${coverHintText}`:''}`;
@@ -6876,7 +6910,7 @@ function installMultiplayerCommandAdapters(target){
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
     useUnitAbility:(unitId,abilityId)=>({unitId,abilityId}),
     useSelectedUnitAbility:abilityId=>({abilityId}),
-    cancelQueuedUnit:(buildingId,index)=>({buildingId,index}),setRally:(buildingId,x,y)=>({buildingId,x,y}),
+    cancelQueuedUnit:(buildingId,index)=>({buildingId,index}),setRally:(buildingId,x,y)=>({buildingId,x,y}),setRallyTarget:(buildingId,unitId=null)=>({buildingId,unitId}),
     toggleRepair:buildingId=>({buildingId}),sellBuilding:buildingId=>({buildingId}),
     useSuperweapon:(x,y)=>({x,y}),useCommandAbility:(abilityId,x,y)=>({abilityId,x,y}),
     setRelayProtocol:(relayId,protocol)=>({relayId,protocol}),

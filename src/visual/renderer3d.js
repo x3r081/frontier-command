@@ -6,6 +6,7 @@ import { createGroundContactBatch } from './groundContact.js';
 import { getCampaignFieldOrderView } from '../game/campaign.js';
 import {
   unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
+  MOBILE_RALLY_RULES_VERSION,
   WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY,
 } from '../game/engine.js';
 
@@ -1334,11 +1335,11 @@ export class Renderer3D {
       harvester:'harvester.glb', vesperHarvester:'vesper-harvester.glb', crystal:'crystal-cluster.glb',
       scout:'scout.glb', scoutVesper:'vesper-scout.glb', rifle:'rifle-infantry.glb', rocket:'rocket-infantry.glb',
       engineer:'engineer.glb', medic:'medic.glb', flamer:'flamer.glb',
-      mcv:'mcv.glb', stealthTank:'stealth-tank.glb', buggy:'recon-buggy.glb', vesperBuggy:'vesper-recon-buggy.glb',
+      mcv:'mcv.glb', vesperMcv:'vesper-mcv.glb', stealthTank:'stealth-tank.glb', buggy:'recon-buggy.glb', vesperBuggy:'vesper-recon-buggy.glb',
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         if(['rifle','rocket'].includes(key)) gltf.scene.traverse(object=>{
@@ -3956,6 +3957,7 @@ export class Renderer3D {
     const modelKey=o.defId==='guardian'&&o.faction!=='aegis'?'none':
       o.defId==='scout'&&o.faction==='vesper'?'scoutVesper':
       o.defId==='buggy'&&o.faction==='vesper'?'vesperBuggy':
+      o.defId==='mcv'&&o.faction==='vesper'?'vesperMcv':
       o.defId==='harvester'&&o.faction==='vesper'?'vesperHarvester':(vesperStructure||o.defId);
     const source=this.assetModels.get(modelKey);
     if(!source) return null;
@@ -5373,7 +5375,7 @@ export class Renderer3D {
       const building='w' in o;
       live.add(o.id);
       let state=this.entities.get(o.id);
-      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',
+      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',mcv:'vesperMcv',
         refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
         radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
       const assetVersion=this.assetVersions.get(assetKey||o.defId)||0;
@@ -6588,7 +6590,14 @@ export class Renderer3D {
     }
     marker.group.visible=true;
     const startX=building.x+building.w/2,startY=building.y+building.h/2;
-    const endX=building.rally.x,endY=building.rally.y;
+    const target=(game.replayVersion==null||game.replayVersion>=MOBILE_RALLY_RULES_VERSION)&&building.rallyTargetId
+      ?game.getEntity?.(building.rallyTargetId):null;
+    const mobile=target?.owner==='player'&&target.hp>0&&!target.embarkedIn&&!('w' in target);
+    const endX=mobile?target.x:building.rally.x,endY=mobile?target.y:building.rally.y;
+    if(marker.mobile!==!!mobile){
+      marker.mobile=!!mobile;
+      for(const part of [marker.line,marker.ring,marker.core])part.material.color.setHex(mobile?0x8df4df:0xffd28d);
+    }
     const positions=marker.line.geometry.attributes.position;
     for(let i=0;i<positions.count;i++) {
       const along=i/(positions.count-1),x=startX+(endX-startX)*along,z=startY+(endY-startY)*along;
@@ -6597,7 +6606,8 @@ export class Renderer3D {
     positions.needsUpdate=true;
     marker.line.computeLineDistances();
     this._setGroundPosition(marker.ring,endX,0.15,endY);
-    this._setGroundPosition(marker.core,endX,0.16,endY);
+    const flow=mobile?(time*.32)%1:1;
+    this._setGroundPosition(marker.core,startX+(endX-startX)*flow,0.16,startY+(endY-startY)*flow);
     marker.ring.scale.setScalar(1+0.08*Math.sin(time*3.4));
   }
 

@@ -2546,6 +2546,50 @@ test('authenticated websocket bunker orders enforce ownership, capacity, focus a
   }
 });
 
+test('authenticated mobile rally targets preserve ownership and explicit clearing', async () => {
+  const hostProfile=await createProfile('Mobile Rally Host');
+  const guestProfile=await createProfile('Mobile Rally Guest');
+  const host=await openSocket(hostProfile.token),guest=await openSocket(guestProfile.token);
+  try{
+    await Promise.all([host,guest].map(ws=>nextMessage(ws,message=>message.type==='hello')));
+    sendSocket(host,{type:'create_lobby',faction:'aegis'});
+    const lobby=await nextMessage(host,message=>message.type==='lobby');
+    sendSocket(guest,{type:'join_lobby',code:lobby.code});
+    await nextMessage(host,message=>message.type==='lobby'&&message.players.length===2);
+    await nextMessage(guest,message=>message.type==='lobby');
+    sendSocket(host,{type:'set_ready',ready:true});sendSocket(guest,{type:'set_ready',ready:true});
+    await nextMessage(host,message=>message.type==='lobby'&&message.players.every(player=>player.ready));
+    sendSocket(host,{type:'start_match'});
+    await Promise.all([host,guest].map(ws=>nextMessage(ws,message=>message.type==='match_start')));
+    const game=lobbies.get(lobby.code).game;
+    const site=game.buildings.find(b=>b.owner==='player'&&b.defId==='barracks');
+    const foreign=game.buildings.find(b=>b.owner==='enemy'&&b.defId==='factory');
+    const leader=game.units.find(u=>u.owner==='player'&&u.defId==='lightTank');
+    const foreignLeader=game.units.find(u=>u.owner==='enemy'&&u.defId==='lightTank');
+    const rally=async(requestId,buildingId,unitId,extra={})=>{
+      sendSocket(host,{type:'command',requestId,command:'setRallyTarget',buildingId,unitId,...extra});
+      return nextMessage(host,message=>message.type==='command_result'&&message.requestId===requestId);
+    };
+    assert.equal((await rally('rally-mobile-own',site.id,leader.id)).ok,true);
+    assert.equal(site.rallyTargetId,leader.id);
+    for(const [requestId,buildingId,unitId,extra] of [
+      ['rally-mobile-foreign-site',foreign.id,leader.id,{}],
+      ['rally-mobile-foreign-unit',site.id,foreignLeader.id,{}],
+      ['rally-mobile-structure',site.id,site.id,{}],
+      ['rally-mobile-invalid-id',site.id,42,{}],
+      ['rally-mobile-queued',site.id,leader.id,{queue:true}],
+    ])assert.equal((await rally(requestId,buildingId,unitId,extra)).ok,false,requestId);
+    assert.equal(site.rallyTargetId,leader.id,'rejected requests preserve the current leader');
+    assert.equal(foreign.rallyTargetId,null,'foreign production remains unchanged');
+    assert.equal((await rally('rally-mobile-clear',site.id,null)).ok,true);
+    assert.equal(site.rallyTargetId,null);
+    sendSocket(guest,{type:'command',requestId:'rally-mobile-guest',command:'setRallyTarget',
+      buildingId:foreign.id,unitId:foreignLeader.id});
+    assert.equal((await nextMessage(guest,message=>message.type==='command_result'&&message.requestId==='rally-mobile-guest')).ok,true);
+    assert.equal(foreign.rallyTargetId,foreignLeader.id,'guest targets use authoritative ownership');
+  }finally{sendSocket(host,{type:'leave_lobby'});host.close();guest.close();}
+});
+
 test('websocket movement dispatch enforces ownership, queues, and matched pace options', async () => {
   const hostProfile = await createProfile('Reverse Move Host');
   const guestProfile = await createProfile('Reverse Move Guest');
@@ -3870,7 +3914,10 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
   hostileBuilding._unloadHarvesterId = hostile.id;
   hostileBuilding.powerStandby = true;
   hostileBuilding.repeatUnitDefId = 'stealthTank';
+  hostileBuilding.rallyTargetId=hostile.id;
+  hostileBuilding.rally={x:61,y:3};
   friendlyBuilding.powerStandby = true;
+  friendlyBuilding.rallyTargetId=game.units.find(unit=>unit.owner==='player').id;
   const member = { side: 'player', selection: [],
     explored: Array.from({ length: game.height }, () => Array(game.width).fill(0)) };
   const friendlyBunker = game._createBuilding('player', 'bunker', 20, 30, 1);
@@ -3904,6 +3951,10 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
     'hostile buildings do not expose their standby state');
   assert.equal('repeatUnitDefId' in projectedHostileBuilding, false,
     'hostile buildings do not expose their production repeat blueprint');
+  assert.equal('rallyTargetId' in projectedHostileBuilding,false,'hostile mobile rally IDs remain private');
+  assert.equal(projectedHostileBuilding.rally,null,'hostile fallback rally coordinates remain private');
+  assert.equal(projection.buildings.find(building=>building.id===friendlyBuilding.id).rallyTargetId,
+    friendlyBuilding.rallyTargetId,'the commander retains friendly mobile rally intent');
   assert.equal(hostileBuilding.repeatUnitDefId, 'stealthTank',
     'projection leaves authoritative repeat intent intact');
   assert.equal(projection.buildings.find(building => building.id === friendlyBuilding.id).powerStandby, true,

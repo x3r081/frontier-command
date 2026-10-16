@@ -81,6 +81,7 @@ const RANKED_SEASON = 79;
 // Version 80 adds the skirmish Veteran/Elite AI bunker policy and visible-only
 // Siege Director response. It advances those difficulty boards only; campaign,
 // Easy skirmish, and ranked multiplayer behavior remain on their existing rules.
+// Version 81 adds opt-in mobile rally targets; comparison floors and season stay.
 const CAMPAIGN_SCORE_FLOOR = GARRISON_RULES_VERSION;
 const SKIRMISH_SCORE_FLOOR = AI_FIELD_BUNKER_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = GARRISON_RULES_VERSION;
@@ -902,6 +903,7 @@ function projectedState(lobby, member) {
     if ('order' in entity) delete entity.order;
     delete entity.homeRefineryId;
     delete entity.repeatUnitDefId;
+    delete entity.rallyTargetId;
     delete entity.garrisonIds;
     if ('path' in entity) entity.path = [];
     // Standby is private economy state. An opponent snapshot must not reveal
@@ -1135,7 +1137,7 @@ function startMatch(lobby) {
 }
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueGarrison', 'issueEvacuateGarrison', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
-  'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
+  'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally', 'setRallyTarget',
   'toggleRepair', 'setBuildingPower', 'setProductionRepeat', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'useSelectedUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
   const game = lobby.game;
@@ -1198,6 +1200,10 @@ function command(lobby, member, message) {
           : { ok: false, reason: 'Select a valid production building.' };
       case 'cancelQueuedUnit': return game.cancelQueuedUnit(message.buildingId, Number.isInteger(message.index) ? message.index : -1);
       case 'setRally': return game.setRally(message.buildingId, n(message.x), n(message.y));
+      case 'setRallyTarget': return typeof message.buildingId==='string'&&
+          (message.unitId===undefined||message.unitId===null||typeof message.unitId==='string')
+        ? game.setRallyTarget(message.buildingId,message.unitId??null)
+        : {ok:false,reason:'Choose a production building and friendly mobile unit.'};
       case 'toggleRepair': return game.toggleRepair(message.buildingId);
       case 'setBuildingPower': return typeof message.standby === 'boolean'
         ? game.setBuildingPower(message.buildingId, message.standby)

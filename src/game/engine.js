@@ -87,6 +87,7 @@ export const HARVESTER_HOME_RULES_VERSION = 77;
 export const PRODUCTION_REPEAT_RULES_VERSION = 78;
 export const GARRISON_RULES_VERSION = 79;
 export const AI_FIELD_BUNKER_RULES_VERSION = 80;
+export const MOBILE_RALLY_RULES_VERSION = 81;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
 export const DOCTRINE_REPLACEMENT_COST = 1350;
@@ -379,6 +380,7 @@ export class Game {
     this.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     this.garrisonRulesVersion = GARRISON_RULES_VERSION;
     this.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
+    this.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
     this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
@@ -1152,7 +1154,7 @@ export class Game {
     const b = { id: `b${this._nextEntityId++}`, owner, faction: ownerFaction(this, owner), defId,
       x: Math.floor(x), y: Math.floor(y), w: d.w, h: d.h, hp: d.health, maxHp: d.health,
       progress, queue: [], rally: { x: x + d.w / 2, y: y + d.h + 2 }, repairing: false, powered: true,
-      powerStandby: false, repeatUnitDefId: null,
+      powerStandby: false, repeatUnitDefId: null, rallyTargetId: null,
       cooldown: 0, facing: owner === 'player' ? -Math.PI / 4 : Math.PI * 0.75, selected: false };
     if (defId === 'bunker') {
       b.garrisonIds = [];
@@ -2534,6 +2536,10 @@ export class Game {
     return this.replayVersion == null || this.replayVersion >= GARRISON_RULES_VERSION;
   }
 
+  _mobileRallyEnabled() {
+    return this.replayVersion == null || this.replayVersion >= MOBILE_RALLY_RULES_VERSION;
+  }
+
   _productionRepeatDefinition(building, unitDefId) {
     const definition = UNIT_DEFS[unitDefId];
     return building && ['barracks', 'factory', 'helipad'].includes(building.defId) &&
@@ -2857,8 +2863,30 @@ export class Game {
       return { ok: false, reason: 'Choose a production building.' };
     if (!this._validatePoint(x, y)) return { ok: false, reason: 'Rally point is outside the map.' };
     b.rally = { x, y };
+    if (this._mobileRallyEnabled()) b.rallyTargetId = null;
     this._event('rally', { buildingId, x, y });
     return { ok: true };
+  }
+
+  setRallyTarget(buildingId, unitId = null) {
+    const owner = this.commandOwner || 'player';
+    if (this.status !== 'playing') return { ok: false, reason: 'Rally orders are available while the battle is playing.' };
+    if (!this._mobileRallyEnabled())
+      return { ok: false, reason: `Mobile rally requires replay version ${MOBILE_RALLY_RULES_VERSION}.` };
+    const building = this.getEntity(buildingId);
+    if (!building || !('w' in building) || building.owner !== owner || building.hp <= 0 || building.progress < 1 ||
+        !['barracks', 'factory', 'helipad'].includes(building.defId))
+      return { ok: false, reason: 'Choose a completed friendly production building.' };
+    if (unitId !== null && typeof unitId !== 'string')
+      return { ok: false, reason: 'Choose a friendly mobile unit or clear the mobile rally.' };
+    const target = unitId === null ? null : this.units.find(unit => unit.id === unitId);
+    const targetDef = target && UNIT_DEFS[target.defId];
+    if (unitId !== null && (!target || target.hp <= 0 || target.owner !== owner || target.embarkedIn ||
+        !Number.isFinite(targetDef?.speed) || targetDef.speed <= 0))
+      return { ok: false, reason: 'Choose a living, unembarked friendly mobile unit.' };
+    building.rallyTargetId = unitId;
+    this._event('rallyTarget', { buildingId, owner, unitId });
+    return { ok: true, unitId };
   }
 
   toggleRepair(buildingId) {
@@ -4154,6 +4182,7 @@ export class Game {
       target.repairing = false;
       target.powerStandby = false;
       target.repeatUnitDefId = null;
+      target.rallyTargetId = null;
       delete target._garrisonTargetId; delete target._garrisonEvacuating;
       if (target.defId === 'bunker') target.garrisonFireUntil = 0;
       this._event('buildingCaptured', { id: target.id, owner: target.owner, by: u.id });
@@ -4594,6 +4623,24 @@ export class Game {
       this._applyDamage(u, dt * 2.6, 'ion', null, null);
     if (u.hp <= 0) return;
     const order = u.order || { type: 'idle' };
+    let productionRally = u._productionRally;
+    if (productionRally) {
+      const approachOrder = productionRally.stage === 'approach' && order.type === 'move' &&
+        Math.abs(order.x - productionRally.approachX) < 0.001 &&
+        Math.abs(order.y - productionRally.approachY) < 0.001;
+      const followOrder = productionRally.stage === 'follow' && order.type === 'follow' &&
+        order.targetId === productionRally.targetId;
+      if (!this._mobileRallyEnabled() || !approachOrder && !followOrder) {
+        delete u._productionRally;
+        productionRally = null;
+      } else {
+        const rallyTarget = this.units.find(candidate => candidate.id === productionRally.targetId);
+        if (!this._productionRallyTargetValid(rallyTarget, u.owner)) {
+          this._releaseProductionRally(u, productionRally);
+          return;
+        }
+      }
+    }
     if (order.type === 'garrison') {
       this._updateGarrisonOrder(u, dt);
       return;
@@ -4784,6 +4831,12 @@ export class Game {
     if (order.type === 'move' || order.type === 'forceMove') {
       const arrived = this._moveUnit(u, order.x, order.y, dt, 0.28);
       if (arrived && !this._advanceQueuedOrder(u, order)) {
+        const marker = u._productionRally;
+        if (marker?.stage === 'approach' && Math.abs(order.x - marker.approachX) < 0.001 &&
+            Math.abs(order.y - marker.approachY) < 0.001) {
+          this._completeProductionRallyApproach(u, marker);
+          return;
+        }
         if ((this.replayVersion == null || this.replayVersion >= TACTICAL_FORMATION_RULES_VERSION) &&
             Number.isFinite(order.formationFacing)) u.facing = order.formationFacing;
         u.order = { type: 'idle' }; u.path = [];
@@ -5025,6 +5078,66 @@ export class Game {
     return { x: rally.x, y: rally.y };
   }
 
+  _productionRallyTargetValid(target, owner) {
+    const definition = target && UNIT_DEFS[target.defId];
+    return !!target && target.hp > 0 && target.owner === owner && !target.embarkedIn &&
+      Number.isFinite(definition?.speed) && definition.speed > 0;
+  }
+
+  _productionRallyApproach(unit, target) {
+    return this._productionAssemblyPoint({ rally: { x: target.x, y: target.y } }, unit);
+  }
+
+  _productionRallyFallback(unit, marker) {
+    const rally = { x: marker.fallbackX, y: marker.fallbackY };
+    let point = this._productionAssemblyPoint({ rally }, unit);
+    if (UNIT_DEFS[unit.defId]?.flying) return point;
+    const components = this._groundComponents();
+    const sx = Math.floor(unit.x), sy = Math.floor(unit.y);
+    const start = sy * this.width + sx;
+    const componentId = components[start];
+    const tx = Math.floor(point.x), ty = Math.floor(point.y);
+    if (componentId >= 0 && this._isPassable(tx, ty) && components[ty * this.width + tx] === componentId)
+      return point;
+    if (componentId < 0) return { x: unit.x, y: unit.y };
+    let best = null;
+    for (let y = 0; y < this.height; y++) for (let x = 0; x < this.width; x++) {
+      if (!this._isPassable(x, y) || components[y * this.width + x] !== componentId) continue;
+      const candidate = { x: x + 0.5, y: y + 0.5 };
+      const score = dist(candidate.x, candidate.y, rally.x, rally.y);
+      if (!best || score < best.score || score === best.score &&
+          (y < best.yTile || y === best.yTile && x < best.xTile))
+        best = { ...candidate, score, xTile: x, yTile: y };
+    }
+    return best ? { x: best.x, y: best.y } : { x: unit.x, y: unit.y };
+  }
+
+  _releaseProductionRally(unit, marker = unit?._productionRally) {
+    if (!unit || !marker) return false;
+    const producer = this.getEntity(marker.producerId);
+    if (producer?.owner === unit.owner && producer.rallyTargetId === marker.targetId)
+      producer.rallyTargetId = null;
+    const point = Number.isFinite(marker.fallbackX) && Number.isFinite(marker.fallbackY) &&
+      this._validatePoint(marker.fallbackX, marker.fallbackY)
+      ? this._productionRallyFallback(unit, marker) : { x: unit.x, y: unit.y };
+    delete unit._productionRally;
+    unit.order = { type: 'move', x: point.x, y: point.y, attackMove: false };
+    unit.path = []; unit._pathGoal = null;
+    return true;
+  }
+
+  _completeProductionRallyApproach(unit, marker) {
+    const target = this.units.find(candidate => candidate.id === marker.targetId);
+    if (!this._productionRallyTargetValid(target, unit.owner)) {
+      this._releaseProductionRally(unit, marker);
+      return false;
+    }
+    marker.stage = 'follow';
+    unit.order = { type: 'follow', targetId: target.id };
+    unit.path = []; unit._pathGoal = null;
+    return true;
+  }
+
   _onBuildingComplete(b) {
     this._refreshPower();
     this._event('constructionComplete', { id: b.id, owner: b.owner, defId: b.defId, x: b.x, y: b.y });
@@ -5100,11 +5213,31 @@ export class Game {
           approachY: q.aiEngineerRaid.approachY };
       }
       if (u.defId === 'harvester') u.order = { type: 'harvest' };
-      else if (!u._aiEngineerRaid && b.rally && dist(u.x, u.y, b.rally.x, b.rally.y) > 1) {
-        const assembly = this.replayVersion == null ||
-          this.replayVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION
-          ? this._productionAssemblyPoint(b, u) : b.rally;
-        u.order = { type: 'move', x: assembly.x, y: assembly.y, attackMove: false };
+      else if (!u._aiEngineerRaid && b.rally) {
+        const unitDefinition = UNIT_DEFS[u.defId];
+        const target = this._mobileRallyEnabled() && b.rallyTargetId && unitDefinition?.weapon
+          ? this.units.find(candidate => candidate.id === b.rallyTargetId) : null;
+        if (this._mobileRallyEnabled() && b.rallyTargetId && unitDefinition?.weapon) {
+          if (this._productionRallyTargetValid(target, u.owner)) {
+            const approach = this._productionRallyApproach(u, target);
+            u._productionRally = { producerId: b.id, targetId: target.id, stage: 'approach',
+              approachX: approach.x, approachY: approach.y, fallbackX: b.rally.x, fallbackY: b.rally.y };
+            u.order = { type: 'move', x: approach.x, y: approach.y, attackMove: false };
+          } else {
+            b.rallyTargetId = null;
+            if (dist(u.x, u.y, b.rally.x, b.rally.y) > 1) {
+              const assembly = this.replayVersion == null ||
+                this.replayVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION
+                ? this._productionAssemblyPoint(b, u) : b.rally;
+              u.order = { type: 'move', x: assembly.x, y: assembly.y, attackMove: false };
+            }
+          }
+        } else if (dist(u.x, u.y, b.rally.x, b.rally.y) > 1) {
+          const assembly = this.replayVersion == null ||
+            this.replayVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION
+            ? this._productionAssemblyPoint(b, u) : b.rally;
+          u.order = { type: 'move', x: assembly.x, y: assembly.y, attackMove: false };
+        }
       }
       this._event('unitReady', { id: u.id, owner: u.owner, defId: u.defId, buildingId: b.id });
     }
@@ -8475,6 +8608,10 @@ export class Game {
     if (game.replayVersion == null && data.garrisonRulesVersion === GARRISON_RULES_VERSION &&
         data.aiFieldBunkerRulesVersion !== AI_FIELD_BUNKER_RULES_VERSION)
       game.replayVersion = GARRISON_RULES_VERSION;
+    // Markerless v80 saves predate mobile production rally orders.
+    if (game.replayVersion == null && data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
+        data.mobileRallyRulesVersion !== MOBILE_RALLY_RULES_VERSION)
+      game.replayVersion = AI_FIELD_BUNKER_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -8621,6 +8758,7 @@ export class Game {
     game.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     game.garrisonRulesVersion = GARRISON_RULES_VERSION;
     game.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
+    game.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
     game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
       data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
         building.owner === 'enemy' && building.defId === 'bunker');
@@ -8934,6 +9072,9 @@ export class Game {
       .map(building => [building.id, { garrisonIds: Array.isArray(building.garrisonIds)
         ? [...building.garrisonIds] : [], garrisonFireUntil: building.garrisonFireUntil,
       garrisonTargetId: building._garrisonTargetId, garrisonEvacuating: building._garrisonEvacuating === true }]));
+    const mobileRallyDataEnabled = game._mobileRallyEnabled() &&
+      (data.mobileRallyRulesVersion === MOBILE_RALLY_RULES_VERSION ||
+        game.replayVersion != null && game.replayVersion >= MOBILE_RALLY_RULES_VERSION);
     for (const building of game.buildings) {
       building.powerStandby = game._powerStandbyEnabled() &&
         data.powerStandbyRulesVersion === POWER_STANDBY_RULES_VERSION &&
@@ -8956,6 +9097,11 @@ export class Game {
         building.hp > 0 && building.progress >= 1
         ? game._productionRepeatDefinition(building, building.repeatUnitDefId) : null;
       building.repeatUnitDefId = repeatDefinition ? building.repeatUnitDefId : null;
+      const rallyTarget = mobileRallyDataEnabled && ['barracks', 'factory', 'helipad'].includes(building.defId) &&
+        building.hp > 0 && building.progress >= 1 && typeof building.rallyTargetId === 'string'
+        ? game.units.find(unit => unit.id === building.rallyTargetId) : null;
+      building.rallyTargetId = game._productionRallyTargetValid(rallyTarget, building.owner)
+        ? rallyTarget.id : null;
       if (building.defId === 'bunker') {
         building.garrisonIds = [];
         building.garrisonFireUntil = 0;
@@ -8964,6 +9110,30 @@ export class Game {
         delete building.garrisonIds; delete building.garrisonFireUntil;
         delete building._garrisonTargetId; delete building._garrisonEvacuating;
       }
+    }
+    for (const unit of game.units) {
+      const marker = unit._productionRally;
+      if (!mobileRallyDataEnabled || !marker || typeof marker !== 'object' ||
+          typeof marker.producerId !== 'string' || marker.producerId.length > 64 ||
+          typeof marker.targetId !== 'string' || marker.targetId.length > 64 ||
+          !['approach', 'follow'].includes(marker.stage) ||
+          !Number.isFinite(marker.fallbackX) || !Number.isFinite(marker.fallbackY) ||
+          !game._validatePoint(marker.fallbackX, marker.fallbackY)) {
+        delete unit._productionRally;
+        continue;
+      }
+      if (marker.stage === 'approach' && unit.order?.type === 'move' &&
+          Number.isFinite(marker.approachX) && Number.isFinite(marker.approachY) &&
+          game._validatePoint(marker.approachX, marker.approachY) &&
+          Math.abs(unit.order.x - marker.approachX) < 0.001 && Math.abs(unit.order.y - marker.approachY) < 0.001) {
+        unit._productionRally = { producerId: marker.producerId, targetId: marker.targetId, stage: 'approach',
+          approachX: marker.approachX, approachY: marker.approachY,
+          fallbackX: marker.fallbackX, fallbackY: marker.fallbackY };
+      } else if (marker.stage === 'follow' && unit.order?.type === 'follow' &&
+          unit.order.targetId === marker.targetId) {
+        unit._productionRally = { producerId: marker.producerId, targetId: marker.targetId, stage: 'follow',
+          fallbackX: marker.fallbackX, fallbackY: marker.fallbackY };
+      } else delete unit._productionRally;
     }
     const garrisonDataEnabled = game._garrisonEnabled() &&
       (data.garrisonRulesVersion === GARRISON_RULES_VERSION ||
