@@ -86,6 +86,7 @@ export const TACTICAL_ELEVATION_RULES_VERSION = 58;
 export const HARVESTER_HOME_RULES_VERSION = 77;
 export const PRODUCTION_REPEAT_RULES_VERSION = 78;
 export const GARRISON_RULES_VERSION = 79;
+export const AI_FIELD_BUNKER_RULES_VERSION = 80;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
 export const DOCTRINE_REPLACEMENT_COST = 1350;
@@ -377,6 +378,8 @@ export class Game {
     this.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     this.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     this.garrisonRulesVersion = GARRISON_RULES_VERSION;
+    this.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
+    this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     this.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
@@ -7201,6 +7204,140 @@ export class Game {
     return false;
   }
 
+  _aiFieldBunkerEnabled() {
+    return this.mode === 'skirmish' && ['normal', 'hard'].includes(this.difficulty) &&
+      (this.replayVersion == null || this.replayVersion >= AI_FIELD_BUNKER_RULES_VERSION);
+  }
+
+  _aiFieldBunkerOrderValid(unit) {
+    if (!unit || unit.owner !== 'enemy' || unit.hp <= 0 || unit.embarkedIn ||
+        unit.order?.type !== 'garrison' || !this._aiFieldBunkerEnabled() ||
+        !this._garrisonEnabled() || !this._isGarrisonEligibleUnit(unit))
+      return false;
+    const bunker = this.getEntity(unit.order.bunkerId);
+    if (!bunker || bunker.defId !== 'bunker' || bunker.owner !== unit.owner || bunker.hp <= 0 ||
+        bunker.progress < 1 || (bunker.garrisonIds?.length || 0) >= BUILDING_DEFS.bunker.garrisonCapacity)
+      return false;
+    return true;
+  }
+
+  _aiReleaseInvalidFieldBunkerOrders() {
+    if (!this._aiFieldBunkerEnabled()) return;
+    for (const unit of this.units) {
+      if (unit.owner !== 'enemy' || unit.order?.type !== 'garrison' || this._aiFieldBunkerOrderValid(unit)) continue;
+      unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+    }
+  }
+
+  _aiFieldBunkerThreat() {
+    const industries = this.buildings.filter(building => building.owner === 'enemy' && building.hp > 0 &&
+      building.progress >= 1 && ['command', 'refinery', 'factory', 'barracks'].includes(building.defId));
+    const threats = (this._aiIntel || []).filter(item => !item.building && Number.isFinite(item.seen) &&
+      this.time - item.seen <= 18 && Number.isFinite(item.x) && Number.isFinite(item.y) &&
+      !UNIT_DEFS[item.defId]?.flying && !!UNIT_DEFS[item.defId]?.weapon);
+    const candidates = [];
+    for (const threat of threats) for (const industry of industries) {
+      const center = this._entityCenter(industry);
+      const distance = dist(threat.x, threat.y, center.x, center.y);
+      if (distance > 14) continue;
+      candidates.push({ threat, industry, distance, age: this.time - threat.seen });
+    }
+    candidates.sort((a, b) => a.distance - b.distance || a.age - b.age ||
+      a.industry.id.localeCompare(b.industry.id) || a.threat.id.localeCompare(b.threat.id));
+    return candidates[0] || null;
+  }
+
+  _aiFieldBunkerPlacement(industry, threat) {
+    if (!industry || !threat) return null;
+    const center = this._entityCenter(industry);
+    const vx = threat.x - center.x, vy = threat.y - center.y;
+    const magnitude = Math.hypot(vx, vy);
+    if (!Number.isFinite(magnitude) || magnitude < 0.01) return null;
+    const ux = vx / magnitude, uy = vy / magnitude;
+    let best = null;
+    const definition = BUILDING_DEFS.bunker;
+    // Search a modest grid on the observed approach side of the threatened
+    // industry; canPlaceBuilding remains the authority for normal placement.
+    for (let y = Math.floor(center.y - 7); y <= Math.floor(center.y + 7 - definition.h); y++) {
+      for (let x = Math.floor(center.x - 7); x <= Math.floor(center.x + 7 - definition.w); x++) {
+        const bx = x + definition.w / 2, by = y + definition.h / 2;
+        const dx = bx - center.x, dy = by - center.y;
+        const projection = dx * ux + dy * uy;
+        const lateral = Math.abs(dx * uy - dy * ux);
+        if (projection < 2.2 || projection > 7 || lateral > 5) continue;
+        if (!this.canPlaceBuilding('bunker', x, y, 'enemy').ok) continue;
+        const score = Math.abs(projection - 4) * 2 + lateral * 1.5 +
+          Math.hypot(threat.x - bx, threat.y - by) * 0.02;
+        if (!best || score < best.score || score === best.score && (y < best.y || y === best.y && x < best.x))
+          best = { x, y, score };
+      }
+    }
+    return best ? { x: best.x, y: best.y } : null;
+  }
+
+  _aiFieldBunkerUnitUncommitted(unit) {
+    return unit.owner === 'enemy' && unit.hp > 0 && !unit.embarkedIn &&
+      (unit.order?.type === 'idle' || unit.order?.type === 'guard') &&
+      !unit._aiCommandRecovery && !unit._aiExpansion && !unit._aiExpansionEscort &&
+      !unit._aiDefenseTarget && !unit._aiRaidTarget && !unit._aiRecovering && !unit._aiRecoverWreck &&
+      !unit._aiSiegeTarget && !unit._aiSiegeEscort && !unit._aiBridgeTarget &&
+      !unit._aiTransportRelayId && !unit._relayAssignment && !unit._aiRelayResponseRelayId &&
+      !unit._aiRelayReconRelayId && !unit._aiRelayUrgentRelayId && !unit._aiSiegeVantageTarget &&
+      !unit._aiSalvageDropOrder && !unit._aiEngineerRaid && !unit.order?.aiScout && !unit.order?.aiCounterPlan &&
+      !unit.order?.aiDefense && !unit.order?.aiSiegeDirector && !unit.order?.aiSiegeEscort &&
+      !unit.order?.aiSiegeVantage && !unit.order?.aiBloomEscort && !unit.order?.aiMedicEscort &&
+      !unit.order?.aiExpansionEscort && !unit.order?.aiRelayUrgent && !unit.order?.aiTransport &&
+      !unit.order?.aiBridge && !!UNIT_DEFS[unit.defId]?.weapon && !UNIT_DEFS[unit.defId]?.flying &&
+      !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(unit.defId);
+  }
+
+  _aiFieldBunkerMobileDefenseCount() {
+    return this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 && !unit.embarkedIn &&
+      !!UNIT_DEFS[unit.defId]?.weapon && !UNIT_DEFS[unit.defId]?.flying &&
+      !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(unit.defId) &&
+      !this._aiFieldBunkerOrderValid(unit)).length;
+  }
+
+  _aiFieldBunkerCrewEligible(unit) {
+    return this._aiFieldBunkerUnitUncommitted(unit) && this._isGarrisonEligibleUnit(unit);
+  }
+
+  _aiFieldBunkerTick(protectOutpostCash = false, { buildOnly = false } = {}) {
+    if (!this._aiFieldBunkerEnabled()) return false;
+    const threat = this._aiFieldBunkerThreat();
+    let bunker = this.buildings.filter(building => building.owner === 'enemy' && building.defId === 'bunker' &&
+      building.hp > 0 && building.progress >= 1).sort((a, b) => a.id.localeCompare(b.id))[0];
+    if (bunker && !buildOnly) {
+      const validInbound = this.units.filter(unit => this._aiFieldBunkerOrderValid(unit) &&
+        unit.order.bunkerId === bunker.id);
+      const seats = BUILDING_DEFS.bunker.garrisonCapacity - (bunker.garrisonIds?.length || 0) - validInbound.length;
+      const available = this.units.filter(unit => this._aiFieldBunkerCrewEligible(unit))
+        .sort((a, b) => dist(a.x, a.y, bunker.x + bunker.w / 2, bunker.y + bunker.h / 2) -
+          dist(b.x, b.y, bunker.x + bunker.w / 2, bunker.y + bunker.h / 2) || a.id.localeCompare(b.id));
+      const reserve = this._aiFieldBunkerMobileDefenseCount();
+      const crewCount = Math.max(0, Math.min(seats, available.length, reserve - 3));
+      if (crewCount > 0) {
+        const previousOwner = this.commandOwner;
+        const previousSelection = [...this.selection];
+        this.commandOwner = 'enemy';
+        this.selection = available.slice(0, crewCount).map(unit => unit.id);
+        try { this.issueGarrison(bunker.id); }
+        finally { this.commandOwner = previousOwner; this.selection = previousSelection; }
+        return true;
+      }
+    }
+
+    const hasAnyBunker = this.buildings.some(building => building.owner === 'enemy' && building.defId === 'bunker');
+    if (hasAnyBunker || this._aiFieldBunkerBuilt || protectOutpostCash || !threat) return false;
+    const available = this.units.filter(unit => this._aiFieldBunkerCrewEligible(unit));
+    const reserve = this._aiFieldBunkerMobileDefenseCount();
+    if (!available.length || reserve <= 3) return false;
+    const placement = this._aiFieldBunkerPlacement(threat.industry, threat.threat);
+    if (!placement || !this._aiBuild('bunker', null, placement)) return false;
+    this._aiFieldBunkerBuilt = true;
+    return true;
+  }
+
   _activateAIUnitAbility(unit, abilityId) {
     if (this.canUseUnitAbility(unit.id, abilityId, 'enemy').ok) {
       this._activateUnitAbility(unit, abilityId, 'enemy');
@@ -7289,8 +7426,10 @@ export class Game {
           ? UNIT_DEFS.mcv.cost + 200 : BUILDING_DEFS.refinery.cost + 200;
     }
     const protectingEconomy = reserveCommandRecovery || expansionCashGoal > 0 && this.credits.enemy < expansionCashGoal;
+    this._aiReleaseInvalidFieldBunkerOrders();
     const combatUnits = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 && !u.embarkedIn &&
       !u._aiCommandRecovery &&
+      !this._aiFieldBunkerOrderValid(u) &&
       !(u.order?.type === 'board' && this.getEntity(u.order.carrierId)?.owner === 'enemy') &&
       !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(u.defId));
     this._aiObserve();
@@ -7324,6 +7463,8 @@ export class Game {
     else if (!count('factory')) this._aiBuild('factory');
     else if (this._aiExpansionEnabled() && count('refinery') < 2 && this.credits.enemy > BUILDING_DEFS.refinery.cost + 200)
       this._aiBuild('refinery');
+    else if (this._aiFieldBunkerTick(protectingEconomy || expansionPending &&
+      this.credits.enemy < expansionCashGoal, { buildOnly: true })) { /* paid defensive structure */ }
     else if (!count('radar') && this.credits.enemy > 1350) this._aiBuild('radar');
     else if (!count('tech') && count('radar') && this.credits.enemy >
       (this._aiExpansionEnabled() ? BUILDING_DEFS.tech.cost + 200 : 2400)) this._aiBuild('tech');
@@ -7351,6 +7492,7 @@ export class Game {
     if (!protectOutpostCash && harvesters + queuedHarvesters < harvesterLimit &&
       this.credits.enemy >= UNIT_DEFS.harvester.cost)
       this._queueUnit('enemy', 'harvester');
+    this._aiFieldBunkerTick(protectOutpostCash);
     this._aiEngineerCaptureRaidTick({ protectedEconomy: protectOutpostCash, combatUnits });
     const cap = this.difficulty === 'hard' ? 27 : this.difficulty === 'easy' ? 14 : 21;
     const queued = enemyBuildings.reduce((sum, b) => sum + b.queue.length, 0);
@@ -7672,7 +7814,8 @@ export class Game {
 
   _aiSiegeVisibleDefenses(combatUnits) {
     if (!this._aiSiegeDirectorActive()) return false;
-    const defenseIds = ['turret', 'guardTower', 'aaTower', 'sam', 'obelisk', 'ionSpire'];
+    const defenseIds = ['turret', 'guardTower', 'aaTower', 'sam', 'obelisk', 'ionSpire',
+      ...(this._aiFieldBunkerEnabled() ? ['bunker'] : [])];
     for (const unit of combatUnits) if (unit._aiSiegeTarget) {
       const previous = this.getEntity(unit._aiSiegeTarget);
       if (!previous || previous.hp <= 0 || !this.isVisible(previous, 'enemy')) {
@@ -8063,8 +8206,10 @@ export class Game {
   _launchAiWave() {
     const teamPolicy = this.mode === 'skirmish' && (this.replayVersion == null || this.replayVersion >= 22);
     const siegeDirector = this._aiSiegeDirectorActive();
+    this._aiReleaseInvalidFieldBunkerOrders();
     const army = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 && !u._aiCommandRecovery &&
       !u.embarkedIn && !(u.order?.type === 'board' && this.getEntity(u.order.carrierId)?.owner === 'enemy') &&
+      !this._aiFieldBunkerOrderValid(u) &&
       !(siegeDirector && u._aiExpansion) &&
       !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(u.defId) && !u._relayAssignment &&
       !u._aiDefenseTarget && !u._aiRaidTarget && !u._aiRecovering &&
@@ -8072,7 +8217,8 @@ export class Game {
     if (army.length < 3) return false;
     this._aiObserve();
     const isVisibleDefenseIntel = item => {
-      if (!siegeDirector || !['turret', 'guardTower', 'aaTower', 'sam', 'obelisk', 'ionSpire'].includes(item.defId))
+      if (!siegeDirector || !['turret', 'guardTower', 'aaTower', 'sam', 'obelisk', 'ionSpire',
+        ...(this._aiFieldBunkerEnabled() ? ['bunker'] : [])].includes(item.defId))
         return false;
       const live = this.getEntity(item.id);
       return !!live && live.owner === 'player' && live.hp > 0 && this.isVisible(live, 'enemy');
@@ -8128,7 +8274,8 @@ export class Game {
     const rolePriority = unit => {
       if (!teamPolicy || !visible) return 0;
       const defId = this.getEntity(target.id)?.defId;
-      if (siegeDirector && ['turret', 'guardTower', 'aaTower', 'sam', 'obelisk', 'ionSpire'].includes(defId))
+      if (siegeDirector && ['turret', 'guardTower', 'aaTower', 'sam', 'obelisk', 'ionSpire',
+        ...(this._aiFieldBunkerEnabled() ? ['bunker'] : [])].includes(defId))
         return ({ siege: 0, counter: 1, line: 2, screen: 3 })[role(unit)];
       if (defId === 'command' || ['factory', 'refinery', 'radar', 'tech'].includes(defId))
         return ({ siege: 0, counter: 1, line: 2, screen: 3 })[role(unit)];
@@ -8324,6 +8471,10 @@ export class Game {
     if (game.replayVersion == null && data.productionRepeatRulesVersion === PRODUCTION_REPEAT_RULES_VERSION &&
         data.garrisonRulesVersion !== GARRISON_RULES_VERSION)
       game.replayVersion = GARRISON_RULES_VERSION - 1;
+    // Markerless v79 saves predate the Veteran/Elite Field Bunker policy.
+    if (game.replayVersion == null && data.garrisonRulesVersion === GARRISON_RULES_VERSION &&
+        data.aiFieldBunkerRulesVersion !== AI_FIELD_BUNKER_RULES_VERSION)
+      game.replayVersion = GARRISON_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -8469,6 +8620,10 @@ export class Game {
     game.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     game.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     game.garrisonRulesVersion = GARRISON_RULES_VERSION;
+    game.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
+    game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
+      data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
+        building.owner === 'enemy' && building.defId === 'bunker');
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     game.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;

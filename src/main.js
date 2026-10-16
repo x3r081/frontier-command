@@ -1005,6 +1005,7 @@ function reverseMoveUnits(units=selectedObjects()) {
 function battlefieldPickerIsOpen() { return !$('#battlefield-picker-panel').classList.contains('hidden'); }
 function updateBattlefieldPickerAddSquadControl() {
   const button=$('#battlefield-picker-add-squad');
+  button.closest('.battlefield-picker-squad-tools').classList.toggle('hidden',['board','bunkerAttack'].includes(attackMoveMode));
   button.classList.toggle('active',battlefieldPickerAddSquadMode);
   button.setAttribute('aria-pressed',String(battlefieldPickerAddSquadMode));
   button.disabled=!game||!playing||paused||replayMode;
@@ -1094,6 +1095,11 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
       label: `LAST SEEN · ${name} · ${sector} · ${age}s ago`,
       ariaLabel: `Last seen ${name} at sector ${sector}, ${age} seconds ago. Unconfirmed; it may have moved or been destroyed. Center camera to scout.` });
   }
+  if(attackMoveMode==='board')return entries.filter(entry=>entry.friendly&&
+    (isTroopCarrier(entry.entity)||isFriendlyFieldBunker(entry.entity)&&selectedObjects().some(isBunkerEligibleInfantry))).map(entry=>({...entry,
+      ariaLabel:`Board ${entry.ariaLabel.replace(/^Select friendly /,'')}`}));
+  if(attackMoveMode==='bunkerAttack')return entries.filter(entry=>entry.entity?.owner==='enemy')
+    .map(entry=>({...entry,ariaLabel:`Target ${entry.ariaLabel.replace(/^Center camera on visible enemy /,'')}`}));
   return [...intelEntries, ...entries];
 }
 function renderBattlefieldPicker() {
@@ -1135,9 +1141,13 @@ function renderBattlefieldPicker() {
     const current = list.children[index]?.firstElementChild;
     if (current !== button) list.insertBefore(button.closest('li'), list.children[index] || null);
   });
+  const boarding=attackMoveMode==='board', bunkerAttack=attackMoveMode==='bunkerAttack';
   $('#battlefield-picker-empty').classList.toggle('hidden', entries.length > 0);
-  $('#battlefield-picker-panel .battlefield-picker-heading strong').textContent = contacts.length
-    ? 'OBJECTS & LAST-SEEN INTEL' : 'VISIBLE OBJECTS';
+  $('#battlefield-picker-empty').textContent=boarding?'No completed friendly carriers or Field Bunkers.':
+    bunkerAttack?'No enemy targets in current sight.':'No friendly forces or visible objects.';
+  $('#battlefield-picker-panel .battlefield-picker-heading strong').textContent = boarding?
+    'CHOOSE CARRIER OR FIELD BUNKER':bunkerAttack?'CHOOSE VISIBLE ENEMY TARGET':contacts.length
+      ? 'OBJECTS & LAST-SEEN INTEL' : 'VISIBLE OBJECTS';
   updateBattlefieldPickerIntelBadge(contacts);
   if (removedFocused) (list.querySelector('button') || $('#battlefield-picker-toggle')).focus();
 }

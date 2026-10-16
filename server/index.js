@@ -6,7 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  INFANTRY_DIG_IN_RULES_VERSION, GARRISON_RULES_VERSION,
+  INFANTRY_DIG_IN_RULES_VERSION, GARRISON_RULES_VERSION, AI_FIELD_BUNKER_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -78,8 +78,11 @@ const RANKED_SEASON = 79;
 // that command, queue and AI behavior are unchanged; comparison floors stay 75.
 // Version 79 introduces crewed Field Bunkers. The new combat option starts
 // fresh solo comparison boards and multiplayer Season 79; archives remain.
+// Version 80 adds the skirmish Veteran/Elite AI bunker policy and visible-only
+// Siege Director response. It advances those difficulty boards only; campaign,
+// Easy skirmish, and ranked multiplayer behavior remain on their existing rules.
 const CAMPAIGN_SCORE_FLOOR = GARRISON_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = GARRISON_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = AI_FIELD_BUNKER_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = GARRISON_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
