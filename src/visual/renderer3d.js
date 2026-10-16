@@ -4200,7 +4200,7 @@ export class Renderer3D {
     for (const { material, intensity } of a.lights || []) material.emissiveIntensity = intensity * lightLevel;
   }
 
-  _animateMotion(state, speed) {
+  _animateMotion(state, speed, dx=0, dz=0, time=0) {
     const a=state.animation;
     if (!a || a.motion === undefined) return;
     // Displacement is measured from successive render positions, so cap a
@@ -4211,7 +4211,59 @@ export class Renderer3D {
     const visual=state.group.userData.authoredVisual||state.group.userData.proceduralVisual;
     if (!visual) return;
     const gait=Math.sin(a.travel+a.phase);
-    if (a.infantry) {
+    if (a.flying && (state.defId === 'orca' || state.defId === 'apache')) {
+      // Keep flight lean on the authored child so heading, hover height, and
+      // any world-space cues on the parent continue to use their existing pose.
+      if (a.flightBaseRotationX === undefined) {
+        a.flightBaseRotationX=visual.rotation.x;
+        a.flightBaseRotationZ=visual.rotation.z;
+        a.flightBank=0;
+        a.flightPitch=0;
+      }
+      const elapsed=time-a.lastFlightMotionTime;
+      const repeatedTime=Number.isFinite(elapsed)&&elapsed===0;
+      const discontinuity=!Number.isFinite(elapsed)||elapsed<0||elapsed>0.5||speed>0.75;
+      if (discontinuity) {
+        // A replay seek, hidden-tab pause, or teleport must not reuse stale
+        // velocity and leave a strong bank on the aircraft.
+        a.flightBank=0;
+        a.flightPitch=0;
+        a.flightTargetPitch=0;
+        a.lastFlightDirection=null;
+        a.lastFlightMoveTime=time;
+      } else if (!repeatedTime) {
+        const dt=Math.min(elapsed,0.1);
+        const distance=Math.hypot(dx,dz);
+        if (distance>0.002) {
+          const moveElapsed=Number.isFinite(a.lastFlightMoveTime)
+            ? clamp(time-a.lastFlightMoveTime,dt,0.5) : dt;
+          const directionX=dx/distance, directionZ=dz/distance;
+          if (a.lastFlightDirection) {
+            const turn=Math.atan2(
+              a.lastFlightDirection.x*directionZ-a.lastFlightDirection.z*directionX,
+              a.lastFlightDirection.x*directionX+a.lastFlightDirection.z*directionZ);
+            // Apply a turn impulse from the path curvature, then let elapsed
+            // time settle it. The impulse size is independent of render FPS.
+            a.flightBank=clamp(a.flightBank-turn*0.20,-0.16,0.16);
+          }
+          a.lastFlightDirection={x:directionX,z:directionZ};
+          a.lastFlightMoveTime=time;
+          const speedPerSecond=distance/moveElapsed;
+          a.flightTargetPitch=-0.045*clamp(speedPerSecond/3.45,0,1);
+        } else if (!Number.isFinite(a.lastFlightMoveTime)||time-a.lastFlightMoveTime>0.1) {
+          if (Number.isFinite(a.lastFlightMoveTime)&&time-a.lastFlightMoveTime>0.25)
+            a.lastFlightDirection=null;
+          a.flightTargetPitch=0;
+        }
+        // Exponential easing keeps the response consistent across frame rates.
+        const settle=1-Math.exp(-dt*4.2);
+        a.flightBank+=(0-a.flightBank)*settle;
+        a.flightPitch+=(a.flightTargetPitch-a.flightPitch)*settle;
+      }
+      if (!repeatedTime) a.lastFlightMotionTime=time;
+      visual.rotation.x=a.flightBaseRotationX+a.flightPitch;
+      visual.rotation.z=a.flightBaseRotationZ+a.flightBank;
+    } else if (a.infantry) {
       visual.position.y=a.baseY+a.motion*(0.012+0.023*Math.abs(gait));
       visual.rotation.z=a.motion*gait*0.043;
       visual.rotation.x=a.motion*Math.cos(a.travel+a.phase)*0.025;
@@ -4826,7 +4878,7 @@ export class Renderer3D {
       // little more height and width at the strategic camera scale.
       if(state.unitVisual&&state.unitVisualBaseScale)
         state.unitVisual.scale.copy(state.unitVisualBaseScale).multiplyScalar(crowdViewScale*(infantry?1.16:1));
-      if(!building) this._animateMotion(state,speed);
+      if(!building) this._animateMotion(state,speed,dx,dz,time);
       this._animateEntity(state,o,game,time);
       if(!building) this._syncUnitAbilityVisuals(state,o,game,time);
       if(building) this._syncRefineryTransfer(state,o,game,time);
