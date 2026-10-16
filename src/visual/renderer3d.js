@@ -4080,6 +4080,16 @@ export class Renderer3D {
         o.faction === 'vesper' ? 'Vesper salvage signal arm' : 'Aegis construction jib');
       if (animation.commandGantry) animation.commandGantryBaseYaw = animation.commandGantry.rotation.y;
     }
+    if (o.defId === 'barracks' && authored) {
+      animation.lights = emissiveParts(group, o.faction === 'vesper'
+        ? ['Pod violet vent'] : ['Entry canopy light']);
+      if (o.faction !== 'vesper') {
+        animation.barracksDoor = authoredPart(group, 'Entry blast door');
+        animation.barracksDoorBasePosition = animation.barracksDoor?.position.clone() || null;
+        animation.barracksDoorAperture = 0;
+        animation.lastBarracksAnimationTime = NaN;
+      }
+    }
     if (o.defId === 'radar') {
       animation.pivot = animatedPivot(group,
         ['Faceted radar dish', 'Dish inner face', 'Dish signal hub', 'Feed arm', 'Feed receiver'],
@@ -4393,6 +4403,34 @@ export class Renderer3D {
       const sweep = active ? 0.34 : built ? 0 : 0.68;
       const rate = active ? 0.42 : 1.25;
       a.commandGantry.rotation.y = a.commandGantryBaseYaw + Math.sin(time * rate + a.phase) * sweep;
+    } else if (o.defId === 'barracks') {
+      const queue = o.queue;
+      const firstOrder = Array.isArray(queue) ? queue[0] : null;
+      const production = clamp(Number.isFinite(firstOrder?.progress) ? firstOrder.progress : 0, 0, 1);
+      const active = built && powered && !!firstOrder && production < 1;
+      if (active) {
+        lightLevel = 0.9 + 0.55 * (0.5 + 0.5 * Math.sin(time * 5.2 + a.phase));
+        if (a.barracksDoor && a.barracksDoorBasePosition) {
+          // Open near deployment, then ease closed after the unit leaves.
+          const opening = clamp((production - 0.68) / 0.24, 0, 1);
+          const targetAperture = opening * opening * (3 - 2 * opening);
+          const elapsed = Number.isFinite(a.lastBarracksAnimationTime)
+            ? clamp(time - a.lastBarracksAnimationTime, 0, 0.1) : 0;
+          a.barracksDoorAperture += (targetAperture - a.barracksDoorAperture) * (1 - Math.exp(-elapsed * 7));
+          a.barracksDoor.position.copy(a.barracksDoorBasePosition);
+          a.barracksDoor.position.y += a.barracksDoorAperture * 0.38;
+          a.lastBarracksAnimationTime = time;
+        }
+      } else if (built && powered && a.barracksDoor && a.barracksDoorBasePosition) {
+        // A short eased close keeps a completed or cancelled training cycle
+        // from snapping back to the authored door pose.
+        const elapsed = Number.isFinite(a.lastBarracksAnimationTime)
+          ? clamp(time - a.lastBarracksAnimationTime, 0, 0.1) : 0;
+        a.barracksDoorAperture *= Math.exp(-elapsed * 7);
+        a.barracksDoor.position.copy(a.barracksDoorBasePosition);
+        a.barracksDoor.position.y += a.barracksDoorAperture * 0.38;
+        a.lastBarracksAnimationTime = time;
+      }
     } else if (o.defId === 'radar') {
       if (a.pivot) a.pivot.rotation.y = built && powered ? time * 0.42 : 0;
       lightLevel = built && powered ? 0.84 + 0.24 * Math.sin(phase) : 0.14;

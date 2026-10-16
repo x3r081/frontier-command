@@ -16,6 +16,7 @@ import { listSaveSlots, getSaveSlot, writeSaveSlot, deleteSaveSlot } from './gam
 import { clearSoloRecovery, loadSoloRecovery, saveSoloRecovery } from './game/soloRecovery.js';
 import { relayIntel } from './game/relayIntel.js';
 import { chooseRelayLocator } from './game/relayLocator.js';
+import { SelectionRoster } from './game/selectionRoster.js';
 import { drawStrategicMapPreview } from './ui/strategicMapPreview.js';
 import { campaignArtworkForMission } from './ui/campaignArtwork.js';
 import { AudioSystem } from './audio.js';
@@ -65,6 +66,8 @@ const STANCE_UI = Object.freeze({
 });
 
 let game = null;
+const selectionRoster = new SelectionRoster();
+const selectionRosterButtons = new Map();
 let currentMode = 'skirmish';
 let missionIndex = 0;
 let campaignDifficulty = 'normal';
@@ -848,6 +851,7 @@ async function watchLastReplay() {
 async function watchReplayRecord(record, metadata = null) {
   if (gameStarting) return;
   gameStarting = true;
+  selectionRoster.reset();
   setBattlefieldPickerOpen(false);
   try {
     const playback = createSoloPlayback(record.envelope, record.commands, record.completedTicks, record.version);
@@ -2102,6 +2106,7 @@ function resetCommandDeckForOperation() {
 }
 async function beginGame(options = {}) {
   if(gameStarting)return;
+  selectionRoster.reset();
   relayScoutIndex=0;
   matchPaceMode=false;
   selectedFormation='';formationSelectionKey='';formationPreviewCache={key:'',at:0,preview:null};
@@ -2376,6 +2381,7 @@ function updateSoloRecoveryButton() {
 async function loadSaved(data, fromRecovery = false) {
   if (!data) { toast('NO SAVED OPERATION FOUND',true); return; }
   try {
+    selectionRoster.reset();
     abandonActiveRun();
     activePlayback=null;replayMode=false;replayAccumulator=0;replaySeekTarget=null;
     $('#game-shell').classList.remove('replay-mode');hide('#replay-controls');
@@ -2441,6 +2447,7 @@ function abandonActiveRun() {
   network.finishRun(runId,{abandon:true}).catch(()=>{});
 }
 function returnToMenu({preserveLobby=false}={}) {
+  selectionRoster.reset();
   battlefieldPickerAddSquadMode=false;
   setBattlefieldPickerOpen(false);
   resetAiProfileDisclosure();
@@ -2800,6 +2807,40 @@ function cancelActiveTargeting(){
 }
 function cancelPlacement(cancelEngine = false) { placementToken++; if (cancelEngine && game?.cancelConstruction && placeId) resultMessage(game.cancelConstruction(),'CONSTRUCTION CANCELED'); placeId = null; placementPending=false; hide('#placement-hint'); syncTargetingFocus(); }
 function cancelCommandAbility(){commandAbilityToken++;commandAbilityMode=null;commandAbilityPending=false;$('#attack-hint').removeAttribute('title');hide('#attack-hint');syncTargetingFocus();}
+function updateSelectionRoster(state){
+  const container=$('#selection-roster');
+  const toggle=$('#selection-roster-toggle');
+  if(!state?.visible)toggle.setAttribute('aria-expanded','false');
+  container.classList.toggle('hidden',!state?.visible);
+  toggle.classList.toggle('hidden',!state?.visible);
+  toggle.setAttribute('aria-label',toggle.getAttribute('aria-expanded')==='true'?'Hide unit type roster':'Show unit type roster');
+  if(!state?.visible)return;
+  const rows=[{key:'all',name:'ALL',count:state.allIds.length,selectedCount:state.selectedIds.length},...state.groups];
+  const liveKeys=new Set(rows.map(row=>String(row.key)));
+  for(const [key,button] of selectionRosterButtons){
+    if(!liveKeys.has(key)){button.remove();selectionRosterButtons.delete(key);}
+  }
+  for(const row of rows){
+    const key=String(row.key);
+    let button=selectionRosterButtons.get(key);
+    if(!button){
+      button=document.createElement('button');
+      button.type='button';
+      button.className='selection-roster-button';
+      button.dataset.selectionRoster=key;
+      selectionRosterButtons.set(key,button);
+    }
+    const label=key==='all'?'ALL':row.name||key;
+    const count=key==='all'?state.allIds.length:row.count;
+    const selected=key==='all'?state.isAll:row.selectedCount>0;
+    button.textContent=`${label} · ${count}`;
+    button.setAttribute('aria-label',`${label}, ${count} ${count===1?'unit':'units'}${key==='all'?'':`, ${row.selectedCount} selected`}`);
+    button.title=key==='all'?'Select all surviving units from the original mixed selection':`Select all ${label} units from the original mixed selection`;
+    button.setAttribute('aria-pressed',String(selected));
+    button.disabled=!!replayMode;
+    if(button.parentNode!==container)container.append(button);
+  }
+}
 function routeSelectionKey(units=selectedObjects().filter(o=>!('w' in o)&&o.owner==='player')){
   return units.map(unit=>unit.id).sort().join('|');
 }
@@ -4294,6 +4335,8 @@ function issueDigInAt(x,y){
   }
 }
 function updateSelectionCard() {
+  const rosterState=selectionRoster.sync({selection:game?.selection||[],units:game?.units||[],buildings:game?.buildings||[],unitDefs:game?.unitDefs||{}});
+  updateSelectionRoster(rosterState);
   const selected=selectedObjects();
   if(attackMoveMode==='assignRefinery'&&!isHarvesterHomeSelection(selected))cancelActiveTargeting();
   updateFormationControl(selected);
@@ -6566,6 +6609,7 @@ function hydrateMultiplayerState(state){
   if(playing)updateUI(true);
 }
 async function startMultiplayerGame(message){
+  selectionRoster.reset();
   finishDeploymentIntro();
   matchPaceMode=false;
   selectedFormation='';formationSelectionKey='';formationPreviewCache={key:'',at:0,preview:null};
@@ -6621,7 +6665,7 @@ function frame(now) {
   if(replayMode&&activePlayback&&replaySeekTarget!==null){
     try{
       if(replaySeekTarget<activePlayback.tick){
-        game=activePlayback.reset();gameSeconds=game.time;replayAccumulator=0;
+        game=activePlayback.reset();selectionRoster.reset();gameSeconds=game.time;replayAccumulator=0;
       }
       const steps=Math.min(120,replaySeekTarget-activePlayback.tick);
       if(steps>0){game=activePlayback.step(steps);gameSeconds=game.time;game.events.length=0;}
@@ -6955,6 +6999,22 @@ $('#power-grid-list').addEventListener('click',event=>{
   setBuildingStandby(button.dataset.powerBuilding,standby);
 });
 $('#selection-card').addEventListener('click',event=>{
+  const rosterToggle=event.target.closest('#selection-roster-toggle');
+  if(rosterToggle&&!rosterToggle.classList.contains('hidden')){
+    const expanded=rosterToggle.getAttribute('aria-expanded')!=='true';
+    rosterToggle.setAttribute('aria-expanded',String(expanded));
+    rosterToggle.setAttribute('aria-label',expanded?'Hide unit type roster':'Show unit type roster');
+    return;
+  }
+  const rosterButton=event.target.closest('[data-selection-roster]');
+  if(rosterButton&&!rosterButton.disabled){
+    const ids=selectionRoster.choose(rosterButton.dataset.selectionRoster);
+    if(!ids)return;
+    cancelActiveTargeting();
+    game.select(ids);
+    updateUI(true);
+    return;
+  }
   const recommission=event.target.closest('[data-recommission-wreck]');
   if(recommission&&!recommission.disabled){startRecommissionTarget();return;}
   const button=event.target.closest('[data-selection-power]');
@@ -7089,7 +7149,7 @@ $('#replay-moment-list').addEventListener('click',event=>{
 $('#replay-restart').addEventListener('click',()=>{
   if(!activePlayback)return;
   replaySeekTarget=null;$('#replay-seek-status').textContent='';
-  game=activePlayback.reset();gameSeconds=0;replayAccumulator=0;paused=false;
+  game=activePlayback.reset();selectionRoster.reset();gameSeconds=0;replayAccumulator=0;paused=false;
   centerOnBase();updateUI(true);updateReplayControls();lastTime=performance.now();
 });
 $('#replay-exit').addEventListener('click',returnToMenu);
