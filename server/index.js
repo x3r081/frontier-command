@@ -13,6 +13,7 @@ import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_
 import { validateCampaignVeteran, campaignVeteranSourceIds } from '../src/game/campaignVeteran.js';
 import { validateSoloEnvelope, validateSoloReplay, MAX_SOLO_TICKS, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
+import { activateSelectedUnitAbility } from '../src/game/fieldAbilities.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -1126,7 +1127,7 @@ function startMatch(lobby) {
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
-  'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
+  'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'useSelectedUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
   const game = lobby.game;
   if (!game || game.status !== 'playing') return { ok: false, reason: 'No active match.' };
@@ -1189,6 +1190,7 @@ function command(lobby, member, message) {
       case 'useSuperweapon': return game.useSuperweapon(n(message.x), n(message.y));
       case 'useCommandAbility': return game.useCommandAbility(message.abilityId, n(message.x), n(message.y));
       case 'useUnitAbility': return game.useUnitAbility(message.unitId, message.abilityId);
+      case 'useSelectedUnitAbility': return activateSelectedUnitAbility(game, message.abilityId);
       case 'issueEngineer': return game.issueEngineer(message.targetId);
       case 'issueRecoverWreck': return game.issueRecoverWreck(message.wreckId);
       case 'issueRecommissionWreck': return typeof message.wreckId === 'string'

@@ -85,8 +85,9 @@ test('filtered public orders record only the chosen unit type and replay exactly
   const clock = new SoloClock();
   const recorder = createSoloRecorder(game, clock);
   const roster = new SelectionRoster();
-  game.select(game.units.filter(u => u.owner === 'player' && ['rifle', 'tank', 'scout'].includes(u.defId)).map(u => u.id));
+  game.select(game.units.filter(u => u.owner === 'player' && ['rifle', 'lightTank', 'scout'].includes(u.defId)).map(u => u.id));
   const view = roster.sync(game);
+  assert.ok(view.groups.length >= 2, 'the opening selection includes distinct unit types');
   const rifles = view.groups.find(group => group.defId === 'rifle');
   assert.ok(rifles);
   game.select(roster.choose(rifles.key));

@@ -1690,6 +1690,50 @@ test('live multiplayer Bloom Expedition dispatch filters selections to the authe
   host.close(); guest.close();
 });
 
+test('one websocket cohort ability request activates ready own tanks and reports partial readiness', async () => {
+  const a = await createProfile('Cohort Host'), b = await createProfile('Cohort Guest');
+  const host = await openSocket(a.token), guest = await openSocket(b.token);
+  await Promise.all([host, guest].map(ws => nextMessage(ws, m => m.type === 'hello')));
+  sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+  const room = await nextMessage(host, m => m.type === 'lobby');
+  sendSocket(guest, { type: 'join_lobby', code: room.code });
+  await Promise.all([host, guest].map(ws => nextMessage(ws, m => m.type === 'lobby' && m.players.length === 2)));
+  sendSocket(host, { type: 'set_ready', ready: true });
+  sendSocket(guest, { type: 'set_ready', ready: true });
+  await nextMessage(host, m => m.type === 'lobby' && m.players.every(player => player.ready));
+  sendSocket(host, { type: 'start_match' });
+  await Promise.all([host, guest].map(ws => nextMessage(ws, m => m.type === 'match_start')));
+  const game = lobbies.get(room.code).game;
+  // A larger authored cohort proves this is one socket command rather than a
+  // burst of individual commands that would hit the 30-message rate limit.
+  const guardians = Array.from({ length: 35 }, (_, i) => game._createUnit('player', 'guardian', 3 + i % 8, 35 + Math.floor(i / 8)));
+  guardians[0].abilityCooldown = 12;
+  const foreign = game._createUnit('enemy', 'guardian', 50, 5);
+  const issue = async (ws, requestId, fields) => {
+    sendSocket(ws, { type: 'command', command: 'useSelectedUnitAbility', requestId, ...fields });
+    return nextMessage(ws, m => m.type === 'command_result' && m.requestId === requestId);
+  };
+  const activated = await issue(host, 'cohort-brace', { ids: [...guardians.map(u => u.id), foreign.id], abilityId: 'brace' });
+  assert.equal(activated.ok, true);
+  assert.deepEqual(activated.activatedIds, guardians.slice(1).map(u => u.id));
+  assert.deepEqual(activated.skippedIds, [guardians[0].id]);
+  assert.ok(guardians.slice(1).every(u => u.braceUntil > game.time));
+  assert.equal(foreign.braceUntil, 0, 'the foreign tank never receives an activation');
+  assert.equal((await issue(host, 'cohort-repeat', { ids: guardians.map(u => u.id), abilityId: 'brace' })).ok, false);
+  assert.equal((await issue(host, 'cohort-invalid', { ids: guardians.map(u => u.id), abilityId: { brace: true } })).ok, false);
+  assert.equal((await issue(host, 'cohort-queued', { ids: guardians.map(u => u.id), abilityId: 'brace', queue: true })).ok, false);
+
+  const moving = game._createUnit('enemy', 'stealthTank', 51, 7, { type: 'move', x: 50, y: 7 });
+  const idle = game._createUnit('enemy', 'stealthTank', 53, 7);
+  const ghost = await issue(guest, 'cohort-ghost', { ids: [moving.id, idle.id, guardians[0].id], abilityId: 'ghostRun' });
+  assert.equal(ghost.ok, true);
+  assert.deepEqual(ghost.activatedIds, [moving.id]);
+  assert.deepEqual(ghost.skippedIds, [idle.id]);
+  assert.ok(moving.ghostRunUntil > game.time);
+  assert.equal(idle.ghostRunUntil, 0);
+  assert.equal(game.commandOwner, 'player', 'dispatch restores the default command owner');
+});
+
 test('authenticated websocket queueUnit routes to the selected production site and preserves default routing', async () => {
   const a = await createProfile('Production Site Host'); const b = await createProfile('Production Site Guest');
   const host = await openSocket(a.token); const guest = await openSocket(b.token);

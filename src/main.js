@@ -21,6 +21,7 @@ import { drawStrategicMapPreview } from './ui/strategicMapPreview.js';
 import { campaignArtworkForMission } from './ui/campaignArtwork.js';
 import { AudioSystem } from './audio.js';
 import { NetworkClient } from './network/client.js';
+import { getFieldAbilityCohort, activateSelectedUnitAbility } from './game/fieldAbilities.js';
 
 const $ = (s) => document.querySelector(s);
 const canvas = $('#battlefield');
@@ -102,6 +103,9 @@ let armoryAutoPaused = false;
 let promotionAutoPaused = false;
 let powerGridAutoPaused = false;
 const pendingPowerCommands = new Set();
+let pendingFieldAbility = null;
+let fieldAbilityContextToken = 0;
+const fieldAbilityLocks = new Map();
 let powerGridSignature = '';
 let promotionUnitId = null;
 let promotionPending = false;
@@ -831,6 +835,7 @@ function updateReplayControls() {
 }
 function requestReplaySeek() {
   if (!replayMode || !activePlayback) return;
+  clearPendingFieldAbility();
   const track = $('#replay-track');
   replaySeekTarget = Math.max(0, Math.min(activePlayback.completedTicks, Number(track.value) || 0));
   refreshFrameRateReadout();
@@ -850,6 +855,7 @@ async function watchLastReplay() {
 }
 async function watchReplayRecord(record, metadata = null) {
   if (gameStarting) return;
+  clearPendingFieldAbility();
   gameStarting = true;
   selectionRoster.reset();
   setBattlefieldPickerOpen(false);
@@ -933,6 +939,43 @@ function resultMessage(result, success = '', cue = 'order', callbacks = {}) {
   else { if (success) toast(success); audio.play(cue); }
   if(!result?.pending&&game&&playing)updateSelectionCard();
   return result?.ok !== false;
+}
+function clearPendingFieldAbility(){
+  fieldAbilityContextToken++;
+  pendingFieldAbility=null;
+  for(const lock of fieldAbilityLocks.values())clearTimeout(lock.timer);
+  fieldAbilityLocks.clear();
+}
+function fieldAbilityStateIsApplied(unit,abilityId,time){
+  const activeUntil=abilityId==='brace'?unit?.braceUntil:unit?.ghostRunUntil;
+  return (activeUntil||0)>time||(Number(unit?.abilityCooldown)||0)>0;
+}
+function reconcileFieldAbilityLocks(){
+  if(!game)return;
+  const time=game.time||0;
+  const units=new Map((game.units||[]).map(unit=>[unit.id,unit]));
+  for(const [id,lock] of fieldAbilityLocks){
+    const unit=units.get(id);
+    if(unit&&fieldAbilityStateIsApplied(unit,lock.abilityId,time)){
+      clearTimeout(lock.timer);
+      fieldAbilityLocks.delete(id);
+    }
+  }
+}
+function lockFieldAbilityIds(ids,abilityId){
+  reconcileFieldAbilityLocks();
+  const units=new Map((game?.units||[]).map(unit=>[unit.id,unit]));
+  for(const id of ids||[]){
+    const unit=units.get(id);
+    if(!unit||fieldAbilityStateIsApplied(unit,abilityId,game?.time||0))continue;
+    const lock={abilityId,timer:null};
+    lock.timer=setTimeout(()=>{
+      if(fieldAbilityLocks.get(id)!==lock)return;
+      fieldAbilityLocks.delete(id);
+      if(game&&playing)updateSelectionCard();
+    },1000);
+    fieldAbilityLocks.set(id,lock);
+  }
 }
 function definitionMap(kind) { return kind === 'structures' ? (game?.buildingDefs || {}) : (game?.unitDefs || {}); }
 function selectedObjects() {
@@ -2106,6 +2149,7 @@ function resetCommandDeckForOperation() {
 }
 async function beginGame(options = {}) {
   if(gameStarting)return;
+  clearPendingFieldAbility();
   selectionRoster.reset();
   relayScoutIndex=0;
   matchPaceMode=false;
@@ -2380,6 +2424,7 @@ function updateSoloRecoveryButton() {
 }
 async function loadSaved(data, fromRecovery = false) {
   if (!data) { toast('NO SAVED OPERATION FOUND',true); return; }
+  clearPendingFieldAbility();
   try {
     selectionRoster.reset();
     abandonActiveRun();
@@ -2447,6 +2492,7 @@ function abandonActiveRun() {
   network.finishRun(runId,{abandon:true}).catch(()=>{});
 }
 function returnToMenu({preserveLobby=false}={}) {
+  clearPendingFieldAbility();
   selectionRoster.reset();
   battlefieldPickerAddSquadMode=false;
   setBattlefieldPickerOpen(false);
@@ -4381,6 +4427,8 @@ function updateSelectionCard() {
   const fieldUnit=units.length===1&&selected.length===1&&units[0].owner==='player'&&
     (game.replayVersion==null||game.replayVersion>=36)&&
     ['guardian','stealthTank'].includes(units[0].defId)?units[0]:null;
+  const fieldAbilityCohort=getFieldAbilityCohort(game);
+  const fieldAbilityGroup=fieldAbilityCohort?.ids.length>1?fieldAbilityCohort:null;
   const mobileRecommissionUnit=units.length===1&&selected.length===1&&units[0].owner==='player'&&
     units[0].defId==='engineer'&&matchMedia('(max-width: 670px)').matches?units[0]:null;
   const fieldAbility=fieldUnit?.defId==='guardian'?'brace':fieldUnit?'ghostRun':null;
@@ -4446,24 +4494,65 @@ function updateSelectionCard() {
       ?'Recommissioning unavailable in this archived or older battle. Start a new battle to enable it.'
       :'Recommission wreck · choose a compatible visible wreck · powered Field Workshop within 6 tiles · 40% cost · 12 seconds';
     fieldButton.setAttribute('aria-label',fieldButton.title);
+  }else if(fieldAbilityGroup){
+    delete fieldButton.dataset.recommissionWreck;
+    delete fieldButton.dataset.unitId;
+    fieldButton.dataset.unitAbility=fieldAbilityGroup.abilityId;
+    const brace=fieldAbilityGroup.abilityId==='brace';
+    const label=brace?'BRACE':'GHOST RUN';
+    const ready=fieldAbilityGroup.readyIds.length;
+    const total=fieldAbilityGroup.ids.length;
+    const active=fieldAbilityGroup.activeIds.length;
+    const cooling=fieldAbilityGroup.coolingIds.length;
+    const needsMove=fieldAbilityGroup.needsMoveIds.length;
+    const activeRemaining=Math.max(0,Math.ceil(fieldAbilityGroup.activeRemaining||0));
+    const nextCooldown=Math.max(0,Math.ceil(fieldAbilityGroup.nextCooldown||0));
+    const lockedIds=fieldAbilityGroup.ids.filter(id=>fieldAbilityLocks.has(id));
+    const lockedCount=lockedIds.length;
+    const locked=lockedCount>0;
+    const pending=!!pendingFieldAbility;
+    const abilityRulesAvailable=!replayMode&&(game.replayVersion==null||game.replayVersion>=36);
+    fieldButton.querySelector('span').textContent=brace?'⬡':'◇';
+    const needsMoveOnly=fieldAbilityGroup.abilityId==='ghostRun'&&ready===0&&needsMove>0;
+    const labelText=pending?'WAITING':needsMoveOnly?'MOVE TO ARM':locked?`${brace?'BRACED':'GHOST'} ${active+lockedCount}`:
+      ready?`${brace?'BRACE':'GHOST'} ${ready}/${total}`:active?`${brace?'BRACED':'GHOST'} ${activeRemaining||active}`:
+        cooling?`${brace?'BRACE':'GHOST'} ${nextCooldown}`:`${brace?'BRACE':'GHOST'} 0/${total}`;
+    fieldButton.lastChild.textContent=labelText;
+    fieldButton.disabled=pending||locked||!abilityRulesAvailable||(ready===0&&!needsMoveOnly);
+    fieldButton.classList.toggle('active',active>0);
+    const parts=[`${label} · ${ready}/${total} ready`];
+    if(active)parts.push(`${active} active${activeRemaining?` · ${activeRemaining}s remaining`:''}`);
+    if(cooling)parts.push(`${cooling} cooling${nextCooldown?` · next in ${nextCooldown}s`:''}`);
+    if(needsMove)parts.push(`${needsMove} need a move order`);
+    if(pending)parts.push('waiting for server confirmation');
+    else if(locked)parts.push('waiting for the confirmed state update');
+    else if(!abilityRulesAvailable)parts.push('unavailable in replay or archived rules');
+    else if(needsMoveOnly)parts.push('issue a move order to arm Ghost Run');
+    else if(!ready)parts.push(nextCooldown?`next ready in ${nextCooldown}s`:'no units ready');
+    else parts.push(brace?'Protect nearby armor for 7 seconds':'Move units first to arm Ghost Run; then accelerate their move while weapons are silent for 6 seconds');
+    fieldButton.title=`${parts.join(' · ')} (E)`;
+    fieldButton.setAttribute('aria-label',fieldButton.title);
   }else if(fieldUnit){
     delete fieldButton.dataset.recommissionWreck;
     const activeUntil=fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil;
     const active=Math.max(0,Math.ceil((activeUntil||0)-(game.time||0)));
     const cooldown=Math.max(0,Math.ceil(fieldUnit.abilityCooldown||0));
     const label=fieldAbility==='brace'?'BRACE':'GHOST RUN';
+    const locked=fieldAbilityLocks.has(fieldUnit.id);
+    const pending=!!pendingFieldAbility;
     const canUse=game.canUseUnitAbility?.(fieldUnit.id,fieldAbility)||{ok:false,reason:'Field action unavailable.'};
+    const needsMoveAction=fieldAbility==='ghostRun'&&!canUse.ok&&/Ghost Run requires a move order\./i.test(canUse.reason||'');
     fieldButton.dataset.unitAbility=fieldAbility;
     fieldButton.dataset.unitId=fieldUnit.id;
     fieldButton.querySelector('span').textContent=fieldAbility==='brace'?'⬡':'◇';
-    fieldButton.lastChild.textContent=fieldAbility==='brace'
+    fieldButton.lastChild.textContent=pending?'WAITING':locked?`${fieldAbility==='brace'?'BRACED':'GHOST'} 1`:needsMoveAction?'MOVE TO ARM':fieldAbility==='brace'
       ?active?`BRACED ${active}`:cooldown?`BRACE ${cooldown}`:'BRACE'
       :active?`GHOST ${active}`:cooldown?`GHOST ${cooldown}`:'GHOST';
-    fieldButton.disabled=!canUse.ok;
+    fieldButton.disabled=pending||locked||replayMode||paused||(!canUse.ok&&!needsMoveAction);
     fieldButton.classList.toggle('active',active>0);
-    fieldButton.title=active?`${label} active · ${active}s remaining`:
+    fieldButton.title=pending?'Waiting for field ability confirmation':locked?'Waiting for the confirmed state update':active?`${label} active · ${active}s remaining`:
       cooldown?`${label} cooling down · ${cooldown}s remaining`:
-      canUse.ok?`${label} · ${fieldAbility==='brace'?'Protect nearby armor for 7 seconds':'Accelerate an existing move order while weapons are silent for 6 seconds'} (E)`:
+      needsMoveAction?'Issue a move order to arm Ghost Run (E)':canUse.ok?`${label} · ${fieldAbility==='brace'?'Protect nearby armor for 7 seconds':'Accelerate an existing move order while weapons are silent for 6 seconds'} (E)`:
         `${label} unavailable · ${canUse.reason||'Choose a valid unit'}`;
     fieldButton.setAttribute('aria-label',fieldButton.title);
   }else if(digInUnits.length&&!showReturn&&!units.some(unit=>unit.defId==='mcv')){
@@ -4505,7 +4594,14 @@ function updateSelectionCard() {
   moveButton.title=productionBuilding?'Set this building’s reinforcement rally point (M)':'Force move without engaging (M or Alt+click)';
   if(productionBuilding){$('#cmd-attack').disabled=false;moveButton.disabled=false;}
   if(mobileRecommissionUnit)fieldButton.disabled=!recommissionRulesAvailable();
-  else if(fieldUnit)fieldButton.disabled=!game.canUseUnitAbility?.(fieldUnit.id,fieldAbility)?.ok;
+  else if(fieldAbilityGroup)fieldButton.disabled=paused||replayMode||(game.replayVersion!=null&&game.replayVersion<36)||
+    (!!pendingFieldAbility||fieldAbilityGroup.ids.some(id=>fieldAbilityLocks.has(id)))||
+    (fieldAbilityGroup.readyIds.length===0&&!(fieldAbilityGroup.abilityId==='ghostRun'&&fieldAbilityGroup.needsMoveIds.length>0));
+  else if(fieldUnit){
+    const check=game.canUseUnitAbility?.(fieldUnit.id,fieldAbility);
+    const needsMove=fieldAbility==='ghostRun'&&!check?.ok&&/Ghost Run requires a move order\./i.test(check?.reason||'');
+    fieldButton.disabled=replayMode||paused||!!pendingFieldAbility||fieldAbilityLocks.has(fieldUnit.id)||(!check?.ok&&!needsMove);
+  }
   else if(fieldButton.dataset.digIn==='true')fieldButton.disabled=!digInRulesAvailable||digInReadyUnits.length===0;
   const armed=units.filter(unit=>unit.owner==='player'&&game.unitDefs?.[unit.defId]?.weapon);
   const stances=new Set(armed.map(unit=>unit.stance||'aggressive'));
@@ -5479,7 +5575,7 @@ function processEvents() {
       if(e.owner!=='player'&&fogAt(e.x,e.y)!==2)continue;
       if(type==='stormcallPulse')audio.play('ionpulse');
     }
-    if(type==='constructionReady'&&e.defId&&(!game.construction||game.construction.defId===e.defId)){
+    if(type==='constructionReady'&&e.defId&&game.construction?.ready&&game.construction.defId===e.defId){
       setRoutePlanMode(false);placeId=e.defId;placementToken++;placementPending=false;setPlacementHint();show('#placement-hint');syncTargetingFocus();toast(`${game.buildingDefs?.[e.defId]?.name||keyName(e.defId)} ready to place`);audio.play('constructionComplete');
     }
     if(type==='unitReady'&&e.owner==='player')audio.play('unitReady');
@@ -5510,7 +5606,8 @@ function processEvents() {
     }
     if(type==='unitAbility'){
       if(e.owner==='enemy'&&fogAt(e.x,e.y)!==2)continue;
-      if(e.owner==='player')updateSelectionCard();
+      // The issuing control confirms the whole action once, including cohorts.
+      if(e.owner==='player'){updateSelectionCard();continue;}
     }
     if(type==='vesperSalvage'){
       if(e.owner==='player'){
@@ -5733,6 +5830,7 @@ function renderSkirmishDebrief(victory) {
 }
 
 function finishGame(victory, terminalEvent=null) {
+  clearPendingFieldAbility();
   if(gameEnded||!game||!playing)return;gameEnded=true;paused=true;syncTargetingFocus();
   cancelDigInTargeting();
   showPostMatchOpponent(terminalEvent);
@@ -6573,6 +6671,7 @@ function installMultiplayerCommandAdapters(target){
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:(defId,producerId)=>({defId,...(producerId!==undefined?{producerId}:{})}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
     useUnitAbility:(unitId,abilityId)=>({unitId,abilityId}),
+    useSelectedUnitAbility:abilityId=>({abilityId}),
     cancelQueuedUnit:(buildingId,index)=>({buildingId,index}),setRally:(buildingId,x,y)=>({buildingId,x,y}),
     toggleRepair:buildingId=>({buildingId}),sellBuilding:buildingId=>({buildingId}),
     useSuperweapon:(x,y)=>({x,y}),useCommandAbility:(abilityId,x,y)=>({abilityId,x,y}),
@@ -6597,6 +6696,7 @@ function hydrateMultiplayerState(state){
   next.events=[];
   installMultiplayerCommandAdapters(next);
   game=next;faction=next.faction;relayScoutIndex=0;
+  reconcileFieldAbilityLocks();
   gameSeconds=Math.max(gameSeconds,next.time||0);
   if(freshPulse&&playing){
     audio.play('ionpulse');
@@ -6609,6 +6709,7 @@ function hydrateMultiplayerState(state){
   if(playing)updateUI(true);
 }
 async function startMultiplayerGame(message){
+  clearPendingFieldAbility();
   selectionRoster.reset();
   finishDeploymentIntro();
   matchPaceMode=false;
@@ -7148,6 +7249,7 @@ $('#replay-moment-list').addEventListener('click',event=>{
 });
 $('#replay-restart').addEventListener('click',()=>{
   if(!activePlayback)return;
+  clearPendingFieldAbility();
   replaySeekTarget=null;$('#replay-seek-status').textContent='';
   game=activePlayback.reset();selectionRoster.reset();gameSeconds=0;replayAccumulator=0;paused=false;
   centerOnBase();updateUI(true);updateReplayControls();lastTime=performance.now();
@@ -7400,7 +7502,7 @@ $('#cmd-scatter').addEventListener('click',()=>resultMessage(game?.issueScatter?
 $('#cmd-force').addEventListener('click',()=>startTargetOrder('force','FORCE FIRE'));
 $('#cmd-stance').addEventListener('click',cycleStance);
 function activateFieldAbilityOrDeploy(){
-  if(!game)return;
+  if(!game||!playing||paused||replayMode||gameEnded)return;
   const button=$('#cmd-deploy');
   if(button.dataset.digIn==='true'){
     startDigInTargeting();
@@ -7410,11 +7512,61 @@ function activateFieldAbilityOrDeploy(){
     startRecommissionTarget();
     return;
   }
-  const abilityId=button.dataset.unitAbility,unitId=button.dataset.unitId;
-  if(abilityId&&unitId){
-    const label=abilityId==='brace'?'GUARDIAN BRACED':'SPECTER GHOST RUN';
-    resultMessage(game.useUnitAbility?.(unitId,abilityId),label);
-    updateSelectionCard();
+  const abilityId=button.dataset.unitAbility;
+  if(abilityId){
+    if(pendingFieldAbility)return;
+    const cohort=getFieldAbilityCohort(game);
+    if(!cohort||cohort.abilityId!==abilityId)return;
+    if(cohort.ids.some(id=>fieldAbilityLocks.has(id)))return;
+    if(!cohort.readyIds.length){
+      if(abilityId==='ghostRun'&&cohort.needsMoveIds.length)startTargetOrder('forceMove','MOVE TO ARM');
+      return;
+    }
+    const label=abilityId==='brace'?'BRACE':'GHOST RUN';
+    const successLabel=cohort.ids.length===1
+      ?abilityId==='brace'?'GUARDIAN BRACED':'SPECTER GHOST RUN':null;
+    if(currentMode==='multiplayer'){
+      const result=game.useSelectedUnitAbility?.(abilityId)||{ok:false,reason:'Field ability command unavailable.'};
+      if(result?.ok===false){toast(result.reason||'Field ability unavailable.',true);audio.play('error');return;}
+      if(result?.pending&&result.acknowledgement){
+        const token=fieldAbilityContextToken;
+        pendingFieldAbility={abilityId,token};
+        updateSelectionCard();
+        result.acknowledgement.then(ack=>{
+          const current=pendingFieldAbility;
+          if(!current||current.token!==token||fieldAbilityContextToken!==token||currentMode!=='multiplayer')return;
+          pendingFieldAbility=null;
+          if(!ack?.ok){
+            toast(ack?.transportFailure?'Field ability confirmation was lost. Check the battlefield before retrying.':ack?.reason||'Field ability was not accepted by the server.',true);
+            audio.play('error');
+          }else{
+            lockFieldAbilityIds(ack.activatedIds,abilityId);
+            const activated=Array.isArray(ack.activatedIds)?ack.activatedIds.length:0;
+            const skipped=Array.isArray(ack.skippedIds)?ack.skippedIds.length:0;
+            toast(successLabel||`${label} · ${activated} ACTIVATED${skipped?` · ${skipped} SKIPPED`:''}`);
+            audio.play('order');
+          }
+          if(game&&playing)updateSelectionCard();
+        }).catch(()=>{
+          const current=pendingFieldAbility;
+          if(!current||current.token!==token||fieldAbilityContextToken!==token||currentMode!=='multiplayer')return;
+          pendingFieldAbility=null;
+          toast('Field ability confirmation was lost. Check the battlefield before retrying.',true);
+          audio.play('error');
+          if(game&&playing)updateSelectionCard();
+        });
+      }
+    }else{
+      const result=activateSelectedUnitAbility(game,abilityId);
+      if(result?.ok===false){toast(result.reason||'Field ability unavailable.',true);audio.play('error');}
+      else{
+        const activated=Array.isArray(result?.activatedIds)?result.activatedIds.length:0;
+        const skipped=Array.isArray(result?.skippedIds)?result.skippedIds.length:0;
+        toast(successLabel||`${label} · ${activated} ACTIVATED${skipped?` · ${skipped} SKIPPED`:''}`);
+        audio.play('order');
+      }
+      updateSelectionCard();
+    }
   }else resultMessage(game.issueDeploy?.(),'COMMAND RIG DEPLOYED');
 }
 $('#cmd-deploy').addEventListener('click',activateFieldAbilityOrDeploy);
