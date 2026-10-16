@@ -84,6 +84,7 @@ export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
 export const HARVESTER_HOME_RULES_VERSION = 77;
+export const PRODUCTION_REPEAT_RULES_VERSION = 78;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
 export const DOCTRINE_REPLACEMENT_COST = 1350;
@@ -370,6 +371,7 @@ export class Game {
     this.mode = mode;
     this.replayVersion = replayVersion;
     this.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
+    this.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     this.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
@@ -1142,7 +1144,7 @@ export class Game {
     const b = { id: `b${this._nextEntityId++}`, owner, faction: ownerFaction(this, owner), defId,
       x: Math.floor(x), y: Math.floor(y), w: d.w, h: d.h, hp: d.health, maxHp: d.health,
       progress, queue: [], rally: { x: x + d.w / 2, y: y + d.h + 2 }, repairing: false, powered: true,
-      powerStandby: false,
+      powerStandby: false, repeatUnitDefId: null,
       cooldown: 0, facing: owner === 'player' ? -Math.PI / 4 : Math.PI * 0.75, selected: false };
     this.buildings.push(b);
     this._event('buildingCreated', { id: b.id, owner, defId, x: b.x, y: b.y });
@@ -2267,6 +2269,70 @@ export class Game {
       -Math.max(0, -(BUILDING_DEFS[building.defId].power || 0));
     this._event('buildingPowerChanged', { id: building.id, owner: building.owner, standby, powerSaved });
     return { ok: true, standby };
+  }
+
+  _productionRepeatEnabled() {
+    return this.replayVersion == null || this.replayVersion >= PRODUCTION_REPEAT_RULES_VERSION;
+  }
+
+  _productionRepeatDefinition(building, unitDefId) {
+    const definition = UNIT_DEFS[unitDefId];
+    return building && ['barracks', 'factory', 'helipad'].includes(building.defId) &&
+      definition?.producer === building.defId &&
+      (definition.faction === 'all' || definition.faction === ownerFaction(this, building.owner))
+      ? definition : null;
+  }
+
+  setProductionRepeat(buildingId, unitDefId = null) {
+    const owner = this.commandOwner || 'player';
+    if (this.status !== 'playing')
+      return { ok: false, reason: 'Automatic training is available while the battle is playing.' };
+    if (!this._productionRepeatEnabled())
+      return { ok: false, reason: `Production repeat requires replay version ${PRODUCTION_REPEAT_RULES_VERSION}.` };
+    if (unitDefId !== null && typeof unitDefId !== 'string')
+      return { ok: false, reason: 'Choose a unit blueprint or clear the repeat order.' };
+    const building = this.getEntity(buildingId);
+    if (!building || !('w' in building) || building.owner !== owner || building.hp <= 0 ||
+        building.progress < 1 || !['barracks', 'factory', 'helipad'].includes(building.defId))
+      return { ok: false, reason: 'Choose a completed friendly production building.' };
+    if (unitDefId !== null && !this._productionRepeatDefinition(building, unitDefId))
+      return { ok: false, reason: 'Choose a unit produced here that is available to your faction.' };
+    building.repeatUnitDefId = unitDefId;
+    this._event('productionRepeatChanged', { buildingId, owner, unitDefId });
+    return { ok: true, unitDefId };
+  }
+
+  getProductionRepeatStatus(buildingId) {
+    const owner = this.commandOwner || 'player';
+    const building = this.getEntity(buildingId);
+    const empty = { enabled: false, unitDefId: null, state: 'off', reason: null };
+    if (!building || !('w' in building) || building.owner !== owner || building.hp <= 0 ||
+        building.progress < 1 || !['barracks', 'factory', 'helipad'].includes(building.defId))
+      return { ...empty, reason: 'Choose a completed friendly production building.' };
+    if (!this._productionRepeatEnabled())
+      return { ...empty, reason: `Production repeat requires replay version ${PRODUCTION_REPEAT_RULES_VERSION}.` };
+    const unitDefId = this._productionRepeatDefinition(building, building.repeatUnitDefId)
+      ? building.repeatUnitDefId : null;
+    if (!unitDefId) return empty;
+    const status = { enabled: true, unitDefId, state: 'waiting', reason: null };
+    if (this._powerStandbyEnabled() && building.powerStandby === true)
+      return { ...status, state: 'standby', reason: 'Production is paused while this building is on standby.' };
+    if (building.queue.length) {
+      const job = building.queue[0];
+      if (job.progress >= 1 && !this._findSpawnTile(building))
+        return { ...status, state: 'waiting', reason: 'Production is ready, but the exit is blocked.' };
+      if (job.defId === unitDefId)
+        return { ...status, state: 'training', reason: null };
+      return { ...status, state: 'manual', reason: 'Manual production queue has priority.' };
+    }
+    if (!building.powered)
+      return { ...status, state: 'waiting', reason: 'Waiting for sufficient power.' };
+    const definition = UNIT_DEFS[unitDefId];
+    for (const requirement of definition.requires || []) if (!this.hasBuilding(owner, requirement))
+      return { ...status, state: 'waiting', reason: `Requires ${BUILDING_DEFS[requirement]?.name || requirement}.` };
+    if (this.credits[owner] < definition.cost)
+      return { ...status, state: 'waiting', reason: 'Waiting for credits.' };
+    return { ...status, state: 'ready', reason: null };
   }
 
   chooseDoctrine(id) {
@@ -3812,6 +3878,7 @@ export class Game {
       target.queue = [];
       target.repairing = false;
       target.powerStandby = false;
+      target.repeatUnitDefId = null;
       this._event('buildingCaptured', { id: target.id, owner: target.owner, by: u.id });
       this._refreshPower();
       u.hp = 0; this._destroyEntity(u, null, null);
@@ -4722,6 +4789,10 @@ export class Game {
         if (target && b.cooldown <= 0 && this._hasLineOfSight(c.x, c.y, this._entityCenter(target).x, this._entityCenter(target).y))
           this._fire(b, target, def.weapon);
       }
+      if (!b.queue.length && this._productionRepeatEnabled() && b.hp > 0 && b.progress >= 1 &&
+          ['barracks', 'factory', 'helipad'].includes(b.defId) && b.repeatUnitDefId && b.powered &&
+          this._productionRepeatDefinition(b, b.repeatUnitDefId))
+        this._queueUnit(b.owner, b.repeatUnitDefId, b.id);
       if (!b.queue.length || this._powerStandbyEnabled() && b.powerStandby === true) continue;
       const q = b.queue[0], ud = UNIT_DEFS[q.defId];
       q.progress = Math.min(1, q.progress + dt * this.power[b.owner].ratio *
@@ -7961,6 +8032,11 @@ export class Game {
       throw new Error('Invalid Crystalline Front save data.');
     const game = Object.create(Game.prototype);
     Object.assign(game, data);
+    // Markerless v77 saves predate optional production repeat intents. Pin them
+    // before any remaining migrations so their saved battles keep prior rules.
+    if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
+        data.productionRepeatRulesVersion !== PRODUCTION_REPEAT_RULES_VERSION)
+      game.replayVersion = PRODUCTION_REPEAT_RULES_VERSION - 1;
     // Manual and crash-recovery saves can predate an authored mission rewrite.
     // Retain their playable objective instead of loading midway into a stage
     // that did not exist when the battle was saved.
@@ -8099,6 +8175,7 @@ export class Game {
     if (game.replayVersion == null && data.harvesterHomeRulesVersion !== HARVESTER_HOME_RULES_VERSION)
       game.replayVersion = HARVESTER_HOME_RULES_VERSION - 1;
     game.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
+    game.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     game.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
@@ -8422,6 +8499,11 @@ export class Game {
             approachX: active.approachX, approachY: active.approachY };
         } else delete item.aiEngineerRaid;
       }
+      const repeatDefinition = game._productionRepeatEnabled() &&
+        data.productionRepeatRulesVersion === PRODUCTION_REPEAT_RULES_VERSION &&
+        building.hp > 0 && building.progress >= 1
+        ? game._productionRepeatDefinition(building, building.repeatUnitDefId) : null;
+      building.repeatUnitDefId = repeatDefinition ? building.repeatUnitDefId : null;
     }
     const activeEngineerRaid = game._aiEngineerRaidState.active;
     if (activeEngineerRaid) {

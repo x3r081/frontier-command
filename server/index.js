@@ -74,6 +74,8 @@ const RANKED_SEASON = 74;
 // comparison floors remain v75; multiplayer retains Season 74.
 // Version 77 adds optional home-refinery assignments without changing automatic
 // routing or AI policy. Comparison floors and the multiplayer season remain.
+// Version 78 adds opt-in continuous training at a selected producer. Without
+// that command, queue and AI behavior are unchanged; comparison floors stay 75.
 const CAMPAIGN_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
 const SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
@@ -894,6 +896,7 @@ function projectedState(lobby, member) {
     for (const key of Object.keys(entity)) if (key.startsWith('_')) delete entity[key];
     if ('order' in entity) delete entity.order;
     delete entity.homeRefineryId;
+    delete entity.repeatUnitDefId;
     if ('path' in entity) entity.path = [];
     // Standby is private economy state. An opponent snapshot must not reveal
     // whether a hidden or visible building has been switched off.
@@ -1127,7 +1130,7 @@ function startMatch(lobby) {
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
-  'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'useSelectedUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
+  'toggleRepair', 'setBuildingPower', 'setProductionRepeat', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'useSelectedUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
   const game = lobby.game;
   if (!game || game.status !== 'playing') return { ok: false, reason: 'No active match.' };
@@ -1187,6 +1190,10 @@ function command(lobby, member, message) {
       case 'setBuildingPower': return typeof message.standby === 'boolean'
         ? game.setBuildingPower(message.buildingId, message.standby)
         : { ok: false, reason: 'Invalid building power state.' };
+      case 'setProductionRepeat': return typeof message.buildingId === 'string' &&
+          (message.unitDefId === undefined || message.unitDefId === null || typeof message.unitDefId === 'string')
+        ? game.setProductionRepeat(message.buildingId, message.unitDefId ?? null)
+        : { ok: false, reason: 'Choose a production building and unit blueprint.' };
       case 'useSuperweapon': return game.useSuperweapon(n(message.x), n(message.y));
       case 'useCommandAbility': return game.useCommandAbility(message.abilityId, n(message.x), n(message.y));
       case 'useUnitAbility': return game.useUnitAbility(message.unitId, message.abilityId);

@@ -2,12 +2,13 @@ import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, C
   DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, UNIT_PROMOTION_DEFS, UNIT_PROMOTION_RULES_VERSION,
   PRODUCTION_SITE_RULES_VERSION, POWER_STANDBY_RULES_VERSION, WRECK_RECOMMISSION_RULES_VERSION,
   INFANTRY_DIG_IN_RULES_VERSION, TACTICAL_FORMATION_RULES_VERSION, HARVESTER_HOME_RULES_VERSION,
+  PRODUCTION_REPEAT_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 77;
+export const SOLO_REPLAY_VERSION = 78;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -50,6 +51,8 @@ export const SOLO_COMMAND_METHODS = Object.freeze({
   issueHarvest: noArgs,
   issueAssignRefinery: args => noArgs(args) || args.length === 1 &&
     (args[0] === null || entityId(args[0])),
+  setProductionRepeat: args => (args.length === 1 || args.length === 2) && entityId(args[0]) &&
+    (args.length === 1 || args[1] === null || defId(args[1], UNIT_DEFS)),
   issueBloomExpedition: noArgs,
   issueReturnCargo: noArgs,
   issueRearm: noArgs,
@@ -265,6 +268,9 @@ export function createSoloPlayback(envelope, commands, completedTicks, replayVer
   if (replayVersion < HARVESTER_HOME_RULES_VERSION && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueAssignRefinery'))
     throw new TypeError(`Home refinery assignments require replay version ${HARVESTER_HOME_RULES_VERSION}.`);
+  if (replayVersion < PRODUCTION_REPEAT_RULES_VERSION && Array.isArray(commands) &&
+      commands.some(command => command?.method === 'setProductionRepeat'))
+    throw new TypeError(`Automatic training requires replay version ${PRODUCTION_REPEAT_RULES_VERSION}.`);
   if (replayVersion < 21 && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueServiceAtWorkshop'))
     throw new TypeError('Workshop service orders require replay version 21.');

@@ -456,6 +456,12 @@
               <section id="production-site" class="production-site hidden" aria-label="Selected production site">
                 <div><strong id="production-site-name"></strong><small id="production-site-status"></small></div>
                 <button id="production-site-auto" type="button" aria-label="Show all units and use automatic production routing" title="Clear the selected site and distribute new orders between available producers">ALL SITES</button>
+                <button id="production-repeat-toggle" class="production-repeat-toggle" type="button" aria-expanded="false" aria-controls="production-repeat-controls" aria-label="Configure automatic training" hidden>AUTO OFF ▾</button>
+                <div id="production-repeat-controls" class="production-repeat-controls" hidden>
+                  <label for="production-repeat-unit"><strong>AUTO TRAIN</strong><select id="production-repeat-unit" aria-label="Choose a unit for automatic training"><option value="">OFF</option></select></label>
+                  <button id="production-repeat-apply" type="button" disabled>START</button>
+                  <small id="production-repeat-status" aria-live="polite"></small>
+                </div>
               </section>
               <div id="production-list" class="production-list"></div>
               <section id="blueprint-details" class="blueprint-details" aria-label="Blueprint details" aria-live="polite" hidden>

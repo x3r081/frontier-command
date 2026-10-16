@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -46,7 +46,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['rifle','rocket'].includes(id)?'?rev=76':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['barracks','barracks-vesper'].includes(id)?'?rev=81':['rifle','rocket'].includes(id)?'?rev=76':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
@@ -163,6 +163,7 @@ let selectionPulse = 0;
 let messageQueue = [];
 let lastProductionSignature = '';
 let lastProductionTab = '';
+const pendingProductionRepeat = new Map();
 let activeRunId = null;
 let activeRunRecorder = null;
 let activeReplayEnvelope = null;
@@ -854,6 +855,7 @@ async function watchLastReplay() {
   await watchReplayRecord(record, entry?.metadata);
 }
 async function watchReplayRecord(record, metadata = null) {
+  resetProductionRepeatControls();
   if (gameStarting) return;
   clearPendingFieldAbility();
   gameStarting = true;
@@ -2242,6 +2244,7 @@ async function beginGame(options = {}) {
       ? run.campaignVeteran : null;
   } catch(error) {rankedStartError=error;console.warn('Leaderboard run could not start.',error);}
   const mapId = rankedScenarioId || (options.mapId === 'random' ? SKIRMISH_MAPS[seed % SKIRMISH_MAPS.length].id : options.mapId || skirmishMap);
+  resetProductionRepeatControls();
   try { game = currentMode==='campaign'
     ? createCampaignGame(missionIndex, options.difficulty||difficulty, activeRunId ? seed : undefined, lockedDoctrineId, lockedFieldOrderId, lockedCarryoverId, lockedSupplyId, lockedRoutePayoffId, lockedCampaignVeteran)
     : new Game({ seed, difficulty: options.difficulty || difficulty, faction: options.faction || faction, mode: 'skirmish', mapId, skirmishOpening:lockedOpening, victoryMode:lockedVictoryMode }); }
@@ -2427,6 +2430,7 @@ async function loadSaved(data, fromRecovery = false) {
   clearPendingFieldAbility();
   try {
     selectionRoster.reset();
+    resetProductionRepeatControls();
     abandonActiveRun();
     activePlayback=null;replayMode=false;replayAccumulator=0;replaySeekTarget=null;
     $('#game-shell').classList.remove('replay-mode');hide('#replay-controls');
@@ -2492,6 +2496,7 @@ function abandonActiveRun() {
   network.finishRun(runId,{abandon:true}).catch(()=>{});
 }
 function returnToMenu({preserveLobby=false}={}) {
+  resetProductionRepeatControls();
   clearPendingFieldAbility();
   selectionRoster.reset();
   battlefieldPickerAddSquadMode=false;
@@ -4066,6 +4071,77 @@ function updateProductionSite() {
   const task=site.powerStandby===true?`PAUSED · STANDBY${active?` · ${Math.floor(active.progress*100)}%`:''}`:active?`${game.unitDefs[active.defId].name.toUpperCase()} ${Math.floor(active.progress*100)}%`:'READY';
   $('#production-site-status').textContent=`${task} · ${site.queue.length}/5 QUEUED`;
   panel.title=`New unit orders use this ${name.toLowerCase()}. Rally: ${Math.floor(site.rally.x)}, ${Math.floor(site.rally.y)}.`;
+  updateProductionRepeatControls(site);
+}
+function resetProductionRepeatControls() {
+  pendingProductionRepeat.clear();
+  const select=$('#production-repeat-unit'),wrap=$('#production-repeat-controls');
+  delete select.dataset.authorityKey;
+  delete wrap.dataset.siteId;
+  wrap.classList.remove('mobile-expanded');
+  $('#production-repeat-toggle').setAttribute('aria-expanded','false');
+}
+function updateProductionRepeatControls(site) {
+  const wrap=$('#production-repeat-controls'),select=$('#production-repeat-unit'),button=$('#production-repeat-apply'),toggle=$('#production-repeat-toggle');
+  const rulesAvailable=!replayMode&&(game.replayVersion==null||game.replayVersion>=PRODUCTION_REPEAT_RULES_VERSION)&&
+    typeof game.getProductionRepeatStatus==='function'&&typeof game.setProductionRepeat==='function';
+  wrap.hidden=!rulesAvailable;
+  toggle.hidden=!rulesAvailable;
+  if(!rulesAvailable)return;
+  if(wrap.dataset.siteId!==String(site.id)){
+    wrap.classList.remove('mobile-expanded');
+    toggle.setAttribute('aria-expanded','false');
+    wrap.dataset.siteId=String(site.id);
+  }
+  const definitions=Object.entries(game.unitDefs||{}).filter(([,def])=>def.producer===site.defId&&availableForFaction(def))
+    .sort((a,b)=>(a[1].sort??a[1].cost??0)-(b[1].sort??b[1].cost??0)||(a[1].cost||0)-(b[1].cost||0));
+  const hasRequirement=req=>game.buildings.some(b=>b.owner==='player'&&b.defId===req&&b.hp>0&&b.progress>=1);
+  const optionKey=JSON.stringify([site.defId,faction,definitions.map(([id,def])=>[id,(def.requires||[]).map(hasRequirement)])]);
+  if(select.dataset.optionKey!==optionKey){
+    const draft=select.value;
+    select.innerHTML='<option value="">OFF</option>'+definitions.map(([id,def])=>{
+      const required=def.prerequisites||def.requires||[];
+      const missing=(Array.isArray(required)?required:[required]).filter(Boolean).filter(req=>!hasRequirement(req));
+      const note=missing.length?` · REQUIRES ${missing.map(req=>game.buildingDefs?.[req]?.name||keyName(req)).join(' + ')}`:'';
+      return `<option value="${id}">${def.name||keyName(id)}${note}</option>`;
+    }).join('');
+    select.dataset.optionKey=optionKey;
+    if(definitions.some(([id])=>id===draft))select.value=draft;
+  }
+  const status=game.getProductionRepeatStatus(site.id)||{enabled:false,unitDefId:null,state:'off',reason:''};
+  const expanded=toggle.getAttribute('aria-expanded')==='true';
+  toggle.textContent=expanded?'DONE ▴':status.enabled?'AUTO ON ▾':'AUTO OFF ▾';
+  toggle.setAttribute('aria-label',expanded?'Close automatic training controls':'Configure automatic training');
+  toggle.title=status.enabled?`Automatic ${game.unitDefs?.[status.unitDefId]?.name||'unit'} training · ${status.reason||status.state}`:'Configure automatic training';
+  const pending=pendingProductionRepeat.has(site.id);
+  const authorityKey=JSON.stringify([site.id,status.enabled?status.unitDefId:null]);
+  // Keep a chosen blueprint through HUD refreshes and the focus change when
+  // START is clicked. Reset only when the selected site or its intent changes.
+  if(select.dataset.authorityKey!==authorityKey)
+    select.value=status.enabled&&status.unitDefId?status.unitDefId:'';
+  select.dataset.authorityKey=authorityKey;
+  select.dataset.siteId=String(site.id);
+  const requested=select.value||null;
+  const active=status.enabled&&status.unitDefId;
+  const stops=!!active&&(!requested||requested===status.unitDefId);
+  button.textContent=pending?'WAIT…':stops?'STOP':'START';
+  button.disabled=pending||paused||gameEnded||(!requested&&!active);
+  select.disabled=pending||paused||gameEnded;
+  button.title=stops
+    ?'Stop automatic training. Any paid unit already training or queued will still finish.'
+    :'Start automatic training for this unit. Manual orders finish first; the unit cost is paid when each automatic job starts.';
+  const unitName=game.unitDefs?.[status.unitDefId]?.name||status.unitDefId;
+  const state=String(status.state|| (status.enabled?'waiting':'off')).toUpperCase();
+  const intent=status.enabled?`AUTO · ${unitName||'UNIT'} · ${state}`:'AUTO TRAIN OFF';
+  const explanation=status.reason?` · ${status.reason}`:'';
+  const statusText=pending?'WAITING FOR SERVER CONFIRMATION':`${intent}${explanation}`;
+  $('#production-repeat-status').textContent=statusText;
+  $('#production-repeat-status').title=statusText;
+  select.title=definitions.map(([id,def])=>{
+    const required=def.prerequisites||def.requires||[];
+    const missing=(Array.isArray(required)?required:[required]).filter(Boolean).filter(req=>!hasRequirement(req));
+    return `${def.name||keyName(id)}${missing.length?` · Waiting for ${missing.map(req=>game.buildingDefs?.[req]?.name||keyName(req)).join(', ')}`:''}`;
+  }).join(' | ')||'No units available for this producer.';
 }
 function updateSupportSellHint() {
   const button=$('#production-list [data-support="sell"]');
@@ -4098,6 +4174,8 @@ function renderProduction(force=false) {
   $('#production-list').classList.toggle('research-mode',tab==='research');
   const signature=JSON.stringify([tab,selectedProductionSite()?.id,Math.floor((game.credits?.player||0)/25),game.construction?.defId,game.construction?.ready,
     game.power?.player?.production,game.power?.player?.consumption,
+    selectedProductionSite()&&typeof game.getProductionRepeatStatus==='function'?game.getProductionRepeatStatus(selectedProductionSite().id):null,
+    [...pendingProductionRepeat.keys()],
     game.buildings.filter(b=>b.owner==='player').map(b=>[b.defId,b.queue?.map(q=>q.defId)]),
     tab==='support'?Math.floor((game.superweapon?.player||0)*20):0,
     tab==='support'?Math.floor(game.commandEnergy?.player||0):0,
@@ -5662,6 +5740,7 @@ function processEvents() {
 function interruptMultiplayerMatch(replacedCode='') {
   if(currentMode!=='multiplayer'||!playing||gameEnded)return;
   const moved=Boolean(replacedCode);
+  resetProductionRepeatControls();
   gameEnded=true;paused=true;syncTargetingFocus();lobby=null;matchRoomCode=null;opponentReconnecting=false;
   postMatchOpponent=null;postMatchFriendRequestPending=false;
   postMatchRematch=null;rematchOffer=null;rematchRequestPending=false;rematchResponsePending=false;rematchStatus='';
@@ -5832,6 +5911,7 @@ function renderSkirmishDebrief(victory) {
 function finishGame(victory, terminalEvent=null) {
   clearPendingFieldAbility();
   if(gameEnded||!game||!playing)return;gameEnded=true;paused=true;syncTargetingFocus();
+  resetProductionRepeatControls();
   cancelDigInTargeting();
   showPostMatchOpponent(terminalEvent);
   showPostMatchRematch(terminalEvent);
@@ -6676,7 +6756,7 @@ function installMultiplayerCommandAdapters(target){
     toggleRepair:buildingId=>({buildingId}),sellBuilding:buildingId=>({buildingId}),
     useSuperweapon:(x,y)=>({x,y}),useCommandAbility:(abilityId,x,y)=>({abilityId,x,y}),
     setRelayProtocol:(relayId,protocol)=>({relayId,protocol}),
-    setBuildingPower:(buildingId,standby)=>({buildingId,standby}),
+    setBuildingPower:(buildingId,standby)=>({buildingId,standby}),setProductionRepeat:(buildingId,unitDefId=null)=>({buildingId,unitDefId}),
   };
   for(const [name,encode] of Object.entries(commands))target[name]=(...args)=>sendMatchCommand(name,encode(...args));
 }
@@ -6710,6 +6790,7 @@ function hydrateMultiplayerState(state){
 }
 async function startMultiplayerGame(message){
   clearPendingFieldAbility();
+  resetProductionRepeatControls();
   selectionRoster.reset();
   finishDeploymentIntro();
   matchPaceMode=false;
@@ -7313,6 +7394,43 @@ $('#relay-status-button').addEventListener('click',()=>{
   }
 });
 $('#production-list').addEventListener('scroll',updateProductionScrollCue,{passive:true});
+$('#production-repeat-toggle').addEventListener('click',()=>{
+  const toggle=$('#production-repeat-toggle'),wrap=$('#production-repeat-controls');
+  const expanded=toggle.getAttribute('aria-expanded')!=='true';
+  toggle.setAttribute('aria-expanded',String(expanded));
+  wrap.classList.toggle('mobile-expanded',expanded);
+  updateProductionSite();
+  updateProductionScrollCue();
+});
+$('#production-repeat-apply').addEventListener('click',()=>{
+  const site=selectedProductionSite();
+  if(!site||paused||gameEnded||pendingProductionRepeat.has(site.id)||typeof game?.setProductionRepeat!=='function')return;
+  const status=game.getProductionRepeatStatus?.(site.id)||{enabled:false,unitDefId:null};
+  const requested=$('#production-repeat-unit').value||null;
+  const stopping=status.enabled&&(!requested||requested===status.unitDefId);
+  const unitDefId=stopping?null:requested;
+  if(!stopping&&!unitDefId)return;
+  const result=game.setProductionRepeat(site.id,unitDefId);
+  if(result?.pending){
+    const token=Symbol('production-repeat');
+    pendingProductionRepeat.set(site.id,token);
+    updateProductionSite();
+    resultMessage(result,'','order',{
+      onAccepted:()=>updateUI(true),
+      onSettled:()=>{
+        if(pendingProductionRepeat.get(site.id)!==token)return;
+        pendingProductionRepeat.delete(site.id);
+        updateUI(true);
+      },
+    });
+  }else if(resultMessage(result,unitDefId?`AUTO TRAIN · ${game.unitDefs?.[unitDefId]?.name||keyName(unitDefId)}`:'AUTO TRAIN STOPPED')){
+    updateUI(true);
+  }
+});
+$('#production-repeat-unit').addEventListener('change',()=>{
+  const site=selectedProductionSite();
+  if(site)updateProductionRepeatControls(site);
+});
 $('#blueprint-view-toggle').addEventListener('click',()=>{
   compactBlueprintView=!compactBlueprintView;
   try { localStorage.setItem('cc-blueprint-view',compactBlueprintView?'grid':'list'); } catch {}

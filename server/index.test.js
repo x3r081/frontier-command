@@ -1774,6 +1774,44 @@ test('authenticated websocket queueUnit routes to the selected production site a
   assert.equal(chosen.queue.length, chosenQueueBefore.length + 1);
   assert.deepEqual(shorter.queue, shorterQueueBefore);
 
+  sendSocket(host, { type: 'command', requestId: 'repeat-own-site', command: 'setProductionRepeat',
+    buildingId: chosen.id, unitDefId: 'rifle' });
+  const repeat = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'repeat-own-site');
+  assert.equal(repeat.ok, true);
+  assert.equal(chosen.repeatUnitDefId, 'rifle');
+  const queueWithRepeat = structuredClone(chosen.queue);
+  const creditsWithRepeat = game.credits.player;
+
+  sendSocket(host, { type: 'command', requestId: 'repeat-foreign-site', command: 'setProductionRepeat',
+    buildingId: foreignBarracks.id, unitDefId: 'rifle' });
+  const repeatForeign = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'repeat-foreign-site');
+  assert.equal(repeatForeign.ok, false, 'the authenticated host cannot set intent on a foreign producer');
+  assert.equal(foreignBarracks.repeatUnitDefId, null);
+
+  sendSocket(host, { type: 'command', requestId: 'repeat-wrong-family', command: 'setProductionRepeat',
+    buildingId: chosen.id, unitDefId: 'lightTank' });
+  const repeatWrongFamily = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'repeat-wrong-family');
+  assert.equal(repeatWrongFamily.ok, false, 'a blueprint from another producer family is rejected');
+  assert.equal(chosen.repeatUnitDefId, 'rifle');
+
+  sendSocket(host, { type: 'command', requestId: 'repeat-malformed', command: 'setProductionRepeat',
+    buildingId: chosen.id, unitDefId: { defId: 'rifle' } });
+  const repeatMalformed = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'repeat-malformed');
+  assert.equal(repeatMalformed.ok, false, 'an object is not accepted as a blueprint id');
+
+  sendSocket(host, { type: 'command', requestId: 'repeat-stop', command: 'setProductionRepeat',
+    buildingId: chosen.id, unitDefId: null });
+  const repeatStop = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'repeat-stop');
+  assert.equal(repeatStop.ok, true);
+  assert.equal(chosen.repeatUnitDefId, null);
+  assert.deepEqual(chosen.queue, queueWithRepeat, 'clearing repeat leaves already-paid queue jobs untouched');
+  assert.equal(game.credits.player, creditsWithRepeat, 'setting and clearing intent does not change credits');
+
   const foreignQueueBefore = structuredClone(foreignBarracks.queue);
   const creditsAfterExplicit = game.credits.player;
   sendSocket(host, { type: 'command', requestId: 'queue-foreign-site', command: 'queueUnit',
@@ -3664,6 +3702,7 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
   hostile.homeRefineryId = hostileBuilding.id;
   hostileBuilding._unloadHarvesterId = hostile.id;
   hostileBuilding.powerStandby = true;
+  hostileBuilding.repeatUnitDefId = 'stealthTank';
   friendlyBuilding.powerStandby = true;
   const member = { side: 'player', selection: [],
     explored: Array.from({ length: game.height }, () => Array(game.width).fill(0)) };
@@ -3681,6 +3720,10 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
     'hostile buildings do not expose private unload pairing');
   assert.equal('powerStandby' in projectedHostileBuilding, false,
     'hostile buildings do not expose their standby state');
+  assert.equal('repeatUnitDefId' in projectedHostileBuilding, false,
+    'hostile buildings do not expose their production repeat blueprint');
+  assert.equal(hostileBuilding.repeatUnitDefId, 'stealthTank',
+    'projection leaves authoritative repeat intent intact');
   assert.equal(projection.buildings.find(building => building.id === friendlyBuilding.id).powerStandby, true,
     'the commander retains its own building standby state');
   assert.deepEqual(hostile.order, { type: 'move', x: game.width - 1, y: game.height - 1 },
