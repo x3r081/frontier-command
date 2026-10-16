@@ -4,7 +4,7 @@ const MISSION_IDS = Object.freeze([
   'first-harvest', 'silent-switch', 'last-light', 'black-shard', 'red-ledger',
   'ashes-in-transit', 'dawnfall', 'eye-of-the-storm', 'three-points-of-light',
   'quiet-knife', 'last-ember', 'dawn-of-the-free', 'after-the-dawn',
-  'ghost-channel', 'iron-current', 'iron-reclaimed',
+  'ghost-channel', 'iron-current', 'iron-reclaimed', 'counterbattery',
 ]);
 const FACTIONS = new Set(['aegis', 'vesper']);
 const EXCLUDED_ROLES = new Set(['mcv', 'harvester', 'transport', 'medic', 'engineer']);

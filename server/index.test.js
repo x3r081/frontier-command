@@ -14,7 +14,8 @@ import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESER
   MEDIC_ESCORT_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
-import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
+import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, COUNTERBATTERY_RULES_VERSION,
+  createCampaignGame, updateCampaign } from '../src/game/campaign.js';
 import { deriveCampaignVeteran } from '../src/game/campaignVeteran.js';
 import { createSoloPlayback, createSoloRecorder, validateSoloEnvelope, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
@@ -519,7 +520,8 @@ test('current solo rules floor applies across campaign and every skirmish diffic
     }
     assert.ok(SOLO_REPLAY_VERSION >= WRECK_RECOMMISSION_RULES_VERSION,
       'the current replay version includes the global solo comparison floor');
-    assert.equal(SOLO_REPLAY_VERSION, MEDIC_ESCORT_RULES_VERSION);
+    assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
+    assert.equal(SOLO_REPLAY_VERSION, COUNTERBATTERY_RULES_VERSION);
     assert.equal(POWER_STANDBY_RULES_VERSION, 71);
     assert.equal(WRECK_RECOMMISSION_RULES_VERSION, 72);
     assert.equal(AI_ENGINEER_RAID_RULES_VERSION, 70);
@@ -1114,8 +1116,8 @@ test('v83 Medic floor retires older campaign boards without deleting campaign pr
     { ...base, id: 'rescue-now-v73', scenarioId: 'after-the-dawn', scoreVersion: 73 },
     { ...base, id: 'recovery-v79', scenarioId: 'iron-reclaimed', scoreVersion: 79 },
     { ...base, id: 'rescue-now-v79', scenarioId: 'after-the-dawn', scoreVersion: 79 },
-    { ...base, id: 'recovery-v83', scenarioId: 'iron-reclaimed', scoreVersion: SOLO_REPLAY_VERSION },
-    { ...base, id: 'rescue-now-v83', scenarioId: 'after-the-dawn', scoreVersion: SOLO_REPLAY_VERSION });
+    { ...base, id: 'recovery-v83', scenarioId: 'iron-reclaimed', scoreVersion: 83 },
+    { ...base, id: 'rescue-now-v83', scenarioId: 'after-the-dawn', scoreVersion: 83 });
   const rows = async scenario => (await (await api(
     `/api/leaderboard?mode=campaign&scenarioId=${scenario}`, profile.token)).json()).entries.map(row => row.id);
   assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v83']);
@@ -1130,7 +1132,8 @@ test('v83 Medic floor retires older campaign boards without deleting campaign pr
 test('v80 AI bunker history remains stored below the v83 all-mode Medic floor', async () => {
   assert.equal(AI_FIELD_BUNKER_RULES_VERSION, 80);
   assert.equal(GARRISON_RULES_VERSION, 79);
-  assert.equal(SOLO_REPLAY_VERSION, MEDIC_ESCORT_RULES_VERSION);
+  assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
+  assert.equal(SOLO_REPLAY_VERSION, COUNTERBATTERY_RULES_VERSION);
   const profile = await createProfile('Bunker AI Ranking');
   const common = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis', seconds: 100,
     kills: 4, completedAt: 100, verified: true, result: 'victory' };
@@ -1212,6 +1215,64 @@ test('Iron Reclaimed records a server-verified public-command victory on its own
   assert.equal(result.entry.campaignStars, played.game.campaignResult.stars);
   const board = await (await api('/api/leaderboard?mode=campaign&scenarioId=iron-reclaimed', profile.token)).json();
   assert.ok(board.entries.some(entry => entry.id === result.entry.id));
+});
+
+test('Counterbattery tickets require same-difficulty Iron Reclaimed and its board alone uses version 84', async () => {
+  assert.equal(SOLO_REPLAY_VERSION, COUNTERBATTERY_RULES_VERSION);
+  const profile = await createProfile('Counterbattery Unlock');
+  const start = (difficulty = 'normal', carryoverId = 'none') => api('/api/scores/runs', profile.token, {
+    method: 'POST', body: json({ mode: 'campaign', difficulty, faction: 'aegis',
+      scenarioId: 'counterbattery', carryoverId }),
+  });
+  assert.equal((await start()).status, 403, 'a new profile cannot start the bonus sequel');
+  assert.equal((await start('hard')).status, 403, 'unlock state is difficulty-scoped');
+
+  const order = CAMPAIGN_FIELD_ORDERS[15][1].id;
+  const survivor = { defId: 'guardian', faction: 'aegis', veterancy: 1, promotion: null };
+  const iron = { id: 'counterbattery-prior-iron-v73', profileId: profile.profile.id,
+    mode: 'campaign', difficulty: 'normal', faction: 'aegis', scenarioId: 'iron-reclaimed',
+    scoreVersion: 73, verified: true, result: 'victory', completedAt: 100,
+    campaignVeteran: survivor, fieldOrderId: order, fieldOrderStatus: 'completed' };
+  const boardRows = [
+    { id: 'counterbattery-board-v83', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 83, verified: true, result: 'victory', completedAt: 101 },
+    { id: 'counterbattery-board-v84', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 84, verified: true, result: 'victory', completedAt: 102 },
+    { id: 'counterbattery-prior-board-v82', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 82, verified: true, result: 'victory', completedAt: 103 },
+    { id: 'counterbattery-prior-board-v83', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 83, verified: true, result: 'victory', completedAt: 104 },
+  ];
+  store.scores.push(iron, ...boardRows);
+  let runId;
+  try {
+    const progress = await (await api('/api/campaign/progress', profile.token)).json();
+    assert.ok(progress.difficulties.normal.unlockedMissionIds.includes('counterbattery'),
+      'a verified archived version-73 Iron Reclaimed victory unlocks the sequel');
+    assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('counterbattery'));
+
+    const response = await start('normal', 'signal');
+    assert.equal(response.status, 201);
+    const ticket = await response.json();
+    runId = ticket.runId;
+    const locked = store.runs.find(run => run.id === runId);
+    assert.equal(locked.scenarioId, 'counterbattery', 'the authoritative ticket fixes its scenario');
+    assert.equal(locked.rulesVersion, 84);
+    assert.equal(locked.carryoverId, 'signal', 'only Iron Reclaimed field-order rewards supply the carryover');
+    assert.deepEqual(locked.campaignVeteran, survivor,
+      'the prior Iron Reclaimed victory supplies its eligible survivor');
+
+    const counterbatteryRows = (await (await api(
+      '/api/leaderboard?mode=campaign&scenarioId=counterbattery', profile.token)).json()).entries;
+    assert.deepEqual(counterbatteryRows.map(entry => entry.id), ['counterbattery-board-v84']);
+    const priorRows = (await (await api(
+      '/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token)).json()).entries;
+    assert.deepEqual(priorRows.map(entry => entry.id), ['counterbattery-prior-board-v83'],
+      'existing campaign boards keep their version-83 comparison floor');
+  } finally {
+    if (runId) store.runs = store.runs.filter(run => run.id !== runId);
+    store.scores = store.scores.filter(score => score !== iron && !boardRows.includes(score));
+  }
 });
 
 test('archived Black Shard victory unlocks branches while a later victory proves legacy Red Ledger access', async () => {

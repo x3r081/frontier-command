@@ -3,13 +3,13 @@ import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, C
   PRODUCTION_SITE_RULES_VERSION, POWER_STANDBY_RULES_VERSION, WRECK_RECOMMISSION_RULES_VERSION,
   INFANTRY_DIG_IN_RULES_VERSION, TACTICAL_FORMATION_RULES_VERSION, HARVESTER_HOME_RULES_VERSION,
   PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION,
-  TARGET_PRIORITY_RULES_VERSION, TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION,
+  TARGET_PRIORITY_RULES_VERSION, TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from './engine.js';
-import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
+import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, COUNTERBATTERY_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = MEDIC_ESCORT_RULES_VERSION;
+export const SOLO_REPLAY_VERSION = COUNTERBATTERY_RULES_VERSION;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -114,6 +114,9 @@ export function validateSoloEnvelope(envelope, replayVersion = SOLO_REPLAY_VERSI
   if (scenarioIndex < 0) throw new TypeError('Unknown solo run scenario.');
   if (envelope.mode === 'campaign' && envelope.scenarioId === 'iron-reclaimed' && replayVersion < IRON_RECLAIMED_RULES_VERSION)
     throw new TypeError(`Iron Reclaimed requires replay version ${IRON_RECLAIMED_RULES_VERSION}.`);
+  if (envelope.mode === 'campaign' && envelope.scenarioId === 'counterbattery' &&
+      replayVersion < COUNTERBATTERY_RULES_VERSION)
+    throw new TypeError(`Counterbattery requires replay version ${COUNTERBATTERY_RULES_VERSION}.`);
   if (envelope.mode === 'campaign' && envelope.faction !== scenarios[scenarioIndex].faction)
     throw new TypeError('Campaign faction does not match its mission.');
   if (envelope.mode === 'campaign') {

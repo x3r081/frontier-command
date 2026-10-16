@@ -1,5 +1,5 @@
 import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, TARGET_PRIORITY_RULES_VERSION, MEDIC_ESCORT_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
-import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, createCampaignGame, updateCampaign } from './game/campaign.js';
+import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, getCounterbatteryView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
   campaignChosenBranchId, campaignRequisitionSpentMissionIds,
@@ -1778,7 +1778,8 @@ function renderArmory() {
 }
 const campaignIndexById = id => CAMPAIGN_MISSIONS.findIndex(mission => mission.id === id);
 const campaignBranchCode = id => id === 'ghost-channel' ? '04A' : id === 'iron-current' ? '04B' : null;
-const campaignMissionCode = (mission, index) => ['after-the-dawn','iron-reclaimed'].includes(mission.id)
+const isBonusCampaignMission = id => ['after-the-dawn','iron-reclaimed','counterbattery'].includes(id);
+const campaignMissionCode = (mission, index) => isBonusCampaignMission(mission.id)
   ?'BONUS':campaignBranchCode(mission.id)||String(index+1).padStart(2,'0');
 const campaignUsesRoutePayoff = index => index === 4 || index === 5;
 const campaignRouteBoard = scenarioId => scenarioId === 'red-ledger' || scenarioId === 'ashes-in-transit';
@@ -1817,6 +1818,8 @@ const campaignCardBriefing = mission => mission.id === 'ghost-channel'
     ? 'Industrial route · fund the freight reserve and hold its relay through three assault waves.'
     : mission.id === 'iron-reclaimed'
       ? 'Bonus recovery · restore the marked Guardian with your Engineer, then escort both to extraction.'
+    : mission.id === 'counterbattery'
+      ? 'Bonus assault · flank the siege batteries, protect your Command Yard, and silence both before the barrage deadline.'
     : mission.id === 'red-ledger'&&campaignRouteLead(campaignDifficulty)
       ? `${campaignRouteLead(campaignDifficulty)} ${campaignBriefingObjective(mission,campaignChosenBranchForUI(campaignDifficulty))}`
     : mission.id === 'ashes-in-transit'&&campaignChosenBranchForUI(campaignDifficulty)
@@ -1839,6 +1842,7 @@ function renderCampaignList() {
     9:['03','THE LAST SIGNALS','Both factions race to decide who controls the valley’s future.'],
     14:['04','AFTER THE DAWN','A rescue record points to one final recovery beyond the campaign’s end.'],
     15:['BONUS','IRON RECLAIMED','Restore one abandoned Guardian and bring its Engineer home.'],
+    16:['BONUS','COUNTERBATTERY','Break two siege batteries before their barrage closes the passes.'],
   };
   const orderedMissions=CAMPAIGN_ROUTE_ORDERED_IDS.map(id=>({id,index:campaignIndexById(id)})).filter(item=>item.index>=0);
   const missionCleared=({index})=>dossierView.mission(index)?.completed;
@@ -1872,7 +1876,7 @@ function renderCampaignList() {
     const branch=campaignBranchCode(m.id);
     const routeSource=dossierView.verifiedBranchId?'VERIFIED ':dossierView.localBranchId?'LOCAL PRACTICE ':'';
     const routeState=branch?(chosenBranch===m.id?`${routeSource}CHOSEN ROUTE · `:chosenBranch?'ALTERNATE ROUTE · ':'ROUTE CHOICE · '):'';
-    const state=(m.id==='after-the-dawn'||m.id==='iron-reclaimed'?'BONUS · ':routeState)+(unlocked
+    const state=(isBonusCampaignMission(m.id)?'BONUS · ':routeState)+(unlocked
       ? record.verifiedCompleted?'VERIFIED COMPLETE':record.localCompleted?'LOCAL COMPLETE'
         :record.verifiedUnlocked?'RANKED READY':'LOCAL PRACTICE READY'
       :'LOCKED');
@@ -1882,7 +1886,7 @@ function renderCampaignList() {
     const forkHeading=m.id==='ghost-channel'?'<div class="campaign-fork-heading"><span>THE FRONTIER DIVIDES</span><strong>Choose your approach</strong><small>Complete either route to continue the story. The other remains available to replay.</small></div>':'';
     const act=campaignActs[routePosition];
     const actHeading=act?`<div class="campaign-act-heading"><span>${act[0]} / CAMPAIGN CHAPTER</span><strong>${act[1]}</strong><small>${act[2]}</small></div>`:'';
-    return `${actHeading}${forkHeading}<button class="campaign-mission${branch?' campaign-mission-branch':''}${m.id==='after-the-dawn'||m.id==='iron-reclaimed'?' campaign-mission-bonus':''}${chosenBranch===m.id?' campaign-mission-chosen':''}" data-mission="${i}" ${unlocked?'':'disabled'}><span class="campaign-index">${campaignMissionCode(m,i)}</span><span class="campaign-info"><strong>${m.title}</strong><small>${campaignCardBriefing(m)}</small><span class="campaign-state">${state}</span><span class="campaign-order-progress">FIELD ORDERS · ${orderProgress}/${CAMPAIGN_FIELD_ORDERS[i]?.length||0}</span></span><span class="campaign-record" aria-label="${stars} of 3 ${campaignDifficulty} stars. ${medalSource}."><span>${'★'.repeat(stars)}${'☆'.repeat(3-stars)}</span><small>${medalSource}</small></span><span class="campaign-arrow">${unlocked?'↗':'⌁'}</span></button>`;
+    return `${actHeading}${forkHeading}<button class="campaign-mission${branch?' campaign-mission-branch':''}${isBonusCampaignMission(m.id)?' campaign-mission-bonus':''}${chosenBranch===m.id?' campaign-mission-chosen':''}" data-mission="${i}" ${unlocked?'':'disabled'}><span class="campaign-index">${campaignMissionCode(m,i)}</span><span class="campaign-info"><strong>${m.title}</strong><small>${campaignCardBriefing(m)}</small><span class="campaign-state">${state}</span><span class="campaign-order-progress">FIELD ORDERS · ${orderProgress}/${CAMPAIGN_FIELD_ORDERS[i]?.length||0}</span></span><span class="campaign-record" aria-label="${stars} of 3 ${campaignDifficulty} stars. ${medalSource}."><span>${'★'.repeat(stars)}${'☆'.repeat(3-stars)}</span><small>${medalSource}</small></span><span class="campaign-arrow">${unlocked?'↗':'⌁'}</span></button>`;
   }).join('');
   if(focusedMission!=null)$('#campaign-list').querySelector(`[data-mission="${focusedMission}"]`)?.focus({preventScroll:true});
 }
@@ -2151,7 +2155,7 @@ function openMissionBriefing(index, trigger) {
   campaignSupplyId = availableCampaignSupplies(index).has(preferredSupply) ? preferredSupply : 'none';
   campaignRoutePayoffId = campaignUsesRoutePayoff(index) ? dossierView.chosenBranchId || 'none' : 'none';
   const factionName = mission.faction === 'vesper' ? 'VESPER COLLECTIVE' : 'AEGIS DIRECTORATE';
-  $('#briefing-number').textContent = `${mission.id==='after-the-dawn'?'BONUS OPERATION · AIRLIFT':mission.id==='iron-reclaimed'?'BONUS OPERATION · RECOVERY':campaignBranchCode(mission.id)?`BRANCH OPERATION ${campaignBranchCode(mission.id)}`:`OPERATION ${String(index + 1).padStart(2, '0')}`} // ${factionName}`;
+  $('#briefing-number').textContent = `${mission.id==='after-the-dawn'?'BONUS OPERATION · AIRLIFT':mission.id==='iron-reclaimed'?'BONUS OPERATION · RECOVERY':mission.id==='counterbattery'?'BONUS OPERATION · SIEGE':campaignBranchCode(mission.id)?`BRANCH OPERATION ${campaignBranchCode(mission.id)}`:`OPERATION ${String(index + 1).padStart(2, '0')}`} // ${factionName}`;
   $('#briefing-title').textContent = mission.title;
   $('#briefing-copy').textContent = campaignBriefingCopy(mission,campaignDifficulty);
   $('#briefing-objective').textContent = campaignBriefingObjective(mission);
@@ -3681,6 +3685,16 @@ function drawIronReclaimedMarkers(t) {
       ?[...(!view.routeChoice?[{...view.markers.northPass,label:'NORTH PASS',color:'#a8e2e2'},{...view.markers.southPass,label:'SOUTH PASS',color:'#a8e2e2'}]:[]),
         {...view.markers.rendezvous,label:'EAST RECOVERY MARKER',color:'#b8f0b2'}]
       :[{...view.markers.extraction,label:'FIELD WORKSHOP · EXTRACTION',color:'#b8f0b2'}];
+  drawCampaignPointMarkers(targets,t);
+}
+function drawCounterbatteryMarkers(t){
+  if(currentMode!=='campaign'||missionIndex!==16||targetingFocusActive&&innerWidth<=670)return;
+  const view=getCounterbatteryView(game);
+  const targets=(view?.targets||[]).filter(target=>target.alive).map(target=>({...target,
+    label:`${target.label}${target.visible?'':' · INTEL'}`,color:target.visible?'#ffab8b':'#e6cd88'}));
+  drawCampaignPointMarkers(targets,t);
+}
+function drawCampaignPointMarkers(targets,t){
   for(const target of targets){
     if(!target||!Number.isFinite(target.x)||!Number.isFinite(target.y))continue;
     const p=toScreen(target.x,target.y),pulse=1+Math.sin(t*3.4)*.08,radius=Math.max(17,24*camera.zoom)*pulse;
@@ -3808,7 +3822,7 @@ function render(t) {
     renderer3d.render(game,{centerX:renderer3d.centerX,centerY:renderer3d.centerY,zoom:camera.zoom,time:t,placeId,pointerWorld:{x:pointer.wx,y:pointer.wy}});
     draw3dHealthOverlay();
     drawBridgeHealthOverlay();
-    if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);}
+    if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}
     drawQueuedRoute();drawSelectionBox();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();
     return;
   }
@@ -3819,7 +3833,7 @@ function render(t) {
   for(const wreck of game.wrecks||[])drawWreckFallback(wreck,t);
   const entities=[...game.buildings.map(o=>({o,k:0,y:o.y+o.h})),...game.units.filter(o=>!o.embarkedIn).map(o=>({o,k:1,y:o.y}))].sort((a,b)=>a.y-b.y);
   for(const e of entities){if(e.k===0)drawBuilding(e.o,t);else drawUnit(e.o,t);}
-  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();
+  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();
 }
 function drawSalvageDropFallback(t){
   const drop=game?.salvageDrop;
@@ -3934,6 +3948,9 @@ function missionUplinkTargets(){
         {...view.markers.rendezvous,label:'EAST RECOVERY'}].filter(Boolean);
     return [view?.markers?.wreck,view?.markers?.rendezvous,view?.markers?.extraction].filter(Boolean);
   }
+  if(missionIndex===16)return (getCounterbatteryView(game)?.targets||[])
+    .filter(target=>target.alive).map(target=>({x:target.x,y:target.y,
+      label:`${target.label}${target.visible?'':' · INTEL'}`}));
   if(missionIndex===12){
     if(state.phase==='extract-engineer')return [state.extraction].filter(Boolean);
     return [game.relays.find(relay=>relay.id===state.relayId)].filter(Boolean);
@@ -4117,7 +4134,7 @@ function drawMinimap() {
           :missionIndex===5&&game.campaignState.phase==='recover-supply-cache'
             ?'IRON CACHE'
         :missionIndex===5||missionIndex===9?'EXTRACTION':'OBJECTIVE');
-    const hostileMark=missionIndex===9||missionIndex===3&&game.campaignState.phase!=='secure-relay';
+    const hostileMark=missionIndex===16||missionIndex===9||missionIndex===3&&game.campaignState.phase!=='secure-relay';
     const markerColor=hostileMark?'#ff9b78':missionMark==='SIGNAL SHADOW'?'#9feaff':missionIndex===15?'#b8f0b2':'#f4dc8c';
     mctx.strokeStyle=markerColor;mctx.fillStyle=hostileMark?'#402420':'#243422';mctx.lineWidth=2;
     mctx.beginPath();mctx.arc(px,py,pulse,0,Math.PI*2);mctx.fill();mctx.stroke();
@@ -5602,12 +5619,37 @@ function updateCampaignTracker(forDebrief=false) {
       secondary=`Engineer ${hpText(engineer)} · Guardian ${guardian?hpText(guardian):'WRECK · AWAITING RECOMMISSION'} · ${timer((state.deadline||260)-(state.elapsed||0))} remaining${ironView?.warning?' · patrol warning':''}`;
       break;
     }
+    case 16: {
+      const view=getCounterbatteryView(game);
+      title='Silence both siege batteries';
+      primary=`Crawlers ${view?.destroyed||0} / ${view?.total||2} silenced · ${timer(view?.remainingSeconds||0)} remaining`;
+      const radar=game.getEntity(state.forwardRadarId);
+      const warning=(state.waves||[]).find(wave=>wave.warned&&!wave.fired);
+      secondary=`Command yard ${hpText(command)} · Forward Radar ${hpText(radar)}${warning?` · reinforcements in ${timer(5-(warning.warningElapsed||0))}`:''}`;
+      break;
+    }
   }
   panel.classList.toggle('hidden',forDebrief);
   panel.classList.toggle('campaign-tracker-guided',missionIndex===0);
+  panel.classList.toggle('campaign-tracker-targets',missionIndex===16);
   panel.classList.toggle('campaign-tracker-placement',missionIndex===0&&$('#campaign-guidance').classList.contains('campaign-guidance-is-placement'));
   const set=(selector,value)=>{const el=$(selector);if(el.textContent!==value)el.textContent=value;};
   set('#campaign-tracker-title',title);set('#campaign-progress-primary',primary);set('#campaign-progress-secondary',secondary);
+  const targetLinks=$('#campaign-target-links');
+  targetLinks.classList.toggle('hidden',missionIndex!==16||forDebrief);
+  if(missionIndex===16){
+    const targets=getCounterbatteryView(game)?.targets||[];
+    for(const button of targetLinks.querySelectorAll('[data-campaign-target]')){
+      const target=targets[Number(button.dataset.campaignTarget)];
+      const name=Number(button.dataset.campaignTarget)===0?'NORTH':'SOUTH';
+      const label=`${target?.alive?'⌖':'✓'} ${name} BATTERY${target?.alive?(target.visible?'':' · INTEL'):' · SILENCED'}`;
+      if(button.textContent!==label)button.textContent=label;
+      button.disabled=!target?.alive;
+      button.setAttribute('aria-label',target?.alive
+        ?`Center camera on ${name.toLowerCase()} siege battery ${target.visible?'in sight':'intelligence location'}`
+        :`${name.toLowerCase()} siege battery silenced`);
+    }
+  }
   const orderView = currentMode === 'campaign' ? getCampaignFieldOrderView(game) : null;
   const orderPanel = $('#campaign-field-order-tracker');
   if (orderPanel) {
@@ -6065,7 +6107,9 @@ function campaignLossReview(index, state, objective, forceCount, kills) {
   const freightStatus = freightRelay?.owner === 'player' && !freightRelay.contested ? 'secure' : freightRelay?.contested ? 'contested' : 'unsecured';
   const finaleCanReform=(game.replayVersion==null
     ?state.dawnFreeShieldReformRulesVersion===60:game.replayVersion>=60)&&(state.shieldReformCount||0)<1;
+  const counterbattery=getCounterbatteryView(game);
   const rows = {
+    16: [`${counterbattery?.destroyed||0} / 2 siege batteries silenced · Command Yard ${integrity(command)}.`, 'Scout a pass with your armor, keep Rockets behind the screen, and escort the infantry with the Medic. Reinforce one assault while keeping defenders at the Yard.'],
     0: [`${refineries}/2 powered refineries · ${credits.toLocaleString()} / 2,200 credits at loss.`, refineries < 2 ? 'Bring a second refinery online early, then protect the harvest long enough to bank 2,200 credits.' : 'Keep the refinery network powered and defend the banked credits until the objective registers.'],
     1: [`Radar array ${integrity(stateFor('targetId'))} · ${game.units.filter(unit => unit.owner === 'player' && unit.defId === 'engineer' && live(unit)).length} engineers alive.`, 'Clear the route with armed units first; send an engineer to capture the damaged array once it is safe.'],
     2: [`Command yard ${integrity(command)} · ${Math.floor(state.elapsed || 0)} / ${state.duration || 180} seconds survived.`, 'Pull damaged units back to repair and keep the command yard out of the enemy approach until the full timer expires.'],
@@ -6149,7 +6193,8 @@ function finishGame(victory, terminalEvent=null) {
   const finaleVictory=victory&&missionId==='dawn-of-the-free';
   const afterDawnVictory=victory&&missionId==='after-the-dawn';
   const ironReclaimedVictory=victory&&missionId==='iron-reclaimed';
-  const bonusVictory=afterDawnVictory||ironReclaimedVictory;
+  const counterbatteryVictory=victory&&missionId==='counterbattery';
+  const bonusVictory=afterDawnVictory||ironReclaimedVictory||counterbatteryVictory;
   const endPanel=$('#end-modal .end-panel');
   endPanel.classList.toggle('campaign-finale',finaleVictory);
   endPanel.classList.toggle('campaign-aftermath',afterDawnVictory);
@@ -6159,7 +6204,7 @@ function finishGame(victory, terminalEvent=null) {
   epilogue.textContent=finaleVictory
     ?'At first light, the relay towers go dark. Across the valley, the people raise their own signal.'
     :afterDawnVictory?'The last evacuation signal is accounted for. One final recovery remains: an abandoned Guardian and its Engineer are still waiting beyond the valley.'
-      :ironReclaimedVictory?'The Engineer and the recommissioned Guardian made it back together. The valley has both survivors and proof that no force was left behind.':'';
+      :ironReclaimedVictory?'The Engineer and the recommissioned Guardian made it back together. Beyond the recovery route, Vesper batteries are ranging the canyon passes.':counterbatteryVictory?'Both siege batteries fall silent. The canyon routes reopen, and the forward crews can bring their wounded home.':'';
   $('#end-stats').classList.remove('hidden');
   $('#skirmish-debrief').classList.add('hidden');
   $('#skirmish-debrief-facts').replaceChildren();
@@ -6181,7 +6226,7 @@ function finishGame(victory, terminalEvent=null) {
     else if(!campaignBranchCode(missionId))advanceCampaignLegacyCompletion(localStorage,difficulty,missionIndex);
   }
   $('#end-kicker').textContent=currentMode==='multiplayer'?(victory?'MATCH WON':'MATCH LOST'):finaleVictory?'CAMPAIGN COMPLETE':ironReclaimedVictory?'BONUS RECOVERY COMPLETE':bonusVictory?'BONUS OPERATION COMPLETE':victory?'MISSION COMPLETE':'COMMAND LOST';
-  $('#end-title').textContent=finaleVictory?'THE VALLEY IS FREE':afterDawnVictory?'SIGNAL RECOVERED':ironReclaimedVictory?'GUARDIAN RESTORED':victory?'VICTORY':'DEFEAT';
+  $('#end-title').textContent=finaleVictory?'THE VALLEY IS FREE':afterDawnVictory?'SIGNAL RECOVERED':ironReclaimedVictory?'GUARDIAN RESTORED':counterbatteryVictory?'BATTERIES SILENCED':victory?'VICTORY':'DEFEAT';
   $('#end-title').style.color=victory?'#c9ff66':'#ff7869';
   const mission=currentMode==='campaign'?CAMPAIGN_MISSIONS[missionIndex]:null;
   const nextMissionIds=mission?campaignNextChoices(mission.id):[];
@@ -6196,7 +6241,7 @@ function finishGame(victory, terminalEvent=null) {
     const carryoverName=CAMPAIGN_CARRYOVERS.find(item=>item.id===(game.campaignCarryoverId||'none'))?.name||'No carryover';
     const supply=CAMPAIGN_SUPPLIES.find(item=>item.id===(game.campaignSupplyId||'none'));
     const supplyResult=supply&&supply.id!=='none' ? ` · ${supply.name.toUpperCase()} ${victory?'SPENT':'PRESERVED'}` : '';
-    const identityCode=mission.id==='after-the-dawn'?'BONUS OPERATION · AIRLIFT':mission.id==='iron-reclaimed'?'BONUS OPERATION · RECOVERY':campaignBranchCode(mission.id)?`BRANCH OPERATION ${campaignBranchCode(mission.id)}`:`OPERATION ${String(missionIndex+1).padStart(2,'0')} / 12`;
+    const identityCode=mission.id==='after-the-dawn'?'BONUS OPERATION · AIRLIFT':mission.id==='iron-reclaimed'?'BONUS OPERATION · RECOVERY':mission.id==='counterbattery'?'BONUS OPERATION · SIEGE':campaignBranchCode(mission.id)?`BRANCH OPERATION ${campaignBranchCode(mission.id)}`:`OPERATION ${String(missionIndex+1).padStart(2,'0')} / 12`;
     campaignIdentity.innerHTML=`<span>${identityCode}</span><strong>${mission.title.replace(/^Mission \d+: /,'')}</strong><small>${factionName} · ${victory?'OBJECTIVE SECURED':'OBJECTIVE NOT MET'} · ${carryoverName.toUpperCase()}${supplyResult}</small>`;
     if (victory) {
       const detail = $('#campaign-veteran-detail');
@@ -6249,7 +6294,7 @@ function finishGame(victory, terminalEvent=null) {
       $('#campaign-loss-action').textContent=review.action;
       lossReview.classList.remove('hidden');
     }
-    $('#end-copy').textContent=finaleVictory?'The relay shield is broken and the final command yard has fallen. The crystal frontier belongs to its people.':afterDawnVictory?'The rescue team brought the evacuation record home. The valley can now account for those who escaped.':ironReclaimedVictory?'The marked Guardian and its Engineer reached the Field Workshop together. The recovery objective is complete.':victory?'Operation complete. Your command moves the campaign forward.':failure||'The operation was lost. Your progress is preserved; review the objective and redeploy when ready.';
+    $('#end-copy').textContent=finaleVictory?'The relay shield is broken and the final command yard has fallen. The crystal frontier belongs to its people.':afterDawnVictory?'The rescue team brought the evacuation record home. The valley can now account for those who escaped.':ironReclaimedVictory?'The marked Guardian and its Engineer reached the Field Workshop together. The recovery objective is complete.':counterbatteryVictory?'Both marked Siege Crawlers were destroyed before the deadline. The Command Yard survived.':victory?'Operation complete. Your command moves the campaign forward.':failure||'The operation was lost. Your progress is preserved; review the objective and redeploy when ready.';
     const elapsed=gameSeconds;
     const kills=Math.max(0,Number(game.kills?.player)||0);
     const forceCount=game.units.filter(u=>u.owner==='player'&&u.hp>0).length;
@@ -6262,8 +6307,12 @@ function finishGame(victory, terminalEvent=null) {
       ?'<span>THE SHARD VALLEY CAMPAIGN</span><strong>Twelve core operations. One chosen route. One free frontier.</strong><p>The main war is complete. A bonus airlift rescue is now unlocked, or you can revisit any operation to improve its medal.</p>'
       :afterDawnVictory&&next
         ?`<span>NEXT OPERATION · BONUS RECOVERY</span><strong>${next.title.replace(/^Mission \d+: /,'')}</strong><p>${campaignBriefingCopy(next,difficulty)}</p>`
+        :ironReclaimedVictory&&next
+          ?`<span>NEXT OPERATION · COUNTERBATTERY</span><strong>${next.title}</strong><p>${campaignBriefingCopy(next,difficulty)}</p>`
+        :counterbatteryVictory
+          ?'<span>SIEGE BROKEN</span><strong>The canyon routes are open.</strong><p>Replay Counterbattery with another Field Order, or return to the campaign to improve your medals.</p>'
         :ironReclaimedVictory
-          ?'<span>RECOVERY COMPLETE</span><strong>The Engineer and Guardian made it home.</strong><p>Replay Iron Reclaimed to improve its medal, or return to the campaign to revisit the valley.</p>'
+          ?'<span>RECOVERY COMPLETE</span><strong>The Engineer and Guardian made it home.</strong><p>Return to the campaign to revisit the valley.</p>'
           :afterDawnVictory
             ?'<span>AFTERMATH COMPLETE</span><strong>Every signal brought home.</strong><p>Replay the rescue to improve your medal, or return to the campaign to revisit the valley.</p>'
             :victory&&nextMissionIds.length>1
@@ -7165,6 +7214,14 @@ $('#storm-status-button').addEventListener('click',()=>{
   const bloom=game.storm?.bloom?.until>game.time?game.storm.bloom:null;
   const target=bloom||game.storm;
   if(target)centerCamera(target.x,target.y);
+});
+$('#campaign-target-links').addEventListener('click',event=>{
+  const button=event.target.closest('[data-campaign-target]');
+  if(!button||button.disabled||currentMode!=='campaign'||missionIndex!==16)return;
+  const target=getCounterbatteryView(game)?.targets[Number(button.dataset.campaignTarget)];
+  if(!target?.alive)return;
+  setMobileRadarOpen(false);
+  centerCamera(target.x,target.y);
 });
 $('#relay-locator').addEventListener('click',()=>{
   const locator=$('#relay-locator');

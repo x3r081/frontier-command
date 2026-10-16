@@ -10,7 +10,8 @@ import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
-  CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
+  CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
+  COUNTERBATTERY_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
 import { validateCampaignVeteran, campaignVeteranSourceIds } from '../src/game/campaignVeteran.js';
 import { validateSoloEnvelope, validateSoloReplay, MAX_SOLO_TICKS, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
@@ -85,6 +86,8 @@ const RANKED_SEASON = MEDIC_ESCORT_RULES_VERSION;
 // Version 81 adds opt-in mobile rally targets and v82 optional target priority,
 // leaving floors unchanged. Version 83 changes Medic escort/dead-patient triage
 // across solo and ranked play, advancing every solo floor and ranked season.
+// Version 84 adds Counterbattery as a bonus sequel; only its campaign board
+// requires v84, while earlier campaign/skirmish boards and multiplayer stay put.
 const CAMPAIGN_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
 const SKIRMISH_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
@@ -95,7 +98,8 @@ const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
     : score.mode === 'campaign' && score.scoreVersion >=
         Math.max(CAMPAIGN_SCORE_FLOOR,
-          score.scenarioId === 'iron-reclaimed' ? IRON_RECLAIMED_RULES_VERSION : 0) &&
+          score.scenarioId === 'iron-reclaimed' ? IRON_RECLAIMED_RULES_VERSION : 0,
+          score.scenarioId === 'counterbattery' ? COUNTERBATTERY_RULES_VERSION : 0) &&
         score.scoreVersion <= SCORE_VERSION);
 const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;
@@ -158,6 +162,8 @@ function campaignMissionUnlockedFromLedger(completed, legacyMax, missionIndex) {
   if (missionIndex === 0) return true;
   if (CAMPAIGN_MISSIONS[missionIndex]?.id === 'iron-reclaimed')
     return completed.has('after-the-dawn');
+  if (CAMPAIGN_MISSIONS[missionIndex]?.id === 'counterbattery')
+    return completed.has('iron-reclaimed');
   // A verified archived victory at or beyond a mission proves that the profile
   // had reached it. A Black Shard score alone does not prove a pre-fork route:
   // versions before 30 also include the two branch missions.

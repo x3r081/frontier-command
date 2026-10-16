@@ -29,6 +29,11 @@ const SCENES = Object.freeze({
     alt: 'A rescue dropship hovers above a flooded canyon while an engineer and escort prepare to board.',
     position: '50% 51%', mobilePosition: '50% 59%',
   }),
+  counterbattery: Object.freeze({
+    src: '/assets/campaign-counterbattery-cinematic.webp', label: 'THE SIEGE FRONT',
+    alt: 'Two Vesper Siege Crawlers fire across a basalt canyon as Aegis armor, Rocket infantry, and a field Medic advance along the flank.',
+    position: '76% 50%', mobilePosition: '50% 57%',
+  }),
 });
 
 const MISSION_SCENES = Object.freeze({
@@ -38,7 +43,7 @@ const MISSION_SCENES = Object.freeze({
   'three-points-of-light': 'relay', 'dawn-of-the-free': 'relay', 'last-ember': 'relay',
   'ashes-in-transit': 'extraction',
   'last-light': 'airlift', 'after-the-dawn': 'airlift',
-  'iron-reclaimed': 'recovery',
+  'iron-reclaimed': 'recovery', counterbattery: 'counterbattery',
 });
 
 export function campaignArtworkForMission(missionId) {

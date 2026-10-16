@@ -6,7 +6,7 @@ import { CAMPAIGN_FIELD_ORDER_RECORDS_KEY, CAMPAIGN_RECORDS_KEY, campaignFieldOr
   CAMPAIGN_VETERAN_RECORDS_KEY, campaignVeteranRecordForMission, saveCampaignVeteran,
   CAMPAIGN_DIFFICULTY_PROGRESS_KEY, advanceCampaignLegacyCompletion, campaignMissionUnlocked,
   campaignProgressAtDifficulty, campaignRecord, saveCampaignResult } from '../src/game/campaignProgress.js';
-import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS } from '../src/game/campaign.js';
+import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, getCampaignCarryoverUnlocks } from '../src/game/campaign.js';
 import { CAMPAIGN_ROUTE_ORDERED_IDS, campaignNextChoices } from '../src/game/campaignRoute.js';
 
 function storage(seed = {}) {
@@ -273,9 +273,11 @@ test('route module exposes catalog-independent display order and branch choices 
   assert.deepEqual(campaignNextChoices('ghost-channel'), ['red-ledger']);
   assert.deepEqual(campaignNextChoices('iron-current'), ['red-ledger']);
   assert.deepEqual(campaignNextChoices('unknown'), []);
-  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-1), 'iron-reclaimed');
+  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-2), 'iron-reclaimed');
   assert.deepEqual(campaignNextChoices('after-the-dawn'), ['iron-reclaimed']);
-  assert.deepEqual(campaignNextChoices('iron-reclaimed'), []);
+  assert.deepEqual(campaignNextChoices('iron-reclaimed'), ['counterbattery']);
+  assert.deepEqual(campaignNextChoices('counterbattery'), []);
+  assert.equal(CAMPAIGN_ROUTE_ORDERED_IDS.at(-1), 'counterbattery');
 });
 
 test('Iron Reclaimed unlock requires the same-difficulty After the Dawn record', () => {
@@ -285,4 +287,34 @@ test('Iron Reclaimed unlock requires the same-difficulty After the Dawn record',
   saveCampaignResult(local, 'normal', 12, 'after-the-dawn', { mission: 'after-the-dawn', stars: 1 });
   assert.equal(campaignMissionUnlocked(local, 'normal', 15), true);
   assert.equal(campaignMissionUnlocked(local, 'hard', 15), false);
+});
+
+test('Counterbattery unlock and rewards follow only the same-difficulty Iron Reclaimed victory', () => {
+  const local = storage({ 'frontier-command-campaign-v1': '999',
+    [CAMPAIGN_DIFFICULTY_PROGRESS_KEY]: JSON.stringify({ easy: 15, normal: 15, hard: 15 }) });
+  assert.equal(campaignMissionUnlocked(local, 'normal', 16), false,
+    'even an oversized legacy progress counter cannot unlock the new bonus mission');
+  assert.equal(campaignMissionUnlocked(local, 'hard', 16), false);
+
+  const ironOrder = CAMPAIGN_FIELD_ORDERS[15][0].id;
+  const survivor = { defId: 'guardian', faction: 'aegis', veterancy: 1, promotion: null };
+  assert.equal(saveCampaignVeteran(local, 'normal', 'iron-reclaimed', survivor, 777), true);
+  assert.deepEqual(campaignVeteranRecordForMission(local, 'normal', 16), {
+    sourceMissionId: 'iron-reclaimed', veteran: survivor, completedAt: 777,
+  });
+  assert.equal(saveCampaignResult(local, 'normal', 15, 'iron-reclaimed', {
+    mission: 'iron-reclaimed', stars: 2, fieldOrderId: ironOrder, fieldOrderStatus: 'completed',
+  }), true);
+  assert.equal(campaignMissionUnlocked(local, 'normal', 16), true);
+  assert.equal(campaignMissionUnlocked(local, 'hard', 16), false,
+    'the previous mission must be completed at the requested difficulty');
+  assert.ok(getCampaignCarryoverUnlocks(16, [ironOrder]).includes('assault'),
+    'the new mission inherits its carryover from Iron Reclaimed field orders');
+  assert.equal(campaignProgressAtDifficulty(local, 'normal'), 15,
+    'completing a bonus mission does not advance the ordinary campaign counter');
+  assert.equal(saveCampaignResult(local, 'normal', 16, 'counterbattery', {
+    mission: 'counterbattery', stars: 3,
+  }), true);
+  assert.equal(campaignProgressAtDifficulty(local, 'normal'), 15,
+    'winning Counterbattery also leaves ordinary campaign progression unchanged');
 });

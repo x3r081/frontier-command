@@ -7,6 +7,7 @@ const FIRST_HARVEST_RAID_RULES_VERSION = 54;
 const IRON_CURRENT_RELAY_ASSAULT_RULES_VERSION = 55;
 const DAWN_FREE_SHIELD_REFORM_RULES_VERSION = 60;
 export const IRON_RECLAIMED_RULES_VERSION = 73;
+export const COUNTERBATTERY_RULES_VERSION = 84;
 const DAWN_FREE_RELAY_COUNTERATTACK_DELAY = 9;
 const DAWN_FREE_SHIELD_WARNING_DURATION = 7;
 
@@ -124,6 +125,12 @@ export const CAMPAIGN_MISSIONS = Object.freeze([
     objective: 'Recommission the marked Guardian with the Engineer. Choose a pass with the Guardian, reach the east recovery marker with both, then extract them at the Workshop before 300 seconds.',
     mechanic: 'FIELD RECOVERY',
   }),
+  Object.freeze({
+    id: 'counterbattery', title: 'Operation: Counterbattery', faction: 'aegis',
+    briefing: 'Two Vesper Siege Crawlers have dug in behind the northern and southern passes. Their guns can reach the forward installations, while a powered turret screen protects the approaches. Break through both fronts, keep the command yard online, and destroy both batteries before the next barrage window closes.',
+    objective: 'Destroy both Vesper Siege Crawlers within 210 seconds. The Command Yard must survive.',
+    mechanic: 'COUNTERBATTERY ASSAULT',
+  }),
 ]);
 
 // The public catalog deliberately contains only display and identity fields.
@@ -145,6 +152,7 @@ const FIELD_ORDER_RULES = Object.freeze([
   [{ type: 'raid', target: 'buggy' }, { type: 'relay', relay: 1 }],
   [{ type: 'raid', target: 'lightTank' }, { type: 'relay', relay: 1 }],
   [{ type: 'raid', target: 'buggy' }, { type: 'raid', target: 'rocket' }],
+  [{ type: 'raid', target: 'harvester' }, { type: 'relay', relay: 2 }],
 ]);
 
 const FIELD_ORDER_TITLES = Object.freeze([
@@ -164,6 +172,7 @@ const FIELD_ORDER_TITLES = Object.freeze([
   ['Silence the Vault Escort', 'Secure the Midpass Signal'],
   ['Break the Forward Tank', 'Secure the Midpass Signal'],
   ['Clear the Route Patrol', 'Silence the Pass Rocket Team'],
+  ['Cut the Siege Supply', 'Claim the East Relay'],
 ]);
 
 const FIELD_TARGET_NAMES = Object.freeze({ buggy: 'enemy buggy', harvester: 'enemy harvester',
@@ -294,6 +303,40 @@ export function getIronReclaimedView(game) {
       northPass: { x: 31.5, y: 18.5, radius: 4 }, southPass: { x: 31.5, y: 35.5, radius: 4 },
       vehicle: live(vehicle) ? { x: vehicle.x, y: vehicle.y } : null,
     },
+  };
+}
+
+/** Fog-safe objective view for Counterbattery's two fixed siege positions. */
+export function getCounterbatteryView(game) {
+  if (game?.mode !== 'campaign' || game.campaignMission !== 16) return null;
+  const state = game.campaignState || {};
+  const ids = Array.isArray(state.crawlerIds) ? state.crawlerIds : [];
+  const sites = Array.isArray(state.crawlerSites) ? state.crawlerSites : [];
+  const labels = ['NORTH CRAWLER', 'SOUTH CRAWLER'];
+  const targets = ids.map((id, index) => {
+    const unit = game.getEntity(id);
+    const alive = live(unit);
+    const visible = alive && game.isVisible(unit, 'player');
+    const site = sites[index] || { x: 0, y: 0 };
+    const center = visible ? game._entityCenter(unit) : site;
+    return {
+      id,
+      label: labels[index] || `SIEGE CRAWLER ${index + 1}`,
+      alive,
+      visible: !!visible,
+      hpPercent: visible && Number.isFinite(unit.maxHp) && unit.maxHp > 0
+        ? Math.max(0, Math.min(100, Math.round(unit.hp / unit.maxHp * 100))) : null,
+      x: center.x,
+      y: center.y,
+    };
+  });
+  return {
+    id: 'counterbattery',
+    remainingSeconds: Math.max(0, (Number(state.deadline) || 210) - (Number(state.elapsed) || 0)),
+    destroyed: targets.filter(target => !target.alive).length,
+    total: ids.length,
+    yardAlive: livingBuildings(game, 'player', 'command').length > 0,
+    targets,
   };
 }
 
@@ -494,12 +537,28 @@ const SCENARIOS = [
       ['rifle', 39.5, 25.5], ['rocket', 42.5, 24.5], ['buggy', 46.5, 29.5],
     ] },
   },
+  {
+    // Separate north/south passes make the fixed siege crawlers a split-front
+    // problem; the powered turret screen makes a direct crossing costly.
+    walls: [['rock', 28, 2, 30, 45, [[16, 22], [31, 38]]],
+      ['water', 16, 15, 21, 18], ['water', 18, 40, 24, 43]],
+    fields: [[12, 38, 4], [21, 24, 3], [21, 41, 3], [40, 24, 3], [54, 8, 3]],
+    player: { buildings: [['command', 6, 33], ['power', 2, 34], ['power', 2, 30],
+      ['refinery', 4, 39], ['barracks', 12, 38], ['factory', 13, 32],
+      ['radar', 38, 16], ['refinery', 38, 34]],
+      units: [['harvester', 8.5, 43.5, 'harvest'], ['rifle', 18.5, 33.5], ['rifle', 20.5, 31.5],
+        ['rocket', 20.5, 36.5], ['guardian', 18.5, 28.5], ['medic', 16.5, 32.5], ['scout', 23.5, 20.5]] },
+    enemy: { buildings: [['command', 52, 7], ['power', 58, 9], ['advancedPower', 58, 14],
+      ['refinery', 54, 15], ['barracks', 48, 13], ['factory', 48, 6], ['turret', 37, 23], ['turret', 37, 29]],
+      units: [['harvester', 55.5, 18.5, 'harvest'], ['artillery', 46.5, 18.5], ['artillery', 47, 35.5],
+        ['rocket', 42.5, 15.5], ['rifle', 42.5, 21.5], ['rocket', 43.5, 32.5], ['rifle', 43.5, 38.5]] },
+  },
 ];
 
 // A completed operation always earns its campaign star. The second recognizes
 // a surviving command yard; the third rewards finishing inside the operation's
 // par time. Keeping the result on Game makes it travel with ordinary saves.
-const MEDAL_PAR_SECONDS = Object.freeze([300, 360, 300, 330, 300, 300, 420, 110, 170, 210, 150, 360, 160, 145, 190, 240]);
+const MEDAL_PAR_SECONDS = Object.freeze([300, 360, 300, 330, 300, 300, 420, 110, 170, 210, 150, 360, 160, 145, 190, 240, 165]);
 
 export function getCampaignResult(game, index = game?.campaignMission) {
   if (!game || !Number.isInteger(index) || index < 0 || index >= CAMPAIGN_MISSIONS.length ||
@@ -881,6 +940,39 @@ function prepareMission(game, index, replayVersion = null) {
     return;
   }
 
+  if (index === 16) {
+    state.counterbatteryRulesVersion = COUNTERBATTERY_RULES_VERSION;
+    state.deadline = 210;
+    state.phase = 'destroy-crawlers';
+    state.crawlerIds = livingUnits(game, 'enemy', 'artillery').map(unit => unit.id);
+    state.crawlerSites = state.crawlerIds.map(id => {
+      const crawler = game.getEntity(id);
+      const center = game._entityCenter(crawler);
+      return { x: center.x, y: center.y };
+    });
+    state.forwardRadarId = livingBuildings(game, 'player', 'radar')[0]?.id ?? null;
+    state.forwardRefineryId = livingBuildings(game, 'player', 'refinery')
+      .sort((a, b) => b.x - a.x)[0]?.id ?? null;
+    const forwardRefinery = game.getEntity(state.forwardRefineryId);
+    if (forwardRefinery) {
+      forwardRefinery.hp = Math.round(forwardRefinery.maxHp * 0.58);
+      forwardRefinery.repairing = false;
+    }
+    for (const [index, crawlerId] of state.crawlerIds.entries()) {
+      const crawler = game.getEntity(crawlerId);
+      const targetId = index === 0 ? state.forwardRadarId : state.forwardRefineryId;
+      if (crawler && targetId) crawler.order = { type: 'attack', targetId };
+    }
+    state.waves = [
+      { at: 35, warned: false, warningElapsed: 0, fired: false },
+      { at: 85, warned: false, warningElapsed: 0, fired: false },
+    ];
+    state.waveUnitIds = [];
+    game.credits.player = 2600;
+    game._refreshPower(); game._updateFog();
+    return;
+  }
+
   game.credits.player = 5200;
   state.targetId = livingBuildings(game, 'enemy', 'command')[0]?.id ?? null;
   game._updateFog();
@@ -938,6 +1030,9 @@ export function createCampaignGame(index = 0, difficulty = 'normal', seed = 8021
   }
   if (index === 15 && replayVersion !== null && replayVersion < IRON_RECLAIMED_RULES_VERSION) {
     throw new RangeError(`Iron Reclaimed requires replay rules version ${IRON_RECLAIMED_RULES_VERSION}.`);
+  }
+  if (index === 16 && replayVersion !== null && replayVersion < COUNTERBATTERY_RULES_VERSION) {
+    throw new RangeError(`Counterbattery requires replay rules version ${COUNTERBATTERY_RULES_VERSION}.`);
   }
   if (!CAMPAIGN_DOCTRINES.some(doctrine => doctrine.id === doctrineId)) {
     throw new RangeError(`Unknown campaign doctrine: ${doctrineId}`);
@@ -1398,6 +1493,10 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
   // Saves made before the campaign expansion may not have a scenario state.
   // Reconstruct harmless defaults while keeping the saved mission's stable index.
   const state = game.campaignState || (game.campaignState = { elapsed: 0 });
+  const counterbatteryRulesActive = index === 16 && (replayVersion === null
+    ? state.counterbatteryRulesVersion === COUNTERBATTERY_RULES_VERSION
+    : replayVersion >= COUNTERBATTERY_RULES_VERSION);
+  if (index === 16 && !counterbatteryRulesActive) return false;
   const ironReclaimedRulesActive = index === 15 && (replayVersion === null
     ? state.ironReclaimedRulesVersion === IRON_RECLAIMED_RULES_VERSION
     : replayVersion >= IRON_RECLAIMED_RULES_VERSION);
@@ -1943,6 +2042,59 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
     }
     if (!complete && state.elapsed + 1e-9 >= (state.deadline || 260))
       return failMission(game, 'The Guardian recovery window closed before both survivors reached the Workshop.');
+  } else if (index === 16) {
+    if (!livingBuildings(game, 'player', 'command').length)
+      return failMission(game, 'The Command Yard was destroyed before both Siege Crawlers were silenced.');
+    // Keep each crawler committed to its fixed forward installation. If that
+    // installation is gone, idle lets the battery defend its local firing area
+    // without pursuit; generic campaign AI orders are corrected on this update.
+    for (const [crawlerIndex, crawlerId] of (state.crawlerIds || []).entries()) {
+      const crawler = game.getEntity(crawlerId);
+      if (!live(crawler)) continue;
+      const targetId = crawlerIndex === 0 ? state.forwardRadarId : state.forwardRefineryId;
+      const target = game.getEntity(targetId);
+      const order = live(target) && target.owner === 'player' &&
+        game._weaponCanTarget(game.unitDefs[crawler.defId].weapon, target)
+        ? { type: 'attack', targetId } : { type: 'idle' };
+      if (crawler.order?.type !== order.type || crawler.order?.targetId !== order.targetId) {
+        crawler.order = order;
+        crawler.path = [];
+        crawler._pathGoal = null;
+      }
+    }
+    for (const wave of state.waves || []) {
+      if (!wave.warned && state.elapsed + 1e-9 >= wave.at) {
+        wave.warned = true;
+        wave.warningElapsed = 0;
+        const north = wave.at < 60;
+        const marker = { x: 36.5, y: north ? 18.5 : 35.5 };
+        game._event('campaignThreatWarning', { message: north
+          ? 'Vesper reinforcements are forming beyond the northern pass. The column reaches the forward line in five seconds.'
+          : 'A second Vesper column is entering the southern pass. Prepare the damaged forward Refinery for impact.',
+        marker, route: north ? 'north' : 'south' });
+      } else if (wave.warned && !wave.fired) {
+        wave.warningElapsed = (wave.warningElapsed || 0) +
+          (Number.isFinite(dt) && dt > 0 ? Math.min(dt, 10) : 0);
+        if (wave.warningElapsed + 1e-9 >= 5) {
+          const north = wave.at < 60;
+          const point = { x: 36.5, y: north ? 18.5 : 35.5 };
+          const approach = { type: 'move', x: 23.5, y: north ? 18.5 : 35.5, attackMove: true };
+          const reinforcements = north
+            ? [['buggy', point.x, point.y], ['rocket', point.x + 1, point.y + 1]]
+            : [['lightTank', point.x, point.y], ['rifle', point.x + 1, point.y - 1]];
+          state.waveUnitIds.push(...reinforcements.map(([defId, x, y]) =>
+            game._createUnit('enemy', defId, x, y, approach).id));
+          wave.fired = true;
+          game._event('campaignReinforcement', { message: north
+            ? 'Vesper’s northern column reached the pass.' : 'Vesper’s southern column reached the pass.',
+          marker: point, route: north ? 'north' : 'south' });
+        }
+      }
+    }
+    complete = (state.crawlerIds || []).length === 2 &&
+      state.crawlerIds.every(id => !live(game.getEntity(id)));
+    if (!complete && state.elapsed + 1e-9 >= (state.deadline || 210))
+      return failMission(game, 'The Siege Crawlers completed their barrage before both were destroyed.');
   }
 
   // Campaign objectives differ from total elimination. Suppress the engine's
@@ -1953,7 +2105,8 @@ export function updateCampaign(game, index = game?.campaignMission, dt = 0, repl
   }
   if (!complete) return false;
 
-  if (selectedFieldOrder(game, index) && state.fieldOrderStatus === 'active') state.fieldOrderStatus = 'failed';
+  const finalFieldOrder = selectedFieldOrder(game, index);
+  if (finalFieldOrder && state.fieldOrderStatus === 'active') state.fieldOrderStatus = 'failed';
   game.campaignComplete = true;
   game.status = 'victory'; game.winner = 'player';
   game.campaignResult = getCampaignResult(game, index);
