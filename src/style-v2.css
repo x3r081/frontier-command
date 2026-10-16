@@ -3778,3 +3778,85 @@ body:has(#end-modal:not(.hidden)),
     height: clamp(200px, 43dvh, 224px);
   }
 }
+
+/* POWER GRID */
+.power-grid-trigger {
+  border: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.power-grid-trigger:hover .power-stat-values strong,
+.power-grid-trigger:focus-visible .power-stat-values strong { color: #e7ffbd; }
+.power-grid-trigger:focus-visible { outline-offset: 4px; }
+.power-stat-values { display: flex; flex-direction: column; gap: 3px; }
+.power-grid-panel {
+  display: flex;
+  flex-direction: column;
+  width: min(760px, 100%);
+  max-height: calc(100dvh - 40px);
+  overflow: hidden;
+  padding: 28px 30px 22px;
+  color: #e8f3e9;
+  border: 1px solid #63816a;
+  background: linear-gradient(145deg, #172722, #0a1614 75%);
+  box-shadow: 0 30px 100px #000b;
+}
+.power-grid-panel h2 { margin: 7px 0 4px; font: 800 39px/1 "Barlow Condensed", sans-serif; letter-spacing: .025em; }
+.power-grid-panel > p { max-width: 650px; margin: 0 0 14px; color: #b7c8ba; font-size: 12px; line-height: 1.45; }
+.power-grid-summary { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; margin-bottom: 14px; }
+.power-grid-summary > div { display: grid; gap: 4px; min-width: 0; padding: 9px 11px; border: 1px solid rgba(166,209,165,.21); background: rgba(5,18,14,.58); }
+.power-grid-summary small { color: #96b49b; font: 700 9px/1 "Barlow Condensed", sans-serif; letter-spacing: .15em; }
+.power-grid-summary strong { overflow: hidden; color: #e9f5df; font: 700 16px/1 "Barlow Condensed", sans-serif; text-overflow: ellipsis; white-space: nowrap; }
+.power-grid-summary > div:last-child strong { color: #c9ff66; }
+.power-grid-summary > div:last-child strong.is-negative { color: #ff9d84; }
+.power-grid-list-heading { display: flex; justify-content: space-between; gap: 10px; padding: 0 2px 7px; color: #e1efdc; font: 700 11px/1 "Barlow Condensed", sans-serif; letter-spacing: .12em; }
+.power-grid-list-heading small { color: #8ea891; font-size: 9px; }
+.power-grid-list { display: grid; gap: 7px; min-height: 60px; overflow: auto; overscroll-behavior: contain; padding: 2px 3px 2px 0; scrollbar-color: #537557 #101b16; scrollbar-width: thin; }
+.power-grid-row { display: grid; grid-template-columns: minmax(185px,1.1fr) minmax(190px,1fr) auto; align-items: center; gap: 10px; min-height: 68px; padding: 7px 9px; border: 1px solid rgba(154,198,158,.22); background: linear-gradient(110deg,rgba(32,55,40,.9),rgba(12,28,22,.95)); }
+.power-grid-row.is-standby { border-color: rgba(235,187,112,.45); background: linear-gradient(110deg,rgba(58,46,29,.62),rgba(19,26,20,.95)); }
+.power-grid-identity { display: flex; align-items: center; gap: 9px; min-width: 0; width: 100%; padding: 0; border: 0; background: transparent; color: inherit; text-align: left; font: inherit; cursor: pointer; }
+.power-grid-identity:hover strong { color: #c9ff66; }
+.power-grid-identity:focus-visible { outline: 2px solid #c9ff66; outline-offset: 2px; }
+.power-grid-identity .asset-icon { width: 43px; height: 43px; flex: 0 0 43px; object-fit: contain; border: 1px solid rgba(165,217,217,.18); background: rgba(6,18,18,.48); }
+.power-grid-identity > span { display: grid; gap: 4px; min-width: 0; }
+.power-grid-identity strong { display: flex; align-items: center; gap: 7px; min-width: 0; overflow: hidden; color: #f1f7e9; font: 700 15px/1.05 "Barlow Condensed", sans-serif; white-space: nowrap; }
+.power-grid-building-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.power-grid-locate-cue { flex: 0 0 auto; color: #8fd7c8; font: 700 8px/1 "Barlow Condensed", sans-serif; letter-spacing: .1em; }
+.power-grid-identity small { color: #b1c2b0; font-size: 9px; line-height: 1.2; }
+.power-grid-state { display: grid; gap: 4px; min-width: 0; }
+.power-grid-status { color: #c9ff66; font: 700 10px/1 "Barlow Condensed", sans-serif; letter-spacing: .12em; }
+.is-standby .power-grid-status { color: #f5cb88; }
+.power-grid-job { overflow: hidden; color: #acbcae; font-size: 9px; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+.power-grid-toggle { min-width: 94px; min-height: 34px; padding: 0 10px; border: 1px solid rgba(194,229,151,.46); background: rgba(57,84,47,.55); color: #e6f7dc; font: 700 10px/1 "Barlow Condensed", sans-serif; letter-spacing: .08em; }
+.power-grid-toggle:hover:not(:disabled) { border-color: #c9ff66; background: #315132; }
+.power-grid-toggle:disabled { opacity: .5; cursor: not-allowed; }
+.power-grid-empty { margin: 0; padding: 18px 10px; color: #aebfae; font-size: 12px; text-align: center; }
+.selection-card.has-power-control { height: auto; min-height: 106px; }
+.selection-power-toggle { width: fit-content; max-width: 100%; min-height: 23px; margin-top: 5px; padding: 3px 8px; border: 1px solid rgba(194,229,151,.38); background: rgba(48,78,43,.42); color: #dff2cb; font: 700 9px/1 "Barlow Condensed", sans-serif; letter-spacing: .09em; }
+.selection-power-toggle:hover:not(:disabled) { border-color: #c9ff66; color: #fff; }
+.selection-power-toggle:disabled { opacity: .52; cursor: not-allowed; }
+@media (max-width: 670px) {
+  .power-grid-trigger { min-width: 0; gap: 5px; }
+  .power-grid-trigger .stat-icon { font-size: 20px; }
+  .power-grid-trigger .power-stat-values strong { font-size: 15px; }
+  .power-grid-trigger:focus-visible { outline-offset: 1px; }
+}
+@media (max-width: 520px) {
+  .power-grid-panel { width: 100%; max-height: calc(100dvh - 20px); padding: 20px 14px 13px; }
+  .power-grid-panel h2 { font-size: 32px; }
+  .power-grid-panel > p { margin-bottom: 10px; font-size: 10px; }
+  .power-grid-summary { gap: 5px; margin-bottom: 10px; }
+  .power-grid-summary > div { gap: 4px; padding: 7px 6px; }
+  .power-grid-summary small { font-size: 8px; letter-spacing: .1em; }
+  .power-grid-summary strong { font-size: 13px; }
+  .power-grid-row { grid-template-columns: minmax(0,1fr) auto; gap: 6px 9px; padding: 7px; }
+  .power-grid-identity { grid-column: 1/-1; }
+  .power-grid-identity .asset-icon { width: 36px; height: 36px; flex-basis: 36px; }
+  .power-grid-identity strong { font-size: 14px; }
+  .power-grid-state { align-self: center; }
+  .power-grid-toggle { min-width: 85px; min-height: 34px; padding: 0 7px; font-size: 9px; }
+  .command-panel .selection-card.has-power-control { flex: 0 0 88px; height: 88px; min-height: 88px; overflow: auto; }
+}

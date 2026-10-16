@@ -97,6 +97,9 @@ let paused = false;
 let deploymentIntro = null;
 let armoryAutoPaused = false;
 let promotionAutoPaused = false;
+let powerGridAutoPaused = false;
+const pendingPowerCommands = new Set();
+let powerGridSignature = '';
 let promotionUnitId = null;
 let promotionPending = false;
 let promotionToken = 0;
@@ -191,12 +194,12 @@ let rankedRatingLoaded = false;
 let rankedUnavailableReason = 'Ranked season support has not been confirmed.';
 let rankedDataRequestVersion = 0;
 let pendingJoinCode = new URLSearchParams(location.search).get('join');
-const trackedDialogIds = ['#multiplayer-modal', '#leaderboard-modal', '#setup', '#manual', '#armory', '#promotion-modal'];
+const trackedDialogIds = ['#multiplayer-modal', '#leaderboard-modal', '#setup', '#manual', '#armory', '#promotion-modal', '#power-grid-modal'];
 const modalBackgroundIds = new Set([...trackedDialogIds, '#campaign-select', '#save-slots-modal', '#pause-modal', '#end-modal']);
 const trackedDialogOpeners = {
   '#multiplayer-modal': '#multiplayer-menu', '#leaderboard-modal': '#leaderboard-menu',
   '#setup': '#configure-game', '#manual': '#how-to-menu', '#armory': '#armory-menu',
-  '#promotion-modal': '#selection-card',
+  '#promotion-modal': '#selection-card', '#power-grid-modal': '#power-grid-trigger',
 };
 const dialogReturnFocus = new Map();
 function handleNetworkMessage(message) {
@@ -654,6 +657,15 @@ function closeTrackedDialog(id, restoreFocus = true) {
         audio.startAmbient();
         refreshFrameRateReadout();
       }
+    }
+  }
+  if (id === '#power-grid-modal' && powerGridAutoPaused) {
+    powerGridAutoPaused = false;
+    if (playing && !gameEnded) {
+      paused = false;
+      lastTime = performance.now();
+      audio.startAmbient();
+      refreshFrameRateReadout();
     }
   }
   const previous = dialogReturnFocus.get(id);
@@ -1250,6 +1262,107 @@ function openSetup() { updateSetupTacticNotes(); openTrackedDialog('#setup'); }
 function closeSetup() { closeTrackedDialog('#setup'); }
 function openManual() { openTrackedDialog('#manual'); }
 function closeManual() { closeTrackedDialog('#manual'); }
+function openPowerGrid() {
+  if (!game || replayMode) return;
+  if (playing && !gameEnded && currentMode !== 'multiplayer' && !paused) {
+    paused = true;
+    powerGridAutoPaused = true;
+    audio.stopAmbient();
+    refreshFrameRateReadout();
+  }
+  powerGridSignature = '';
+  renderPowerGrid();
+  openTrackedDialog('#power-grid-modal');
+}
+function closePowerGrid() { closeTrackedDialog('#power-grid-modal'); }
+function powerGridBuildings() {
+  if (!game) return [];
+  return game.buildings.filter(building => building.owner === 'player' && building.hp > 0 &&
+    building.progress >= 1 && Number(game.buildingDefs?.[building.defId]?.power) < 0)
+    .sort((a,b) => {
+      const an=game.buildingDefs?.[a.defId]?.name||keyName(a.defId);
+      const bn=game.buildingDefs?.[b.defId]?.name||keyName(b.defId);
+      return an.localeCompare(bn)||a.y-b.y||a.x-b.x||String(a.id).localeCompare(String(b.id));
+    });
+}
+function powerGridTile(building) {
+  const x=Math.floor(building.x+(building.w||0)/2);
+  const y=Math.floor(building.y+(building.h||0)/2);
+  return `${String(x).padStart(2,'0')} // ${String(y).padStart(2,'0')}`;
+}
+function renderPowerGrid(force=false) {
+  const modal=$('#power-grid-modal');
+  if(!modal||!game)return;
+  const power=game.power?.player||{},production=power.production||0,consumption=power.consumption||0;
+  const buildings=powerGridBuildings();
+  const researchCenterOnline=game.buildings.some(center=>center.owner==='player'&&center.defId==='tech'&&center.hp>0&&center.progress>=1&&center.powered===true);
+  const signature=JSON.stringify([production,consumption,researchCenterOnline,buildings.map(building=>{
+    const first=building.queue?.[0];
+    const research=building.defId==='tech'?(game.research?.player?.project||game.research?.player?.tacticalProject):null;
+    const unload=building.defId==='refinery'?game.units.find(unit=>unit._unloadRefineryId===building.id):null;
+    const can=game.canSetBuildingPower?.(building.id,!building.powerStandby);
+    return [building.id,building.powerStandby===true,building.powered===true,first?.defId,Math.floor((first?.progress||0)*100),building.queue?.length||0,research?.id,Math.floor((research?.progress||0)*100),unload?.id,Math.floor((unload?._unloadProgress||0)*100),can?.ok,can?.reason,pendingPowerCommands.has(building.id)];
+  })]);
+  if(!force&&signature===powerGridSignature)return;
+  powerGridSignature=signature;
+  $('#power-grid-production').textContent=`${fmt(production)} POWER`;
+  $('#power-grid-draw').textContent=`${fmt(consumption)} DRAW`;
+  const headroom=production-consumption;
+  $('#power-grid-headroom').textContent=`${headroom>=0?'+':''}${fmt(headroom)} POWER`;
+  $('#power-grid-headroom').classList.toggle('is-negative',headroom<0);
+  const list=$('#power-grid-list');
+  if(!buildings.length){
+    list.innerHTML='<p class="power-grid-empty">No completed power consumers available to manage.</p>';
+    return;
+  }
+  list.innerHTML=buildings.map(building=>{
+    const def=game.buildingDefs[building.defId],name=def?.name||keyName(building.defId);
+    const standby=building.powerStandby===true,draw=Math.abs(Number(def?.power)||0);
+    const check=game.canSetBuildingPower?.(building.id,!standby);
+    const pending=pendingPowerCommands.has(building.id);
+    const usable=!!check?.ok&&!replayMode&&!pending;
+    const archivedUnavailable=/power routing is unavailable in this archived battle/i.test(check?.reason||'');
+    const q=building.queue?.[0],qName=q&&(game.unitDefs?.[q.defId]?.name||keyName(q.defId));
+    const research=building.defId==='tech'?(game.research?.player?.project||game.research?.player?.tacticalProject):null;
+    const researchActiveElsewhere=building.defId==='tech'&&building.powered!==true&&game.buildings.some(center=>center.id!==building.id&&center.owner==='player'&&center.defId==='tech'&&center.hp>0&&center.progress>=1&&center.powered===true);
+    const unload=building.defId==='refinery'?game.units.find(unit=>unit._unloadRefineryId===building.id):null;
+    const queueText=q?`${standby?'QUEUE PAUSED':'TRAINING'} · ${qName} · ${Math.floor((q.progress||0)*100)}%${(building.queue?.length||0)>1?` · +${building.queue.length-1} QUEUED`:''}`:
+      research?`${researchActiveElsewhere?'RESEARCH ACTIVE ELSEWHERE':standby||!researchCenterOnline?'RESEARCH PAUSED':'RESEARCHING'} · ${research.name||keyName(research.id)} · ${Math.floor((research.progress||0)*100)}%`:
+      unload?`${standby?'UNLOAD PAUSED':'UNLOADING CARGO'} · ${Math.floor((unload._unloadProgress||0)*100)}%`:standby?'JOBS PAUSED':'NO ACTIVE JOB';
+    const state=standby?'STANDBY':building.powered?'ONLINE':'OFFLINE';
+    const action=standby?'Restore':'Stand by';
+    const jobLine=archivedUnavailable?'START A NEW BATTLE TO ENABLE POWER CONTROL':queueText;
+    const tile=powerGridTile(building);
+    const label=archivedUnavailable?`${name} power controls unavailable in this archived battle. Start a new battle to enable them.`:`${action} ${name}`;
+    return `<article class="power-grid-row${standby?' is-standby':''}"><button type="button" class="power-grid-identity" data-locate-power-building="${String(building.id).replaceAll('"','&quot;')}" aria-label="Locate ${name} at ${tile}" title="Locate ${name} · ${tile}">${assetHTML(building.defId)}<span><strong><span class="power-grid-building-name">${name}</span><span class="power-grid-locate-cue" aria-hidden="true">⌖ LOCATE</span></strong><small>${tile} · ${draw} POWER DRAW</small></span></button><div class="power-grid-state"><span class="power-grid-status">${state}</span><span class="power-grid-job">${jobLine}</span></div><button type="button" class="power-grid-toggle" data-power-building="${String(building.id).replaceAll('"','&quot;')}" data-standby="${!standby}" aria-label="${label}" title="${label}" ${usable?'':'disabled'}>${pending?'WAIT…':action.toUpperCase()}</button></article>`;
+  }).join('');
+}
+function setBuildingStandby(buildingId,standby) {
+  if(!game||typeof standby!=='boolean')return;
+  const building=game.buildings.find(item=>String(item.id)===String(buildingId));
+  if(!building){toast('BUILDING NO LONGER AVAILABLE',true);return;}
+  const check=game.canSetBuildingPower?.(building.id,standby);
+  if(!check||typeof game.setBuildingPower!=='function'){toast('POWER CONTROL IS UNAVAILABLE',true);return;}
+  if(!check.ok){toast(check.reason||'POWER CONTROL IS UNAVAILABLE',true);return;}
+  if(pendingPowerCommands.has(building.id))return;
+  const result=game.setBuildingPower?.(building.id,standby);
+  if(result?.pending){
+    pendingPowerCommands.add(building.id);
+    powerGridSignature='';
+    renderPowerGrid(true);
+    updateSelectionCard();
+    resultMessage(result,'','order',{onAccepted:()=>{updateUI(true);},onSettled:()=>{
+      pendingPowerCommands.delete(building.id);
+      powerGridSignature='';
+      updateUI(true);
+    }});
+    return;
+  }
+  if(resultMessage(result,'')){
+    powerGridSignature='';
+    updateUI(true);
+  }
+}
 let armoryFaction = 'aegis', armoryKind = 'units', armorySelected = '';
 const factionPerks = {
   aegis: 'Aegis harvesters extract crystal 20% faster near a powered Refinery. Secure Aegis Shelter relays restore nearby friendly infantry at 1 HP per second. Aegis also fields the Guardian, Field Medic, Kestrel, Watchtower, Skyshield Battery, and Ion Spire.',
@@ -3435,7 +3548,7 @@ function updateProductionSite() {
   const sector=`${Math.floor(site.x+site.w/2)}//${Math.floor(site.y+site.h/2)}`;
   $('#production-site-name').textContent=`${name} · ${sector}`;
   const active=site.queue?.[0];
-  const task=active?`${game.unitDefs[active.defId].name.toUpperCase()} ${Math.floor(active.progress*100)}%`:'READY';
+  const task=site.powerStandby===true?`PAUSED · STANDBY${active?` · ${Math.floor(active.progress*100)}%`:''}`:active?`${game.unitDefs[active.defId].name.toUpperCase()} ${Math.floor(active.progress*100)}%`:'READY';
   $('#production-site-status').textContent=`${task} · ${site.queue.length}/5 QUEUED`;
   panel.title=`New unit orders use this ${name.toLowerCase()}. Rally: ${Math.floor(site.rally.x)}, ${Math.floor(site.rally.y)}.`;
 }
@@ -3601,7 +3714,7 @@ function renderProduction(force=false) {
       return `<article class="relay-protocol-card ${intel.known?protocol:''}" aria-label="${relayNames[index]||`RELAY ${index+1}`}, ${owner}, ${state}, ${current}${visible?`, ${captureStatus.toLowerCase()}`:''}${cooldown?`, switch locked ${cooldown} seconds`:''}"><div class="relay-protocol-info"><strong>${relayNames[index]||`RELAY ${index+1}`}</strong><span class="relay-protocol-state">${owner} · ${state}</span>${captureMeter}<small>${status}</small>${cooldown?`<small class="relay-lock-time">SWITCH AVAILABLE IN ${cooldown}S</small>`:''}</div><div class="relay-protocol-options ${logisticsAvailable?'':'two-protocols'}" role="group" aria-label="${relayNames[index]||`Relay ${index+1}`} protocol">${options}</div></article>`;
     }).join('');
     const logisticsGuide=logisticsAvailable?' <strong>Logistics:</strong> +10% accepted Harvester cargo at unload per secure relay (max +30%, storage-capped).':'';
-    $('#production-list').innerHTML=`${fixedForceNotice}${packageDeck}<div class="support-section-title command-ability-heading">COMMAND ABILITIES <span>RELAY POWERED</span></div>${abilities}<div id="relay-protocol-heading" class="support-section-title">RELAY PROTOCOLS <span>SECURE RELAYS TO SWITCH</span></div><div class="relay-protocol-guide"><strong>Shelter:</strong> ion protection${aegisRelayRecovery?' and Aegis infantry recovery':''}. <strong>Overdrive:</strong> +0.45 energy/sec and +15% nearby ground reload.${logisticsGuide} Overdrive and Logistics remove shelter. Benefits stop while contested; switching locks for 12 seconds.</div>${relayCards}<div class="support-section-title">TACTICAL SYSTEMS</div><button class="production-item" data-support="super" ${ready?'':'disabled'}><span class="item-icon-fallback">◉</span><span class="item-text"><strong>${weaponName}</strong><small>${hasSuper?`${charge}% CHARGED`:'BUILD SUPERWEAPON'}</small><em>${ready?'Target an enemy position':'Charging or offline'}</em></span>${hasSuper?`<span class="queue-progress" style="width:${charge}%"></span>`:''}</button><button class="production-item" data-support="sell"><span class="item-icon-fallback">↗</span><span class="item-text"><strong>SELL STRUCTURE</strong><small>50% REFUND</small><em>Select a building first</em></span></button><button class="production-item" data-support="center"><span class="item-icon-fallback">⌖</span><span class="item-text"><strong>CENTER BASE</strong><small>SPACE</small><em>Return to command yard</em></span></button><button class="production-item" data-support="manual"><span class="item-icon-fallback">?</span><span class="item-text"><strong>FIELD MANUAL</strong><small>GUIDE</small><em>Review commands</em></span></button><button class="production-item" data-support="armory"><span class="item-icon-fallback">◇</span><span class="item-text"><strong>ARMORY / CODEX</strong><small>FIELD INTELLIGENCE</small><em>Review faction roster and specifications</em></span></button>`;
+    $('#production-list').innerHTML=`${fixedForceNotice}${packageDeck}<div class="support-section-title command-ability-heading">COMMAND ABILITIES <span>RELAY POWERED</span></div>${abilities}<div id="relay-protocol-heading" class="support-section-title">RELAY PROTOCOLS <span>SECURE RELAYS TO SWITCH</span></div><div class="relay-protocol-guide"><strong>Shelter:</strong> ion protection${aegisRelayRecovery?' and Aegis infantry recovery':''}. <strong>Overdrive:</strong> +0.45 energy/sec and +15% nearby ground reload.${logisticsGuide} Overdrive and Logistics remove shelter. Benefits stop while contested; switching locks for 12 seconds.</div>${relayCards}<div class="support-section-title">TACTICAL SYSTEMS</div><button class="production-item" data-support="power-grid"><span class="item-icon-fallback">ϟ</span><span class="item-text"><strong>POWER GRID</strong><small>BUILDING STANDBY</small><em>Manage power draw and paused systems</em></span></button><button class="production-item" data-support="super" ${ready?'':'disabled'}><span class="item-icon-fallback">◉</span><span class="item-text"><strong>${weaponName}</strong><small>${hasSuper?`${charge}% CHARGED`:'BUILD SUPERWEAPON'}</small><em>${ready?'Target an enemy position':'Charging or offline'}</em></span>${hasSuper?`<span class="queue-progress" style="width:${charge}%"></span>`:''}</button><button class="production-item" data-support="sell"><span class="item-icon-fallback">↗</span><span class="item-text"><strong>SELL STRUCTURE</strong><small>50% REFUND</small><em>Select a building first</em></span></button><button class="production-item" data-support="center"><span class="item-icon-fallback">⌖</span><span class="item-text"><strong>CENTER BASE</strong><small>SPACE</small><em>Return to command yard</em></span></button><button class="production-item" data-support="manual"><span class="item-icon-fallback">?</span><span class="item-text"><strong>FIELD MANUAL</strong><small>GUIDE</small><em>Review commands</em></span></button><button class="production-item" data-support="armory"><span class="item-icon-fallback">◇</span><span class="item-text"><strong>ARMORY / CODEX</strong><small>FIELD INTELLIGENCE</small><em>Review faction roster and specifications</em></span></button>`;
     updateSupportSellHint();
     updateProductionScrollCue();
     return;
@@ -3811,7 +3924,7 @@ function updateSelectionCard() {
   $('#cmd-service').title=!serviceUnits.length?'Select a damaged ground vehicle':!serviceBays.length?
     'Build a Field Workshop first':'Send selected damaged vehicles to a Field Workshop and restore their previous orders';
   updateMobileSquads();
-  if(!selected.length){$('#selection-card').classList.remove('is-critical','has-promotion-choice');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;}
+  if(!selected.length){$('#selection-card').classList.remove('is-critical','has-promotion-choice','has-power-control');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;}
   const first=selected[0],isBuilding='w' in first,def=isBuilding?game.buildingDefs?.[first.defId]:game.unitDefs?.[first.defId];
   const hp=selected.length===1?first.hp:selected.reduce((n,u)=>n+u.hp,0),maxHp=selected.length===1?first.maxHp:selected.reduce((n,u)=>n+u.maxHp,0),pct=Math.max(0,Math.round(hp/maxHp*100));
   const critical=selected.some(o=>o.owner==='player')&&pct<=25;
@@ -3874,7 +3987,7 @@ function updateSelectionCard() {
         ?`MATCHED PACE ${paceValues[0].toFixed(2)} T/S`:'MATCHED PACE':'';
     return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${paceLabel?` · ${paceLabel}`:''}${routed?` · ${routed} ROUTED`:''}`;
   })():'';
-  const subtitle=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
+  const subtitle=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?first.powerStandby===true?'PAUSED · STANDBY':workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
   const rank=!isBuilding&&selected.length===1?VETERANCY_RANKS[Math.min(VETERANCY_RANKS.length-1,first.veterancy||0)]:null;
   const nextRank=rank?VETERANCY_RANKS[(first.veterancy||0)+1]:null;
   const rankProgress=rank?nextRank?Math.max(0,Math.min(100,Math.round(((first.xp||0)-rank.xp)/(nextRank.xp-rank.xp)*100))):100:0;
@@ -3897,7 +4010,14 @@ function updateSelectionCard() {
   const ammoLine=ammoMeta?`<div class="ammunition-track" role="progressbar" aria-label="Gunship ammunition" aria-valuenow="${readyShots}" aria-valuemin="0" aria-valuemax="${ammoCapacity}" aria-valuetext="${readyShots} shots ready of ${ammoCapacity}"><span style="width:${ammoProgress}%"></span></div>`:'';
   const meta=ammoMeta||((rank?`INTEGRITY ${pct}% · ${first.kills||0} KILLS · ${nextRank?`${Math.max(0,Math.ceil(nextRank.xp-(first.xp||0)))} XP TO ${nextRank.name.toUpperCase()}`:promotionName?promotionName:'MAX RANK'}`:`ARMOR INTEGRITY · ${pct}%${isBuilding&&first.queue?.length?` · ${first.queue.length} QUEUED`:''}`)+cargoMeta+bayMeta+(queuedOrders?` · ${queuedOrders} QUEUED`:''));
   const elevationBadge=elevatedAdvantage?`<small class="elevation-advantage" title="Elevated position improves sight by 1 and weapon reach by 0.5">HIGH GROUND · +1 SIGHT${unitDef?.weapon?' · +0.5 REACH':''}</small>`:'';
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${elevationBadge}${ammoLine||rankLine}</div></div>`;
+  const powerToggleEligible=selected.length===1&&isBuilding&&first.owner==='player'&&first.hp>0&&first.progress>=1&&Number(def?.power)<0;
+  $('#selection-card').classList.toggle('has-power-control',!!powerToggleEligible);
+  const powerToggleCheck=powerToggleEligible?game.canSetBuildingPower?.(first.id,!first.powerStandby):null;
+  const powerCanToggle=powerToggleEligible&&!!powerToggleCheck?.ok&&!replayMode&&!pendingPowerCommands.has(first.id);
+  const powerAction=first.powerStandby===true?'RESTORE POWER':'STANDBY';
+  const archivedPowerUnavailable=/power routing is unavailable in this archived battle/i.test(powerToggleCheck?.reason||'');
+  const powerControl=powerToggleEligible?`<button class="selection-power-toggle" type="button" data-selection-power="${String(first.id).replaceAll('"','&quot;')}" data-standby="${first.powerStandby===true?false:true}" ${powerCanToggle?'':'disabled'} aria-label="${archivedPowerUnavailable?`${def?.name||'Building'} controls unavailable in this archived battle. Start a new battle to enable them.`:`${first.powerStandby===true?'Restore power to':'Put'} ${def?.name||'building'} ${first.powerStandby===true?'online':'on standby'}`}" title="${archivedPowerUnavailable?'Start a new battle to enable power controls.':powerToggleCheck?.reason||''}">${pendingPowerCommands.has(first.id)?'WAITING FOR SERVER':powerAction}</button>`:'';
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${powerControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
 }
 function placeSquadControlBar() {
   const bar=$('#mobile-squads');
@@ -3973,8 +4093,11 @@ function updateUI(force=false) {
   $('#credits-value').textContent=fmt(game.credits?.player);
   const p=game.power?.player||{};const production=p.production||0,consumption=p.consumption||0;
   $('#power-value').textContent=`${fmt(production)} / ${fmt(consumption)}`;
+  $('#power-grid-trigger').disabled=replayMode;
+  $('#power-grid-trigger').setAttribute('aria-label',`Open Power Grid controls. ${fmt(production)} power produced, ${fmt(consumption)} drawn, ${fmt(production-consumption)} headroom.`);
   $('#power-meter span').style.width=`${Math.min(100,production/Math.max(1,consumption)*100)}%`;
   $('#power-meter span').style.background=production<consumption?'#fd7868':'#c9ff66';
+  renderPowerGrid();
   $('#game-status').textContent=production<consumption?'LOW POWER':'ONLINE';
   $('#game-status').style.color=production<consumption?'#fd7868':'';
   $('#energy-value').textContent=`${Math.floor(game.commandEnergy?.player||0)} / 100`;
@@ -4599,6 +4722,16 @@ function processEvents() {
       const name=(game.buildingDefs?.[target?.defId]?.name||'Structure').toUpperCase();
       toast(e.owner==='player'?`${name} CAPTURED`:`ENEMY CAPTURED YOUR ${name}`,e.owner!=='player',5500);
       audio.play(e.owner==='player'?'ready':'alert');updateSelectionCard();continue;
+    }
+    if(type==='buildingPowerChanged'){
+      const building=game.getEntity?.(e.id??e.buildingId);
+      if(building?.owner==='player'){
+        const name=(game.buildingDefs?.[building.defId]?.name||'Structure').toUpperCase();
+        toast(e.standby===true?`${name} ON STANDBY`:`${name} POWER RESTORED`);
+        audio.play(e.standby===true?'order':'ready');
+        powerGridSignature='';renderPowerGrid(true);updateSelectionCard();
+      }
+      continue;
     }
     if(type==='salvageDropIncoming'){
       toast('PUBLIC SALVAGE DROP INBOUND · FIND THE AMBER BEACON',false,5000);audio.play('alert');continue;
@@ -5696,6 +5829,7 @@ function installMultiplayerCommandAdapters(target){
     toggleRepair:buildingId=>({buildingId}),sellBuilding:buildingId=>({buildingId}),
     useSuperweapon:(x,y)=>({x,y}),useCommandAbility:(abilityId,x,y)=>({abilityId,x,y}),
     setRelayProtocol:(relayId,protocol)=>({relayId,protocol}),
+    setBuildingPower:(buildingId,standby)=>({buildingId,standby}),
   };
   for(const [name,encode] of Object.entries(commands))target[name]=(...args)=>sendMatchCommand(name,encode(...args));
 }
@@ -6079,6 +6213,30 @@ $('#recover-game').addEventListener('click',()=>{
 });
 $('#how-to-menu').addEventListener('click',openManual);
 $('#armory-menu').addEventListener('click',openArmory);
+$('#power-grid-trigger').addEventListener('click',openPowerGrid);
+$('#power-grid-close').addEventListener('click',closePowerGrid);
+$('#power-grid-modal').addEventListener('click',event=>{if(event.target===$('#power-grid-modal'))closePowerGrid();});
+$('#power-grid-list').addEventListener('click',event=>{
+  const locate=event.target.closest('[data-locate-power-building]');
+  if(locate){
+    const building=game?.buildings.find(item=>String(item.id)===locate.dataset.locatePowerBuilding&&item.owner==='player'&&item.hp>0);
+    if(!building){toast('BUILDING NO LONGER AVAILABLE',true);return;}
+    game.select([building.id]);
+    centerCamera(building.x+(building.w||0)/2,building.y+(building.h||0)/2);
+    updateSelectionCard();
+    closePowerGrid();
+    return;
+  }
+  const button=event.target.closest('[data-power-building]');
+  if(!button||button.disabled)return;
+  const standby=button.dataset.standby==='true';
+  setBuildingStandby(button.dataset.powerBuilding,standby);
+});
+$('#selection-card').addEventListener('click',event=>{
+  const button=event.target.closest('[data-selection-power]');
+  if(!button||button.disabled)return;
+  setBuildingStandby(button.dataset.selectionPower,button.dataset.standby==='true');
+});
 $('#armory').addEventListener('click',event=>{if(event.target===$('#armory'))closeTrackedDialog('#armory');});
 $('#armory').addEventListener('keydown',event=>{if(event.key==='Tab')containModalTab(event,$('#armory'));});
 $('#armory-list').addEventListener('click',event=>{const item=event.target.closest('[data-armory-item]');if(!item)return;armorySelected=item.dataset.armoryItem;renderArmory();$('#armory-list [data-armory-item="'+CSS.escape(armorySelected)+'"]')?.focus();});
@@ -6322,7 +6480,7 @@ $('#production-list').addEventListener('click',e=>{
   }
   if(btn.dataset.ability){startCommandAbility(btn.dataset.ability);return;}
   if(btn.dataset.support){const action=btn.dataset.support;
-    if(action==='center')centerOnBase();else if(action==='manual')openManual();else if(action==='armory')openArmory();else if(action==='super')startTargetOrder('super','STRATEGIC STRIKE');
+    if(action==='center')centerOnBase();else if(action==='manual')openManual();else if(action==='armory')openArmory();else if(action==='power-grid')openPowerGrid();else if(action==='super')startTargetOrder('super','STRATEGIC STRIKE');
     else if(action==='sell'){const b=selectedBuilding();if(!b)toast('SELECT A STRUCTURE',true);else if(game.sellBuilding)resultMessage(game.sellBuilding(b.id),'STRUCTURE SOLD');else toast('SELL UNAVAILABLE',true);}return;
   }
   const id=btn.dataset.build;

@@ -63,6 +63,7 @@ export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const PRODUCTION_SITE_RULES_VERSION = 67;
 export const REINFORCEMENT_ASSEMBLY_RULES_VERSION = 68;
 export const AI_ECONOMY_RESERVE_RULES_VERSION = 69;
+export const POWER_STANDBY_RULES_VERSION = 71;
 export const AI_ENGINEER_RAID_RULES_VERSION = 70;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
@@ -380,6 +381,7 @@ export class Game {
     this.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
     this.reinforcementAssemblyRulesVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
     this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
+    this.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     this._aiCommandRecovery = null;
     this._aiEngineerRaidState = { active: null, cooldownUntil: 0 };
     this.salvageDrop = null;
@@ -1119,6 +1121,7 @@ export class Game {
     const b = { id: `b${this._nextEntityId++}`, owner, faction: ownerFaction(this, owner), defId,
       x: Math.floor(x), y: Math.floor(y), w: d.w, h: d.h, hp: d.health, maxHp: d.health,
       progress, queue: [], rally: { x: x + d.w / 2, y: y + d.h + 2 }, repairing: false, powered: true,
+      powerStandby: false,
       cooldown: 0, facing: owner === 'player' ? -Math.PI / 4 : Math.PI * 0.75, selected: false };
     this.buildings.push(b);
     this._event('buildingCreated', { id: b.id, owner, defId, x: b.x, y: b.y });
@@ -1949,6 +1952,35 @@ export class Game {
     return this.buildings.some(b => b.owner === owner && b.defId === defId && b.hp > 0 && b.progress >= 1);
   }
 
+  _powerStandbyEnabled() {
+    return this.replayVersion == null || this.replayVersion >= POWER_STANDBY_RULES_VERSION;
+  }
+
+  canSetBuildingPower(buildingId, standby) {
+    if (this.status !== 'playing') return { ok: false, reason: 'Power controls are available while the battle is playing.' };
+    if (!this._powerStandbyEnabled())
+      return { ok: false, reason: 'Power routing is unavailable in this archived battle.' };
+    if (typeof standby !== 'boolean') return { ok: false, reason: 'Choose whether the building should be on standby.' };
+    const building = this.getEntity(buildingId);
+    if (!building || building.owner !== (this.commandOwner || 'player') || building.hp <= 0 ||
+        building.progress < 1 || (BUILDING_DEFS[building.defId]?.power || 0) >= 0)
+      return { ok: false, reason: 'Choose a completed friendly building that consumes power.' };
+    return { ok: true };
+  }
+
+  setBuildingPower(buildingId, standby) {
+    const check = this.canSetBuildingPower(buildingId, standby);
+    if (!check.ok) return check;
+    const building = this.getEntity(buildingId);
+    if (building.powerStandby === standby) return { ok: true, standby };
+    building.powerStandby = standby;
+    this._refreshPower();
+    const powerSaved = standby ? Math.max(0, -(BUILDING_DEFS[building.defId].power || 0)) :
+      -Math.max(0, -(BUILDING_DEFS[building.defId].power || 0));
+    this._event('buildingPowerChanged', { id: building.id, owner: building.owner, standby, powerSaved });
+    return { ok: true, standby };
+  }
+
   chooseDoctrine(id) {
     const owner = this.commandOwner || 'player';
     const doctrine = DOCTRINE_DEFS[id];
@@ -2146,9 +2178,17 @@ export class Game {
       return { ok: false, reason: 'Unit is unavailable to this faction.' };
     for (const req of d.requires || []) if (!this.hasBuilding(owner, req))
       return { ok: false, reason: `Requires ${BUILDING_DEFS[req]?.name || req}.` };
-    const producers = this.buildings.filter(b => b.owner === owner && b.defId === d.producer && b.progress >= 1 && b.hp > 0 &&
-      (defId !== 'dropship' || b.powered));
-    if (!producers.length) return { ok: false, reason: `Requires ${BUILDING_DEFS[d.producer]?.name || d.producer}.` };
+    const ownedProducerSites = this.buildings.filter(b => b.owner === owner && b.defId === d.producer &&
+      b.progress >= 1 && b.hp > 0);
+    const producers = ownedProducerSites.filter(b =>
+      (defId !== 'dropship' || b.powered) &&
+      (!this._powerStandbyEnabled() || b.powerStandby !== true));
+    if (!producers.length) {
+      if (this._powerStandbyEnabled() && ownedProducerSites.length &&
+          ownedProducerSites.every(b => b.powerStandby === true))
+        return { ok: false, reason: `Production is paused because all ${BUILDING_DEFS[d.producer]?.name || d.producer} sites are on standby. Restore power first.` };
+      return { ok: false, reason: `Requires ${BUILDING_DEFS[d.producer]?.name || d.producer}.` };
+    }
     if (this.credits[owner] < d.cost) return { ok: false, reason: 'Insufficient credits.' };
     return { ok: true, producers };
   }
@@ -2165,7 +2205,14 @@ export class Game {
     const producer = explicitProducer
       ? check.producers.find(building => building.id === producerId)
       : [...check.producers].sort((a, b) => a.queue.length - b.queue.length)[0];
-    if (!producer) return { ok: false, reason: 'Select an available production building.' };
+    if (!producer) {
+      const selectedSite = explicitProducer && this.getEntity(producerId);
+      if (this._powerStandbyEnabled() && selectedSite?.owner === owner &&
+          selectedSite.defId === UNIT_DEFS[defId]?.producer && selectedSite.hp > 0 &&
+          selectedSite.progress >= 1 && selectedSite.powerStandby === true)
+        return { ok: false, reason: 'This production site is on standby. Restore power first.' };
+      return { ok: false, reason: 'Select an available production building.' };
+    }
     if (producer.queue.length >= 5) return { ok: false, reason: 'Production queue is full.' };
     this.credits[owner] -= UNIT_DEFS[defId].cost;
     producer.queue.push({ defId, progress: 0 });
@@ -2209,8 +2256,15 @@ export class Game {
   useSuperweapon(x, y) {
     const owner = this.commandOwner || 'player';
     if (!this._validatePoint(x, y)) return { ok: false, reason: 'Target is outside the map.' };
-    const nuke = this.hasBuilding(owner, 'warhead');
+    const nuke = this._powerStandbyEnabled()
+      ? this.buildings.some(b => b.owner === owner && b.defId === 'warhead' && b.hp > 0 && b.progress >= 1 &&
+        b.powerStandby !== true)
+      : this.hasBuilding(owner, 'warhead');
     if (!this.hasBuilding(owner, 'superweapon') && !nuke) return { ok: false, reason: 'Build a strategic weapon first.' };
+    if (this._powerStandbyEnabled() && !this.buildings.some(b => b.owner === owner &&
+      (b.defId === 'superweapon' || b.defId === 'warhead') && b.hp > 0 && b.progress >= 1 &&
+      b.powerStandby !== true))
+      return { ok: false, reason: 'A powered strategic weapon is required.' };
     if (this.superweapon[owner] < 1) return { ok: false, reason: 'Ion strike is still charging.' };
     if (this.mode === 'multiplayer' ? !this._tileVisibleToOwner(owner, Math.floor(x), Math.floor(y)) :
       owner === 'player' ? this.fog[Math.floor(y)][Math.floor(x)] !== 2 :
@@ -2432,7 +2486,7 @@ export class Game {
         if (b.owner !== owner || b.hp <= 0 || b.progress < 1) continue;
         const p = BUILDING_DEFS[b.defId].power || 0;
         if (p > 0) production += p * clamp(b.hp / b.maxHp, 0.25, 1);
-        else consumption -= p;
+        else if (!(this._powerStandbyEnabled() && b.powerStandby === true)) consumption -= p;
         if (b.defId === 'command' && b._campaignRecoveryUntil > this.time)
           production += b._campaignEmergencyPower || 0;
         if (b.defId === 'silo') capacity += 3000;
@@ -2440,9 +2494,12 @@ export class Game {
       const ratio = consumption <= 0 ? 1 : clamp(production / consumption, 0.28, 1);
       this.power[owner] = { production: Math.round(production), consumption, ratio };
       this.creditCapacity[owner] = capacity;
-      this.radar[owner] = this.hasBuilding(owner, 'radar') && ratio >= 0.8;
       for (const b of this.buildings) if (b.owner === owner)
-        b.powered = b.progress >= 1 && (b.defId === 'command' || b.defId === 'power' || ratio >= 0.55);
+        b.powered = !(this._powerStandbyEnabled() && b.powerStandby === true) && b.progress >= 1 &&
+          (b.defId === 'command' || b.defId === 'power' || ratio >= 0.55);
+      this.radar[owner] = this.hasBuilding(owner, 'radar') && ratio >= 0.8 &&
+        (!this._powerStandbyEnabled() || this.buildings.some(b => b.owner === owner && b.defId === 'radar' &&
+          b.hp > 0 && b.progress >= 1 && b.powered));
     }
   }
 
@@ -3011,7 +3068,8 @@ export class Game {
   _nearestRefinery(owner, x, y) {
     let best = null, distance = Infinity;
     for (const b of this.buildings) {
-      if (b.owner !== owner || b.defId !== 'refinery' || b.hp <= 0 || b.progress < 1) continue;
+      if (b.owner !== owner || b.defId !== 'refinery' || b.hp <= 0 || b.progress < 1 ||
+          this._powerStandbyEnabled() && b.powerStandby === true) continue;
       const d = this._distanceToEntity(x, y, b);
       if (d < distance) { distance = d; best = b; }
     }
@@ -3077,13 +3135,16 @@ export class Game {
     const assignedRefinery = unit._unloadRefineryId && this.getEntity(unit._unloadRefineryId);
     const assignedApproach = unit._unloadApproach;
     if (assignedRefinery?.hp > 0 && assignedRefinery.defId === 'refinery' && assignedRefinery.progress >= 1 &&
+      (!this._powerStandbyEnabled() || assignedRefinery.owner === unit.owner) &&
+      (!this._powerStandbyEnabled() || assignedRefinery.powerStandby !== true) &&
       assignedApproach && this._isPassable(Math.floor(assignedApproach.x), Math.floor(assignedApproach.y)) &&
       this._distanceToEntity(assignedApproach.x, assignedApproach.y, assignedRefinery) <= 0.95)
       return { refinery: assignedRefinery, approach: assignedApproach };
 
     const candidates = [];
     const refineries = this.buildings.filter(building => building.owner === unit.owner && building.defId === 'refinery' &&
-      building.hp > 0 && building.progress >= 1);
+      building.hp > 0 && building.progress >= 1 &&
+      (!this._powerStandbyEnabled() || building.powerStandby !== true));
     for (const refinery of refineries) for (let y = refinery.y - 1; y <= refinery.y + refinery.h; y++)
       for (let x = refinery.x - 1; x <= refinery.x + refinery.w; x++) {
         if (x >= refinery.x && x < refinery.x + refinery.w && y >= refinery.y && y < refinery.y + refinery.h) continue;
@@ -3138,7 +3199,8 @@ export class Game {
       if (improvedDocking) {
         refinery = u._unloadRefineryId && this.getEntity(u._unloadRefineryId);
         approach = u._unloadApproach;
-        if (!refinery || refinery.hp <= 0 || refinery.defId !== 'refinery' || refinery.progress < 1 || !approach ||
+        if (!refinery || refinery.hp <= 0 || refinery.defId !== 'refinery' || refinery.progress < 1 ||
+          this._powerStandbyEnabled() && (refinery.owner !== u.owner || refinery.powerStandby === true) || !approach ||
           !this._isPassable(Math.floor(approach.x), Math.floor(approach.y)) ||
           this._distanceToEntity(approach.x, approach.y, refinery) > 0.95) {
           this._releaseHarvesterDock(u);
@@ -3154,7 +3216,15 @@ export class Game {
         refinery = this._nearestRefinery(u.owner, u.x, u.y);
         approach = refinery ? this._entityCenter(refinery) : null;
       }
-      if (!refinery) { this._releaseHarvesterDock(u); u.order = { type: 'idle' }; return true; }
+      if (!refinery) {
+        this._releaseHarvesterDock(u);
+        const standbyRefineryExists = this._powerStandbyEnabled() && this.buildings.some(building =>
+          building.owner === u.owner && building.defId === 'refinery' && building.hp > 0 &&
+          building.progress >= 1 && building.powerStandby === true);
+        if (!standbyRefineryExists) u.order = { type: 'idle' };
+        else { u._harvestPhase = 'return'; u.path = []; u._pathGoal = null; }
+        return true;
+      }
       u._harvestPhase = 'return';
       const center = this._entityCenter(refinery);
       if (this._distanceToEntity(u.x, u.y, refinery) <= 0.95) {
@@ -3331,6 +3401,7 @@ export class Game {
       target.hp = Math.max(target.hp, target.maxHp * 0.45);
       target.queue = [];
       target.repairing = false;
+      target.powerStandby = false;
       this._event('buildingCaptured', { id: target.id, owner: target.owner, by: u.id });
       this._refreshPower();
       u.hp = 0; this._destroyEntity(u, null, null);
@@ -4006,7 +4077,7 @@ export class Game {
         if (target && b.cooldown <= 0 && this._hasLineOfSight(c.x, c.y, this._entityCenter(target).x, this._entityCenter(target).y))
           this._fire(b, target, def.weapon);
       }
-      if (!b.queue.length) continue;
+      if (!b.queue.length || this._powerStandbyEnabled() && b.powerStandby === true) continue;
       const q = b.queue[0], ud = UNIT_DEFS[q.defId];
       q.progress = Math.min(1, q.progress + dt * this.power[b.owner].ratio *
         (b.overchargedUntil > this.time ? 1.65 : 1) / ud.buildTime);
@@ -7033,8 +7104,15 @@ export class Game {
 
   _updateSuperweapon(dt) {
     for (const owner of ['player', 'enemy']) {
-      const nuke = this.hasBuilding(owner, 'warhead');
-      if (!this.hasBuilding(owner, 'superweapon') && !nuke) { this.superweapon[owner] = 0; continue; }
+      const nuke = this._powerStandbyEnabled()
+        ? this.buildings.some(b => b.owner === owner && b.defId === 'warhead' && b.hp > 0 && b.progress >= 1 &&
+          b.powerStandby !== true)
+        : this.hasBuilding(owner, 'warhead');
+      const hasPhysicalWeapon = this.hasBuilding(owner, 'superweapon') || this.hasBuilding(owner, 'warhead');
+      if (!hasPhysicalWeapon) { this.superweapon[owner] = 0; continue; }
+      if (this._powerStandbyEnabled() && !this.buildings.some(b => b.owner === owner &&
+        (b.defId === 'superweapon' || b.defId === 'warhead') && b.hp > 0 && b.progress >= 1 &&
+        b.powerStandby !== true)) continue;
       if (this.power[owner].ratio >= 0.8)
         this.superweapon[owner] = Math.min(1, this.superweapon[owner] + dt / (nuke ? 180 : 160));
       if (this.mode !== 'multiplayer' && this.superweapon[owner] >= 1 && owner === 'enemy') {
@@ -7256,6 +7334,11 @@ export class Game {
     if (game.mode === 'skirmish' && ['normal', 'hard'].includes(game.difficulty) &&
         game.replayVersion == null && data.aiEngineerRaidRulesVersion !== AI_ENGINEER_RAID_RULES_VERSION)
       game.replayVersion = AI_ENGINEER_RAID_RULES_VERSION - 1;
+    // Markerless saves predate v71 dock ownership and optional standby rules.
+    // Preserve any earlier version pin established above.
+    if (game.replayVersion == null && data.powerStandbyRulesVersion !== POWER_STANDBY_RULES_VERSION)
+      game.replayVersion = POWER_STANDBY_RULES_VERSION - 1;
+    game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -7490,6 +7573,10 @@ export class Game {
         Number.isFinite(unit._stormglassCargo) ? clamp(unit._stormglassCargo, 0, Math.max(0, unit.cargo || 0)) : 0;
     }
     for (const building of game.buildings) {
+      building.powerStandby = game._powerStandbyEnabled() &&
+        data.powerStandbyRulesVersion === POWER_STANDBY_RULES_VERSION &&
+        building.hp > 0 && building.progress >= 1 && (BUILDING_DEFS[building.defId]?.power || 0) < 0 &&
+        building.powerStandby === true;
       if (building.defId === 'refinery') building._unloadHarvesterId ??= null;
       for (const item of building.queue || []) {
         const job = item.aiEngineerRaid;

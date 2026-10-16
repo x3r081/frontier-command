@@ -4853,6 +4853,7 @@ export class Renderer3D {
             materials:damageMaterials,wearColor:new THREE.Color(0x765449),
             flashColor:new THREE.Color(0xffc08b)},
           animation:this._prepareAnimation(group,o)};
+        state.standbyCue=null;
         this.entities.set(o.id,state);
       }
       const flying=game.unitDefs?.[o.defId]?.flying;
@@ -4890,6 +4891,7 @@ export class Renderer3D {
       const anchorX=building?o.x+o.w/2:o.x,anchorZ=building?o.y+o.h/2:o.y;
       state.group.position.set(anchorX,flying?0.85+Math.sin(time*3+Number(o.id.slice(1)))*0.06:
         this.visualHeightAt(anchorX,anchorZ)+0.02,anchorZ);
+      if(building) this._syncPowerStandbyCue(state,o);
       const hp=clamp(o.hp/(o.maxHp||1),0,1);
       this._syncDamageAppearance(state,o,hp,time);
       if(!building) state.group.rotation.y=-(o.facing || 0)-Math.PI/2;
@@ -5002,6 +5004,50 @@ export class Renderer3D {
       if(o.hp/o.maxHp < 0.35) state.group.position.y+=Math.sin(time*6+o.x)*0.012;
     }
     for(const [id,state] of this.entities) if(!live.has(id)) this._removeEntity(id,state);
+  }
+
+  _syncPowerStandbyCue(state,o) {
+    const active=state.building&&o.progress>=1&&o.powerStandby===true&&o.powered===false;
+    if(!active) {
+      if(state.standbyCue) state.standbyCue.visible=false;
+      return;
+    }
+    if(!state.standbyCue) {
+      // A compact, camera-facing rooftop status plate: one dark keyline draw
+      // and one merged amber double-bar draw. Keep it separate from the
+      // physical model so damage tint and faction accents stay untouched.
+      const cue=new THREE.Group();
+      const plate=new THREE.Mesh(new THREE.PlaneGeometry(0.72,0.34),new THREE.MeshBasicMaterial({
+        color:0x17201e,transparent:true,opacity:1,depthWrite:false,
+        side:THREE.DoubleSide,forceSinglePass:true,fog:false,toneMapped:false,
+      }));
+      plate.position.z=0.001;
+      const barsGeometry=joinedGeometry([
+        {geometry:new THREE.PlaneGeometry(0.065,0.20),position:[-0.075,0,0.003]},
+        {geometry:new THREE.PlaneGeometry(0.065,0.20),position:[0.075,0,0.003]},
+      ]);
+      const bars=new THREE.Mesh(barsGeometry,new THREE.MeshBasicMaterial({
+        color:0xffb83f,transparent:true,opacity:1,depthWrite:false,
+        side:THREE.DoubleSide,forceSinglePass:true,fog:false,toneMapped:false,
+      }));
+      cue.add(plate,bars);
+      // Render order is evaluated per mesh; setting it only on the parent
+      // Group does not keep the marker above authored roof details or bars.
+      plate.renderOrder=11;
+      bars.renderOrder=12;
+      // Place the marker just clear of the highest authored roof detail while
+      // keeping its footprint small at the broad command view.
+      const model=state.group.userData.authoredVisual||state.group.userData.proceduralVisual||state.group;
+      model.updateMatrixWorld(true);
+      const bounds=new THREE.Box3().setFromObject(model);
+      const localTop=bounds.isEmpty()?1.25:
+        (bounds.max.y-state.group.position.y)/Math.max(0.001,state.group.scale.y);
+      cue.position.set(0,Math.max(localTop+0.25,2.5),0);
+      state.group.add(cue);
+      state.standbyCue=cue;
+    }
+    state.standbyCue.visible=true;
+    if(this.camera) state.standbyCue.quaternion.copy(state.group.quaternion).invert().multiply(this.camera.quaternion);
   }
 
   _syncRangeIndicator(game,time) {

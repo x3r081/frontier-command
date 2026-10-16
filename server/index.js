@@ -6,8 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  AI_ECONOMY_RESERVE_RULES_VERSION, AI_ENGINEER_RAID_RULES_VERSION,
-  REINFORCEMENT_ASSEMBLY_RULES_VERSION,
+  POWER_STANDBY_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -30,7 +29,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 68;
+const RANKED_SEASON = 71;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -62,12 +61,13 @@ const RANKED_SEASON = 68;
 // Version 68 changes reinforcement assembly for newly produced units in both
 // solo modes, so campaign and skirmish boards start at v68. Version 69 changes
 // skirmish-only economic recovery reserves, advancing only skirmish boards.
-// Version 70 adds engineer capture raids to normal/hard skirmish. Easy does not
-// use those raids, so its current board remains at the v69 reserve floor.
-const CAMPAIGN_SCORE_FLOOR = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = AI_ENGINEER_RAID_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = Math.max(REINFORCEMENT_ASSEMBLY_RULES_VERSION,
-  AI_ECONOMY_RESERVE_RULES_VERSION);
+// Version 70 adds engineer capture raids to normal/hard skirmish. Version 71
+// changes default ownership capture across solo modes, so all boards now share
+// the v71 comparison floor. Ranked multiplayer starts Season 71 for the same
+// strategic ruleset change.
+const CAMPAIGN_SCORE_FLOOR = POWER_STANDBY_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = POWER_STANDBY_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = POWER_STANDBY_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -871,6 +871,9 @@ function projectedState(lobby, member) {
     for (const key of Object.keys(entity)) if (key.startsWith('_')) delete entity[key];
     if ('order' in entity) delete entity.order;
     if ('path' in entity) entity.path = [];
+    // Standby is private economy state. An opponent snapshot must not reveal
+    // whether a hidden or visible building has been switched off.
+    if (entity.kind === 'building' || data.buildings.includes(entity)) delete entity.powerStandby;
   }
   data.effects = data.effects.filter(effect => fog[Math.floor(effect.y)]?.[Math.floor(effect.x)] === 2);
   data.scans = data.scans.filter(scan => scan.owner === side);
@@ -1099,7 +1102,7 @@ function startMatch(lobby) {
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
-  'toggleRepair', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
+  'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
   const game = lobby.game;
   if (!game || game.status !== 'playing') return { ok: false, reason: 'No active match.' };
@@ -1144,6 +1147,9 @@ function command(lobby, member, message) {
       case 'cancelQueuedUnit': return game.cancelQueuedUnit(message.buildingId, Number.isInteger(message.index) ? message.index : -1);
       case 'setRally': return game.setRally(message.buildingId, n(message.x), n(message.y));
       case 'toggleRepair': return game.toggleRepair(message.buildingId);
+      case 'setBuildingPower': return typeof message.standby === 'boolean'
+        ? game.setBuildingPower(message.buildingId, message.standby)
+        : { ok: false, reason: 'Invalid building power state.' };
       case 'useSuperweapon': return game.useSuperweapon(n(message.x), n(message.y));
       case 'useCommandAbility': return game.useCommandAbility(message.abilityId, n(message.x), n(message.y));
       case 'useUnitAbility': return game.useUnitAbility(message.unitId, message.abilityId);
