@@ -52,8 +52,10 @@ const RANKED_SEASON = 53;
 // Ranked multiplayer starts Season 53. Version 59 adds the visibility-gated
 // skirmish counter-plan, resetting skirmish boards. Version 60 changes only
 // Dawn of the Free's relay-shield finale, so its campaign board resets alone.
+// Version 62 changes normal/hard skirmish AI command-yard recovery. Easy keeps
+// the v59 comparison floor because that recovery rule does not apply there.
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
-  (score.mode === 'skirmish' ? score.scoreVersion >= 59 &&
+  (score.mode === 'skirmish' ? score.scoreVersion >= (score.difficulty === 'easy' ? 59 : 62) &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
     : score.mode === 'campaign' && score.scoreVersion >=

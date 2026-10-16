@@ -48,6 +48,7 @@ export const SIEGE_DIRECTOR_RULES_VERSION = 53;
 export const SIEGE_EXPANSION_RULES_VERSION = 54;
 export const AI_HARVESTER_RETREAT_RULES_VERSION = 56;
 export const AI_COUNTER_PLAN_RULES_VERSION = 59;
+export const AI_COMMAND_RECOVERY_RULES_VERSION = 62;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
@@ -356,8 +357,11 @@ export class Game {
     this.relayDominionTargetCommitmentRulesVersion = RELAY_DOMINION_TARGET_COMMITMENT_RULES_VERSION;
     this.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     this.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
+    this.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    this._aiCommandRecovery = null;
     this.salvageDrop = null;
     this.skirmishOpening = mode === 'skirmish' && skirmishOpening === 'command-rig' ? 'command-rig' : 'established';
+    this._aiCommandRigOpeningComplete = this.skirmishOpening !== 'command-rig';
     this.victoryMode = ['skirmish', 'multiplayer'].includes(mode) && victoryMode === 'elimination' ? 'elimination' : 'dominion';
     this.campaignDoctrineId = mode === 'campaign' && CAMPAIGN_DOCTRINE_IDS.has(campaignDoctrineId)
       ? campaignDoctrineId : 'standard';
@@ -3864,6 +3868,203 @@ export class Game {
     return true;
   }
 
+  _aiCommandRecoveryRulesCurrent() {
+    return this.mode === 'skirmish' && ['normal', 'hard'].includes(this.difficulty) &&
+      (this.replayVersion == null || this.replayVersion >= AI_COMMAND_RECOVERY_RULES_VERSION);
+  }
+
+  _aiCommandRecoveryEnabled() {
+    return this._aiCommandRecoveryRulesCurrent() &&
+      (this.skirmishOpening !== 'command-rig' || this._aiCommandRigOpeningComplete);
+  }
+
+  _aiCommandRecoveryCanQueue() {
+    const factory = this.buildings.some(building => building.owner === 'enemy' && building.defId === 'factory' &&
+      building.hp > 0 && building.progress >= 1 && building.powered);
+    const tech = this.buildings.some(building => building.owner === 'enemy' && building.defId === 'tech' &&
+      building.hp > 0 && building.progress >= 1 && building.powered);
+    const powered = this.power.enemy.production > 0 && this.power.enemy.ratio >= 0.83;
+    const cap = this.difficulty === 'hard' ? 27 : 21;
+    const combat = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 && !unit.embarkedIn &&
+      !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(unit.defId));
+    const queued = this.buildings.filter(building => building.owner === 'enemy')
+      .reduce((sum, building) => sum + (building.queue?.length || 0), 0);
+    return factory && tech && powered && combat.length + queued < cap;
+  }
+
+  _aiCommandRecoveryThreatened(x, y, radius = 10) {
+    const visibleGroundThreat = this.units.some(unit => unit.owner === 'player' && unit.hp > 0 &&
+      !unit.embarkedIn && this._weaponCanTarget(UNIT_DEFS[unit.defId]?.weapon, { defId: 'mcv' }) &&
+      this.isVisible(unit, 'enemy') && dist(unit.x, unit.y, x, y) <= radius);
+    if (visibleGroundThreat) return true;
+    return this.buildings.some(building => {
+      const weapon = BUILDING_DEFS[building.defId]?.weapon;
+      if (building.owner !== 'player' || building.hp <= 0 || building.progress < 1 || !building.powered ||
+          !weapon || weapon.target === 'air' ||
+          !this.isVisible(building, 'enemy')) return false;
+      const cx = clamp(x, building.x, building.x + building.w);
+      const cy = clamp(y, building.y, building.y + building.h);
+      return dist(cx, cy, x, y) <= Math.min(radius, Math.max(7, weapon.range || 0));
+    });
+  }
+
+  _aiCommandRecoverySite(rig = null) {
+    const industry = this.buildings.filter(building => building.owner === 'enemy' && building.hp > 0 &&
+      building.progress >= 1 && ['factory', 'tech', 'power', 'advancedPower', 'refinery'].includes(building.defId));
+    const anchors = industry.length ? industry : rig ? [{ x: rig.x - 1, y: rig.y - 1, w: 3, h: 3 }] : [];
+    const candidates = [];
+    const checked = new Set();
+    const failedSites = Array.isArray(this._aiCommandRecovery?.failedSites)
+      ? this._aiCommandRecovery.failedSites.filter(site => site.expiresAt > this.time) : [];
+    for (const anchor of anchors) {
+      const ax = anchor.x + anchor.w / 2, ay = anchor.y + anchor.h / 2;
+      const minX = Math.max(1, Math.floor(anchor.x - 6));
+      const maxX = Math.min(this.width - 4, Math.ceil(anchor.x + anchor.w + 5));
+      const minY = Math.max(1, Math.floor(anchor.y - 6));
+      const maxY = Math.min(this.height - 4, Math.ceil(anchor.y + anchor.h + 5));
+      for (let y = minY; y <= maxY; y++) for (let x = minX; x <= maxX; x++) {
+        const key = `${x},${y}`;
+        if (checked.has(key)) continue;
+        checked.add(key);
+        if (failedSites.some(site => site.x === x && site.y === y)) continue;
+        let legal = true;
+        for (let yy = y; yy < y + 3 && legal; yy++) for (let xx = x; xx < x + 3; xx++) {
+          if (!this._tile(xx, yy)?.buildable || this.buildings.some(building => building.hp > 0 &&
+              (building.owner === 'enemy' || this.isVisible(building, 'enemy')) &&
+              xx >= building.x && xx < building.x + building.w && yy >= building.y && yy < building.y + building.h)) {
+            legal = false; break;
+          }
+        }
+        const target = { x: x + 1.5, y: y + 1.5 };
+        if (!legal || dist(ax, ay, target.x, target.y) > 10 ||
+            this._aiCommandRecoveryThreatened(target.x, target.y)) continue;
+        if (this.units.some(unit => unit.hp > 0 && unit !== rig &&
+            (unit.owner === 'enemy' || this.isVisible(unit, 'enemy')) &&
+            unit.x >= x - 0.2 && unit.x <= x + 4.2 && unit.y >= y - 0.2 && unit.y <= y + 4.2)) continue;
+        const score = dist(ax, ay, target.x, target.y) + (rig ? dist(rig.x, rig.y, target.x, target.y) * 0.2 : 0);
+        candidates.push({ x, y, target, score });
+      }
+    }
+    candidates.sort((a, b) => a.score - b.score || a.y - b.y || a.x - b.x);
+    return candidates.find(candidate => !rig || dist(rig.x, rig.y, candidate.target.x, candidate.target.y) < 0.75 ||
+      this._findPath(rig.x, rig.y, candidate.target.x, candidate.target.y).length > 0) || null;
+  }
+
+  _aiRecoverCommandYard() {
+    if (!this._aiCommandRecoveryEnabled()) return false;
+    const recovery = this._aiCommandRecovery;
+    const yard = this.buildings.some(building => building.owner === 'enemy' && building.defId === 'command' && building.hp > 0);
+    if (yard) {
+      for (const unit of this.units) if (unit.owner === 'enemy' && unit._aiCommandRecovery) {
+        delete unit._aiCommandRecovery;
+        if (unit.order?.aiCommandRecovery) { unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null; }
+      }
+      if (recovery) {
+        this._aiCommandRecovery = null;
+        this._aiExpansionTarget = null;
+      }
+      return false;
+    }
+
+    const queuedMcv = this.buildings.some(building => building.owner === 'enemy' && building.hp > 0 &&
+      building.queue?.some(item => item.defId === 'mcv'));
+    let rig = this.units.find(unit => unit.owner === 'enemy' && unit.defId === 'mcv' && unit.hp > 0 &&
+      unit.id === recovery?.rigId) || this.units.find(unit => unit.owner === 'enemy' && unit.defId === 'mcv' && unit.hp > 0);
+    if (!this._aiCommandRecovery) this._aiCommandRecovery = { stage: rig || queuedMcv ? 'queued' : 'funding' };
+    const plan = this._aiCommandRecovery;
+    if (plan.retryAt && this.time < plan.retryAt) return true;
+    if (plan.retryAt) delete plan.retryAt;
+
+    if (!rig && !queuedMcv && plan.rigId) {
+      plan.stage = 'funding'; plan.rigId = null; plan.target = null; plan.retryAt = this.time + 60;
+      return true;
+    }
+    if (!rig && !queuedMcv && plan.stage === 'queued') {
+      plan.stage = 'funding'; plan.rigId = null; plan.target = null; plan.retryAt = this.time + 60;
+      return true;
+    }
+
+    if (!rig && !queuedMcv) {
+      if (!this._aiCommandRecoveryCanQueue() ||
+          this.credits.enemy < UNIT_DEFS.mcv.cost) {
+        plan.stage = 'funding';
+        plan.retryAt = this.time + 30;
+        return true;
+      }
+      const result = this._queueUnit('enemy', 'mcv');
+      if (!result.ok) {
+        plan.stage = 'funding';
+        plan.retryAt = this.time + 30;
+        return true;
+      }
+      plan.stage = 'queued';
+      plan.rigId = null;
+      delete plan.target;
+      return true;
+    }
+
+    if (!rig) {
+      plan.stage = 'queued';
+      plan.rigId = null;
+      return true;
+    }
+
+    rig._aiCommandRecovery = true;
+    rig._aiExpansion = false;
+    rig._relayAssignment = null;
+    rig._aiDefenseTarget = null;
+    rig._aiRaidTarget = null;
+    rig._aiRelayResponseRelayId = null;
+    rig._aiRelayUrgentRelayId = null;
+    rig._aiRelayReconRelayId = null;
+    rig._aiRelayResponseOrder = null;
+    rig._aiRelayResponsePriorAssignment = null;
+    rig.order = rig.order?.aiCommandRecovery ? rig.order : { type: 'idle' };
+    plan.rigId = rig.id;
+    plan.stage = 'moving';
+
+    const target = this._aiCommandRecoverySite(rig);
+    if (!target) {
+      rig.order = { type: 'idle' }; rig.path = []; rig._pathGoal = null;
+      plan.stage = 'waiting-site'; plan.retryAt = this.time + 30;
+      return true;
+    }
+    const changed = !plan.target || dist(plan.target.x, plan.target.y, target.target.x, target.target.y) >= 2;
+    if (changed || !rig.order?.aiCommandRecovery) {
+      plan.target = { x: target.target.x, y: target.target.y, deployX: target.x, deployY: target.y };
+      rig.order = { type: 'move', x: target.target.x, y: target.target.y, aiCommandRecovery: true };
+      rig.path = []; rig._pathGoal = null;
+    }
+    if (dist(rig.x, rig.y, plan.target.x, plan.target.y) >= 0.85 ||
+        Math.floor(rig.x) - 1 !== plan.target.deployX || Math.floor(rig.y) - 1 !== plan.target.deployY) return true;
+    const deploy = this._canDeployMCV(rig);
+    if (!deploy.ok) {
+      plan.failedSites = Array.isArray(plan.failedSites) ? plan.failedSites : [];
+      plan.failedSites = plan.failedSites.filter(site => site.expiresAt > this.time &&
+        !(site.x === plan.target.deployX && site.y === plan.target.deployY));
+      plan.failedSites.push({ x: plan.target.deployX, y: plan.target.deployY, expiresAt: this.time + 120 });
+      plan.failedSites.sort((a, b) => a.expiresAt - b.expiresAt);
+      if (plan.failedSites.length > 8) plan.failedSites = plan.failedSites.slice(-8);
+      rig.order = { type: 'idle' }; rig.path = []; rig._pathGoal = null;
+      plan.target = null; plan.stage = 'waiting-site'; plan.retryAt = this.time + 30;
+      return true;
+    }
+    if (this._aiCommandRecoveryThreatened(deploy.x + 1.5, deploy.y + 1.5)) {
+      rig.order = { type: 'idle' }; rig.path = []; rig._pathGoal = null;
+      plan.target = null; plan.stage = 'waiting-site'; plan.retryAt = this.time + 30;
+      return true;
+    }
+    delete rig._aiCommandRecovery;
+    const result = this._deployMCV(rig, 'enemy');
+    if (result.ok) {
+      this._aiCommandRecovery = null;
+      this._aiExpansionTarget = null;
+      return false;
+    }
+    plan.target = null; plan.stage = 'waiting-site'; plan.retryAt = this.time + 30;
+    return true;
+  }
+
   _aiRecoverEconomy() {
     if (this.mode !== 'skirmish' ||
       (this.replayVersion != null && this.replayVersion < ECONOMY_RECOVERY_RULES_VERSION)) return;
@@ -4072,6 +4273,7 @@ export class Game {
   }
 
   _aiManageExpansion() {
+    if (this._aiCommandRecoveryEnabled() && this._aiCommandRecovery) return true;
     if (!this._aiExpansionEnabled()) return false;
     const siegeDirector = this._aiSiegeDirectorActive();
     if (this._aiUnderRelayDominionPressure()) {
@@ -4811,7 +5013,7 @@ export class Game {
       (this.replayVersion == null || this.replayVersion >= RELAY_RESPONSE_PERSISTENCE_RULES_VERSION);
     const relayVisibleToEnemy = relay => this.isVisible({ x: relay.x, y: relay.y, owner: 'player' }, 'enemy');
     const visiblePlayerRelay = this.relays.some(relay => relay.owner === 'player' && relayVisibleToEnemy(relay));
-    const responseExcluded = unit => unit._aiDefenseTarget || unit._aiRaidTarget || unit._aiRecovering ||
+    const responseExcluded = unit => unit._aiCommandRecovery || unit._aiDefenseTarget || unit._aiRaidTarget || unit._aiRecovering ||
       unit._aiRecoverWreck || unit._aiBridgeTarget || unit.order?.aiScout || unit.embarkedIn ||
       ['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(unit.defId) ||
       relayCounterattackRules && (unit._aiExpansion || unit.order?.aiTransport || unit.order?.noRelayRelease ||
@@ -5614,13 +5816,19 @@ export class Game {
   _aiTick() {
     if (this.status !== 'playing') return;
     this._aiUseFactionUnitAbilities();
-    if (this.skirmishOpening === 'command-rig' && !this.buildings.some(b => b.owner === 'enemy' && b.defId === 'command' && b.hp > 0)) {
+    if (this.skirmishOpening === 'command-rig' &&
+        (!this._aiCommandRecoveryRulesCurrent() || !this._aiCommandRigOpeningComplete) &&
+        !this.buildings.some(b => b.owner === 'enemy' && b.defId === 'command' && b.hp > 0)) {
       const rig = this.units.find(u => u.owner === 'enemy' && u.defId === 'mcv' && u.hp > 0);
-      if (rig && this._canDeployMCV(rig).ok) this._deployMCV(rig, 'enemy');
+      if (rig && this._canDeployMCV(rig).ok && this._deployMCV(rig, 'enemy').ok)
+        this._aiCommandRigOpeningComplete = true;
     }
     this._aiRecoverEconomy();
+    this._aiRecoverCommandYard();
+    const reserveCommandRecovery = this._aiCommandRecovery?.stage === 'funding' &&
+      this._aiCommandRecoveryCanQueue();
     const enemyBuildings = this.buildings.filter(b => b.owner === 'enemy' && b.hp > 0 && b.progress >= 1);
-    if (!this.research.enemy.doctrine && !this.research.enemy.project &&
+    if (!reserveCommandRecovery && !this.research.enemy.doctrine && !this.research.enemy.project &&
       enemyBuildings.some(b => b.defId === 'tech' && b.powered) && this.credits.enemy >= DOCTRINE_DEFS.signal.cost) {
       const previousOwner = this.commandOwner;
       this.commandOwner = 'enemy';
@@ -5631,7 +5839,7 @@ export class Game {
       this.commandOwner = previousOwner;
     }
     const doctrineState = this.research.enemy;
-    if (this.mode === 'skirmish' && (this.replayVersion == null ||
+    if (!reserveCommandRecovery && this.mode === 'skirmish' && (this.replayVersion == null ||
         this.replayVersion >= DOCTRINE_REPLACEMENT_RULES_VERSION) && doctrineState.doctrine &&
         !doctrineState.project && !doctrineState.replacementUsed &&
         this.credits.enemy >= DOCTRINE_REPLACEMENT_COST + TACTICAL_PACKAGE_DEFS.breach.cost &&
@@ -5644,7 +5852,7 @@ export class Game {
         this.commandOwner = previousOwner;
       }
     }
-    if ((this.replayVersion == null || this.replayVersion >= 31) && this.research.enemy.doctrine &&
+    if (!reserveCommandRecovery && (this.replayVersion == null || this.replayVersion >= 31) && this.research.enemy.doctrine &&
       !this.research.enemy.tactical && !this.research.enemy.tacticalProject &&
       enemyBuildings.some(b => b.defId === 'tech' && b.powered) && this.credits.enemy >= TACTICAL_PACKAGE_DEFS.breach.cost) {
       const previousOwner = this.commandOwner;
@@ -5678,8 +5886,9 @@ export class Game {
         expansionCashGoal = this._aiExpansionTarget.stage === 'funding'
           ? UNIT_DEFS.mcv.cost + 200 : BUILDING_DEFS.refinery.cost + 200;
     }
-    const protectingEconomy = expansionCashGoal > 0 && this.credits.enemy < expansionCashGoal;
+    const protectingEconomy = reserveCommandRecovery || expansionCashGoal > 0 && this.credits.enemy < expansionCashGoal;
     const combatUnits = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 && !u.embarkedIn &&
+      !u._aiCommandRecovery &&
       !(u.order?.type === 'board' && this.getEntity(u.order.carrierId)?.owner === 'enemy') &&
       !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(u.defId));
     this._aiObserve();
@@ -6180,7 +6389,7 @@ export class Game {
   _launchAiWave() {
     const teamPolicy = this.mode === 'skirmish' && (this.replayVersion == null || this.replayVersion >= 22);
     const siegeDirector = this._aiSiegeDirectorActive();
-    const army = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 &&
+    const army = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 && !u._aiCommandRecovery &&
       !u.embarkedIn && !(u.order?.type === 'board' && this.getEntity(u.order.carrierId)?.owner === 'enemy') &&
       !(siegeDirector && u._aiExpansion) &&
       !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(u.defId) && !u._relayAssignment &&
@@ -6475,6 +6684,9 @@ export class Game {
     if (game.mode === 'skirmish' && game.replayVersion == null &&
         data.aiCounterPlanRulesVersion !== AI_COUNTER_PLAN_RULES_VERSION)
       game.replayVersion = AI_COUNTER_PLAN_RULES_VERSION - 1;
+    if (game.mode === 'skirmish' && game.replayVersion == null &&
+        data.aiCommandRecoveryRulesVersion !== AI_COMMAND_RECOVERY_RULES_VERSION)
+      game.replayVersion = AI_COMMAND_RECOVERY_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6494,6 +6706,27 @@ export class Game {
     game.relayDominionTargetCommitmentRulesVersion = RELAY_DOMINION_TARGET_COMMITMENT_RULES_VERSION;
     game.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     game.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
+    game.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    const savedRecovery = game._aiCommandRecovery;
+    game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)
+      ? {
+        stage: savedRecovery.stage,
+        ...(typeof savedRecovery.rigId === 'string' ? { rigId: savedRecovery.rigId } : {}),
+        ...(savedRecovery.target && Number.isFinite(savedRecovery.target.x) && Number.isFinite(savedRecovery.target.y) &&
+          Number.isInteger(savedRecovery.target.deployX) && Number.isInteger(savedRecovery.target.deployY) &&
+          savedRecovery.target.x >= 0 && savedRecovery.target.x < game.width &&
+          savedRecovery.target.y >= 0 && savedRecovery.target.y < game.height &&
+          savedRecovery.target.deployX >= 0 && savedRecovery.target.deployX < game.width &&
+          savedRecovery.target.deployY >= 0 && savedRecovery.target.deployY < game.height
+          ? { target: { x: savedRecovery.target.x, y: savedRecovery.target.y,
+            deployX: savedRecovery.target.deployX, deployY: savedRecovery.target.deployY } } : {}),
+        ...(Number.isFinite(savedRecovery.retryAt) && savedRecovery.retryAt > game.time
+          ? { retryAt: savedRecovery.retryAt } : {}),
+        ...(Array.isArray(savedRecovery.failedSites) ? { failedSites: savedRecovery.failedSites
+          .filter(site => site && Number.isInteger(site.x) && Number.isInteger(site.y) && Number.isFinite(site.expiresAt) &&
+            site.x >= 0 && site.x < game.width && site.y >= 0 && site.y < game.height && site.expiresAt > game.time)
+          .slice(-8).map(site => ({ x: site.x, y: site.y, expiresAt: site.expiresAt })) } : {}),
+      } : null;
     const savedProfile = AI_COMMANDER_PROFILES.find(profile => profile.id === data.aiCommanderProfileId);
     const fallbackProfile = aiCommanderProfileForSeed(game.seed,
       game.replayVersion ?? SIEGE_DIRECTOR_RULES_VERSION);
@@ -6530,6 +6763,9 @@ export class Game {
       ? game._nextWreckId : game.wrecks.reduce((next, wreck) => Math.max(next,
         Number(wreck.id.match(/^wreck([1-9][0-9]*)$/)?.[1] || 0) + 1), 1);
     game.skirmishOpening = game.mode === 'skirmish' && data.skirmishOpening === 'command-rig' ? 'command-rig' : 'established';
+    game._aiCommandRigOpeningComplete = game.skirmishOpening !== 'command-rig' ||
+      data._aiCommandRigOpeningComplete === true || game.buildings.some(building => building.owner === 'enemy' &&
+        building.defId === 'command' && building.hp > 0);
     game.victoryMode = ['skirmish', 'multiplayer'].includes(game.mode) && data.victoryMode === 'elimination'
       ? 'elimination' : 'dominion';
     const eligibleLastSeen = game.mode === 'skirmish' && game.victoryMode === 'elimination' &&
