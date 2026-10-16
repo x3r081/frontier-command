@@ -6,7 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  WRECK_RECOMMISSION_RULES_VERSION,
+  INFANTRY_DIG_IN_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -29,7 +29,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 72;
+const RANKED_SEASON = 73;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -66,17 +66,19 @@ const RANKED_SEASON = 72;
 // the v71 comparison floor. Version 72 adds field vehicle recommissioning and
 // bounded skirmish AI use; all solo boards and ranked multiplayer advance for
 // this new strategic recovery option. Version 73 adds the separate Iron
-// Reclaimed campaign operation; existing boards and multiplayer remain on v72.
-const CAMPAIGN_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = WRECK_RECOMMISSION_RULES_VERSION;
+// Reclaimed campaign operation. Version 74 adds infantry field entrenchment
+// and defensive AI use. All solo boards advance; multiplayer starts Season 73.
+const CAMPAIGN_SCORE_FLOOR = INFANTRY_DIG_IN_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = INFANTRY_DIG_IN_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = INFANTRY_DIG_IN_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
     : score.mode === 'campaign' && score.scoreVersion >=
-        (score.scenarioId === 'iron-reclaimed' ? IRON_RECLAIMED_RULES_VERSION : CAMPAIGN_SCORE_FLOOR) &&
+        Math.max(CAMPAIGN_SCORE_FLOOR,
+          score.scenarioId === 'iron-reclaimed' ? IRON_RECLAIMED_RULES_VERSION : 0) &&
         score.scoreVersion <= SCORE_VERSION);
 const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;
@@ -871,6 +873,14 @@ function projectedState(lobby, member) {
   // has never explored. Those are private command state, not visible state.
   const opponent = side === 'player' ? 'enemy' : 'player';
   for (const entity of [...data.units, ...data.buildings]) if (entity.owner === opponent) {
+    // A visible emplacement's facing and setup/expiry are observable combat
+    // state. Keep this explicit subset separate from its private orders.
+    delete entity.digIn;
+    if (data.units.includes(entity) && ['rifle', 'rocket'].includes(entity.defId) &&
+        (game.replayVersion == null || game.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION) &&
+        entity.order?.type === 'digIn' && entity.order.expiresAt > game.time)
+      entity.digIn = { facing: entity.order.facing, readyAt: entity.order.readyAt,
+        expiresAt: entity.order.expiresAt };
     // Engine-private fields can encode destinations, relay assignments,
     // pursuit targets, cargo routes, or unload pairing. None are needed to
     // render or inspect an opponent entity, so scrub the whole private set.
@@ -1106,7 +1116,7 @@ function startMatch(lobby) {
   return true;
 }
 
-const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
+const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
   'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
@@ -1134,6 +1144,9 @@ function command(lobby, member, message) {
       case 'issueBloomExpedition': return game.issueBloomExpedition();
       case 'issueStop': return game.issueStop();
       case 'issueGuard': return game.issueGuard();
+      case 'issueDigIn': return typeof message.x === 'number' && typeof message.y === 'number'
+        ? game.issueDigIn(message.x, message.y)
+        : { ok: false, reason: 'Choose a valid facing point.' };
       case 'issueSetStance': return game.issueSetStance(message.stance);
       case 'issuePatrol': return game.issuePatrol(n(message.x), n(message.y));
       case 'issueFollow': return game.issueFollow(message.targetId);

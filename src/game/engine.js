@@ -54,6 +54,11 @@ export const GROUND_ARMOR_ARC_RADIANS = Math.PI / 3;
 export const WALL_COVER_DAMAGE_MULTIPLIER = 0.72;
 export const UNIT_PROMOTION_RULES_VERSION = 29;
 export const UNIT_ABILITY_RULES_VERSION = 36;
+export const INFANTRY_DIG_IN_RULES_VERSION = 74;
+export const INFANTRY_DIG_IN_SETUP_SECONDS = 1.5;
+export const INFANTRY_DIG_IN_DURATION_SECONDS = 12;
+export const INFANTRY_DIG_IN_DAMAGE_MULTIPLIER = 0.8;
+export const INFANTRY_DIG_IN_ARC_RADIANS = Math.PI / 3;
 export const DOCTRINE_REPLACEMENT_RULES_VERSION = 42;
 export const AI_COMMANDER_PROFILE_RULES_VERSION = 47;
 export const SIEGE_DIRECTOR_RULES_VERSION = 53;
@@ -360,6 +365,7 @@ export class Game {
     this.replayVersion = replayVersion;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
+    this.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
     this.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     this.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
     this.siegeExpansionRulesVersion = SIEGE_EXPANSION_RULES_VERSION;
@@ -1794,6 +1800,37 @@ export class Game {
     return { ok: true };
   }
 
+  canDigIn(x, y) {
+    if (this.status !== 'playing') return { ok: false, reason: 'The battle is over.' };
+    if (this.replayVersion != null && this.replayVersion < INFANTRY_DIG_IN_RULES_VERSION)
+      return { ok: false, reason: 'Dig In is unavailable in this replay.' };
+    if (!this._validatePoint(x, y)) return { ok: false, reason: 'Choose a point on the battlefield.' };
+    const infantry = this._selectedCommandUnits().filter(unit =>
+      !unit.embarkedIn && ['rifle', 'rocket'].includes(unit.defId));
+    if (!infantry.length) return { ok: false, reason: 'Select Rifle Squads or Rocket Troopers.' };
+    if (!infantry.some(unit => unit.abilityCooldown <= 0))
+      return { ok: false, reason: 'Selected infantry are still recovering.' };
+    return { ok: true };
+  }
+
+  issueDigIn(x, y) {
+    const check = this.canDigIn(x, y);
+    if (!check.ok) return check;
+    const units = this._selectedCommandUnits().filter(unit =>
+      !unit.embarkedIn && ['rifle', 'rocket'].includes(unit.defId) && unit.abilityCooldown <= 0);
+    for (const unit of units) {
+      const dx = x - unit.x, dy = y - unit.y;
+      const facing = Math.hypot(dx, dy) > 1e-6 ? Math.atan2(dy, dx) : unit.facing;
+      unit.abilityCooldown = FACTION_TANK_ABILITY_COOLDOWN;
+      unit.path = []; unit._pathGoal = null;
+      unit.order = { type: 'digIn', x: unit.x, y: unit.y, facing,
+        readyAt: this.time + INFANTRY_DIG_IN_SETUP_SECONDS,
+        expiresAt: this.time + INFANTRY_DIG_IN_SETUP_SECONDS + INFANTRY_DIG_IN_DURATION_SECONDS };
+    }
+    this._event('order', { order: 'digIn', ids: units.map(unit => unit.id), x, y });
+    return { ok: true };
+  }
+
   issuePromoteUnit(unitId, promotionId) {
     if (this.replayVersion != null && this.replayVersion < UNIT_PROMOTION_RULES_VERSION)
       return { ok: false, reason: 'Unit promotions are unavailable in this replay.' };
@@ -2843,6 +2880,19 @@ export class Game {
     return 1;
   }
 
+  _digInDamageMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage) {
+    const order = target?.order;
+    if ((this.replayVersion != null && this.replayVersion < INFANTRY_DIG_IN_RULES_VERSION) || areaDamage ||
+        !['ballistic', 'cannon'].includes(damageType) || !['rifle', 'rocket'].includes(target?.defId) ||
+        order?.type !== 'digIn' || this.time < order.readyAt || this.time >= order.expiresAt ||
+        !attackerOwner || attackerOwner === target.owner || !sourceId || !sourcePosition?.projectile ||
+        sourcePosition.sourceId !== sourceId || sourcePosition.owner !== attackerOwner ||
+        !Number.isFinite(sourcePosition.x) || !Number.isFinite(sourcePosition.y)) return 1;
+    const incoming = Math.atan2(sourcePosition.y - target.y, sourcePosition.x - target.x);
+    const difference = Math.abs(Math.atan2(Math.sin(incoming - order.facing), Math.cos(incoming - order.facing)));
+    return difference <= INFANTRY_DIG_IN_ARC_RADIANS ? INFANTRY_DIG_IN_DAMAGE_MULTIPLIER : 1;
+  }
+
   _applyDamage(target, damage, damageType, attackerOwner, sourceId = null, sourcePosition = null, areaDamage = false) {
     if (!target || target.hp <= 0 || target.embarkedIn) return;
     // Campaign-only authored defenses can make a structure invulnerable until
@@ -2858,7 +2908,8 @@ export class Game {
         this.breachZones?.some(zone => zone.owner === attackerOwner && zone.until > this.time &&
           dist(zone.x, zone.y, this._entityCenter(target).x, this._entityCenter(target).y) <= zone.radius) ? 1.45 : 1) *
       this._directionalArmorMultiplier(target, attackerOwner, sourceId, sourcePosition) *
-      this._wallCoverMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage) *
+      Math.min(this._wallCoverMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage),
+        this._digInDamageMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage)) *
       (target.promotion === 'bulwark' &&
         (this.replayVersion == null || this.replayVersion >= UNIT_PROMOTION_RULES_VERSION)
         ? UNIT_PROMOTION_DEFS.bulwark.damageTakenMultiplier : 1) *
@@ -3787,6 +3838,40 @@ export class Game {
       unitId: unit.id, reason, message });
   }
 
+  _updateDigInOrder(unit, weaponRange, order) {
+    unit.x = order.x;
+    unit.y = order.y;
+    unit.facing = order.facing;
+    unit.path = [];
+    unit._pathGoal = null;
+    if (this.time >= order.expiresAt) {
+      unit.order = { type: 'idle' };
+      return;
+    }
+    if (this.time < order.readyAt) return;
+    const weapon = UNIT_DEFS[unit.defId]?.weapon;
+    if (!weapon || unit.stance === 'holdFire' || unit.suppressedUntil > this.time) return;
+    let target = null, bestScore = Infinity;
+    for (const enemy of [...this.units, ...this.buildings]) {
+      if (enemy.owner === unit.owner || enemy.hp <= 0 || enemy.embarkedIn || enemy.progress < 1 ||
+          !this._weaponCanTarget(weapon, enemy) || !this._canDetect(unit, enemy)) continue;
+      if (unit.owner === 'enemy' && this.mode !== 'multiplayer' && !this.isVisible(enemy, 'enemy')) continue;
+      const distance = this._distanceToEntity(unit.x, unit.y, enemy);
+      if (distance > weaponRange) continue;
+      const center = this._entityCenter(enemy);
+      const angle = Math.atan2(center.y - unit.y, center.x - unit.x);
+      const difference = Math.abs(Math.atan2(Math.sin(angle - order.facing), Math.cos(angle - order.facing)));
+      if (difference > INFANTRY_DIG_IN_ARC_RADIANS || !this._hasLineOfSight(unit.x, unit.y, center.x, center.y))
+        continue;
+      const score = distance + (enemy.defId === 'harvester' ? 0.7 : 0) + ('w' in enemy ? 0.6 : 0);
+      if (score < bestScore) { target = enemy; bestScore = score; }
+    }
+    if (target && unit.cooldown <= 0) this._fire(unit, target, weapon);
+    // _fire normally turns the body toward its target. Dig In keeps the
+    // captured front fixed while the unit continues shooting inside its arc.
+    unit.facing = order.facing;
+  }
+
   _updateUnit(u, dt) {
     u._attackMoveHolding = false;
     if (u.hp <= 0) return;
@@ -3820,6 +3905,11 @@ export class Game {
       this._applyDamage(u, dt * 2.6, 'ion', null, null);
     if (u.hp <= 0) return;
     const order = u.order || { type: 'idle' };
+    if ((this.replayVersion == null || this.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION) &&
+        order.type === 'digIn') {
+      this._updateDigInOrder(u, weaponRange, order);
+      return;
+    }
     const ghostRunActive = (this.replayVersion == null || this.replayVersion >= UNIT_ABILITY_RULES_VERSION) &&
       u.defId === 'stealthTank' && u.ghostRunUntil > this.time;
     if (ghostRunActive) {
@@ -4042,8 +4132,21 @@ export class Game {
           const angle = distance < 0.001 ? (Number(u.id.slice(1)) * 2.399963) : Math.atan2(other.y - u.y, other.x - u.x);
           const offset = Math.min(0.2, (radius - distance) * 0.5);
           const dx = Math.cos(angle) * offset, dy = Math.sin(angle) * offset;
-          if (this._isPassable(Math.floor(u.x - dx), Math.floor(u.y - dy))) { u.x -= dx; u.y -= dy; }
-          if (this._isPassable(Math.floor(other.x + dx), Math.floor(other.y + dy))) { other.x += dx; other.y += dy; }
+          const uDigged = u.order?.type === 'digIn' &&
+            (this.replayVersion == null || this.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION);
+          const otherDigged = other.order?.type === 'digIn' &&
+            (this.replayVersion == null || this.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION);
+          if (uDigged && otherDigged) continue;
+          if (!uDigged && this._isPassable(Math.floor(u.x - (otherDigged ? dx * 2 : dx)),
+            Math.floor(u.y - (otherDigged ? dy * 2 : dy)))) {
+            u.x -= otherDigged ? dx * 2 : dx;
+            u.y -= otherDigged ? dy * 2 : dy;
+          }
+          if (!otherDigged && this._isPassable(Math.floor(other.x + (uDigged ? dx * 2 : dx)),
+            Math.floor(other.y + (uDigged ? dy * 2 : dy)))) {
+            other.x += uDigged ? dx * 2 : dx;
+            other.y += uDigged ? dy * 2 : dy;
+          }
         }
       }
     }
@@ -6362,6 +6465,38 @@ export class Game {
     }
   }
 
+  _aiUseInfantryDigIn() {
+    if (this.mode !== 'skirmish' || !['normal', 'hard'].includes(this.difficulty) ||
+        (this.replayVersion != null && this.replayVersion < INFANTRY_DIG_IN_RULES_VERSION)) return false;
+    const threats = [...this.units, ...this.buildings].filter(enemy => enemy.owner === 'player' && enemy.hp > 0 &&
+      !enemy.embarkedIn && (!('w' in enemy) || enemy.progress >= 1) && this.isVisible(enemy, 'enemy'));
+    for (const unit of this.units) {
+      if (unit.owner !== 'enemy' || unit.hp <= 0 || unit.embarkedIn || unit.abilityCooldown > 0 ||
+          !['rifle', 'rocket'].includes(unit.defId) || !['idle', 'guard'].includes(unit.order?.type) ||
+          unit._aiEngineerRaid || unit._aiDefenseTarget || unit._aiSiegeTarget || unit._aiTransportRelayId ||
+          unit._aiRecovering || unit._aiRaidTarget) continue;
+      const weapon = UNIT_DEFS[unit.defId].weapon;
+      const threat = threats.filter(enemy => this._weaponCanTarget(weapon, enemy) &&
+        this._distanceToEntity(unit.x, unit.y, enemy) <= weapon.range &&
+        this._hasLineOfSight(unit.x, unit.y, this._entityCenter(enemy).x, this._entityCenter(enemy).y))
+        .sort((a, b) => this._distanceToEntity(unit.x, unit.y, a) - this._distanceToEntity(unit.x, unit.y, b) ||
+          a.id.localeCompare(b.id))[0];
+      if (!threat) continue;
+      const previousOwner = this.commandOwner;
+      const previousSelection = this.selection;
+      this.commandOwner = 'enemy';
+      this.selection = [unit.id];
+      try {
+        const center = this._entityCenter(threat);
+        if (this.issueDigIn(center.x, center.y).ok) return true;
+      } finally {
+        this.commandOwner = previousOwner;
+        this.selection = previousSelection;
+      }
+    }
+    return false;
+  }
+
   _activateAIUnitAbility(unit, abilityId) {
     if (this.canUseUnitAbility(unit.id, abilityId, 'enemy').ok) {
       this._activateUnitAbility(unit, abilityId, 'enemy');
@@ -6373,6 +6508,7 @@ export class Game {
   _aiTick() {
     if (this.status !== 'playing') return;
     this._aiUseFactionUnitAbilities();
+    this._aiUseInfantryDigIn();
     if (this.skirmishOpening === 'command-rig' &&
         (!this._aiCommandRecoveryRulesCurrent() || !this._aiCommandRigOpeningComplete) &&
         !this.buildings.some(b => b.owner === 'enemy' && b.defId === 'command' && b.hp > 0)) {
@@ -7594,8 +7730,13 @@ export class Game {
     // Markerless saves preserve the earliest legacy pin and predate hull restoration.
     if (game.replayVersion == null && data.wreckRecommissionRulesVersion !== WRECK_RECOMMISSION_RULES_VERSION)
       game.replayVersion = WRECK_RECOMMISSION_RULES_VERSION - 1;
+    // Version 73 saves have no Dig In marker. Pin those markerless battles to
+    // v73 while preserving any earlier legacy pin established above.
+    if (game.replayVersion == null && data.infantryDigInRulesVersion !== INFANTRY_DIG_IN_RULES_VERSION)
+      game.replayVersion = INFANTRY_DIG_IN_RULES_VERSION - 1;
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
+    game.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -7822,6 +7963,26 @@ export class Game {
         Math.min(unit.braceUntil, game.time + GUARDIAN_BRACE_SECONDS) : 0;
       unit.ghostRunUntil = Number.isFinite(unit.ghostRunUntil) && unit.ghostRunUntil > game.time ?
         Math.min(unit.ghostRunUntil, game.time + SPECTER_GHOST_RUN_SECONDS) : 0;
+      if (unit.order?.type === 'digIn') {
+        const order = unit.order;
+        const startAt = order.readyAt - INFANTRY_DIG_IN_SETUP_SECONDS;
+        const valid = (game.replayVersion == null || game.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION) &&
+          ['rifle', 'rocket'].includes(unit.defId) && unit.hp > 0 && !unit.embarkedIn &&
+          game._validatePoint(order.x, order.y) && Number.isFinite(order.facing) &&
+          Math.abs(order.facing) <= Math.PI && Number.isFinite(order.readyAt) &&
+          Number.isFinite(order.expiresAt) && order.readyAt <= game.time + INFANTRY_DIG_IN_SETUP_SECONDS &&
+          order.readyAt >= game.time - INFANTRY_DIG_IN_DURATION_SECONDS && order.expiresAt > game.time &&
+          Math.abs(order.expiresAt - order.readyAt - INFANTRY_DIG_IN_DURATION_SECONDS) < 0.001 &&
+          Math.hypot(unit.x - order.x, unit.y - order.y) <= 0.5;
+        if (valid) {
+          unit.order = { type: 'digIn', x: order.x, y: order.y, facing: order.facing,
+            readyAt: order.readyAt, expiresAt: order.expiresAt };
+          unit.abilityCooldown = Math.max(unit.abilityCooldown,
+            clamp(startAt + FACTION_TANK_ABILITY_COOLDOWN - game.time, 0, FACTION_TANK_ABILITY_COOLDOWN));
+        } else {
+          unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+        }
+      }
       unit.embarkedIn ??= null;
       unit.passengerIds = Array.isArray(unit.passengerIds) ? unit.passengerIds : [];
       if (unit.order && Object.hasOwn(unit.order, 'pace') &&

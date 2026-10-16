@@ -29,6 +29,51 @@ const VISUAL_HEIGHT_SAMPLES = 4;
 const VISUAL_PLATEAU_HEIGHT = 0.22;
 const VISUAL_HEIGHT_RANGE = 0.5;
 const BRIDGE_DECK_HEIGHT = 0.235;
+const DIG_IN_SETUP_SECONDS = 1.5;
+function digInSectorGeometry(range) {
+  const positions=[],indices=[];
+  const steps=32,inner=0.34,outer=range;
+  for(let i=0;i<=steps;i++) {
+    const angle=-Math.PI/3+(Math.PI*2/3)*i/steps;
+    const x=Math.sin(angle),z=-Math.cos(angle);
+    positions.push(x*inner,0,z*inner,x*outer,0,z*outer);
+  }
+  for(let i=0;i<steps;i++) {
+    const a=i*2,b=a+1,c=a+2,d=a+3;
+    indices.push(a,c,b,b,c,d);
+  }
+  const geometry=new THREE.BufferGeometry();
+  geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+function digInSectorOutlineGeometry(range,thickness=0.085) {
+  const positions=[],indices=[];
+  const steps=32,inner=range-thickness,outer=range;
+  const addArc=(start,end,count,innerRadius,outerRadius)=>{
+    const first=positions.length/3;
+    for(let i=0;i<=count;i++) {
+      const angle=start+(end-start)*i/count,x=Math.sin(angle),z=-Math.cos(angle);
+      positions.push(x*innerRadius,0,z*innerRadius,x*outerRadius,0,z*outerRadius);
+    }
+    for(let i=0;i<count;i++) {
+      const a=first+i*2,b=a+1,c=a+2,d=a+3;
+      indices.push(a,c,b,b,c,d);
+    }
+  };
+  addArc(-Math.PI/3,Math.PI/3,steps,inner,outer);
+  const edgeAngle=thickness/range;
+  addArc(-Math.PI/3,-Math.PI/3+edgeAngle,1,0.34,range);
+  addArc(Math.PI/3-edgeAngle,Math.PI/3,1,0.34,range);
+  const geometry=new THREE.BufferGeometry();
+  geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+  geometry.setIndex(indices);
+  geometry.computeVertexNormals();
+  return geometry;
+}
+const DIG_IN_BAG_GEOMETRY = new THREE.BoxGeometry(0.31,0.16,0.20);
+const DIG_IN_SETUP_TICK_GEOMETRY = new THREE.OctahedronGeometry(0.062,0);
 const VISUAL_HEIGHT_GLSL = `
   uniform sampler2D uVisualHeight;
   uniform vec2 uVisualHeightSize;
@@ -4435,9 +4480,9 @@ export class Renderer3D {
       visual.rotation.x=a.flightBaseRotationX+a.flightPitch;
       visual.rotation.z=a.flightBaseRotationZ+a.flightBank;
     } else if (a.infantry) {
-      visual.position.y=a.baseY+a.motion*(0.012+0.023*Math.abs(gait));
+      visual.position.y=a.baseY+(a.digInPosture?-0.065:0)+a.motion*(0.012+0.023*Math.abs(gait));
       visual.rotation.z=a.motion*gait*0.043;
-      visual.rotation.x=a.motion*Math.cos(a.travel+a.phase)*0.025;
+      visual.rotation.x=a.motion*Math.cos(a.travel+a.phase)*0.025+(a.digInPosture?-0.055:0);
       for(let i=0;i<a.legs.length;i++) a.legs[i].rotation.x=a.motion*gait*(i&1?-0.42:0.42);
     } else if (!a.flying) {
       visual.position.y=a.baseY+a.motion*(0.008+0.012*Math.abs(gait));
@@ -4470,9 +4515,169 @@ export class Renderer3D {
     this.entities.delete(id);
   }
 
-  _syncUnitAbilityVisuals(state,o,game,time) {
+  _disposeEntityCue(state,key) {
+    const cue=state[key];
+    if(!cue) return;
+    state.group.remove(cue);
+    cue.traverse(object=>{
+      if(object.geometry&&!object.userData.sharedAssetGeometry)object.geometry.dispose();
+      if(object.material)(Array.isArray(object.material)?object.material:[object.material]).forEach(material=>material.dispose());
+    });
+    state[key]=null;
+  }
+
+  _makeDigInCue(o,game) {
+    const cue=new THREE.Group();
+    const factionColor=o.faction==='aegis'?0x45d8e8:0xff795e;
+    const definition=game.unitDefs?.[o.defId];
+    const range=typeof game._unitWeaponRange==='function'
+      ?game._unitWeaponRange(o,definition?.weapon)
+      :unitWeaponRange(o,definition?.weapon,game.replayVersion);
+    const sectorRange=Math.max(1.55,Number.isFinite(range)?range:1.55);
+    const groundState=this.groundReliefMaterials?.[0]?.userData.groundFlatZoneState;
+    const relief=groundState?{key:'terrain-relief-v1',
+      code:`uniform vec4 uGroundFlatZones[${GROUND_FLAT_ZONE_CAPACITY}];
+        uniform int uGroundFlatZoneCount; uniform float uGroundQuality;
+        ${groundReliefFunction(this.mapStyle)}`,
+      uniforms:{uGroundFlatZones:{value:groundState.vectors},
+        uGroundFlatZoneCount:groundState.countUniform,uGroundQuality:this.groundQualityUniform},
+      expression:'groundRelief(raisedWorld.xz)*0.82'}:null;
+    const followCoverSurface=material=>followVisualSurface(material,this.visualHeightUniforms,
+      {relative:true,...(relief?{displacement:relief}:{})});
+    const sectorMaterial=new THREE.MeshBasicMaterial({color:0xf6d279,transparent:true,opacity:0.09,
+      depthWrite:false,side:THREE.DoubleSide,toneMapped:false});
+    followCoverSurface(sectorMaterial);
+    const sector=new THREE.Mesh(digInSectorGeometry(sectorRange),sectorMaterial);
+    sector.position.y=0.045;
+    sector.renderOrder=4;
+    cue.add(sector);
+
+    const outlineMaterial=new THREE.MeshBasicMaterial({color:factionColor,transparent:true,opacity:0.94,
+      depthWrite:false,side:THREE.DoubleSide,toneMapped:false});
+    followCoverSurface(outlineMaterial);
+    const outline=new THREE.Mesh(digInSectorOutlineGeometry(sectorRange),outlineMaterial);
+    outline.position.y=0.052;
+    outline.renderOrder=5;
+    outline.visible=false;
+    cue.add(outline);
+
+    const bagMaterial=new THREE.MeshStandardMaterial({color:o.faction==='aegis'?0x526e68:0x80604f,
+      roughness:0.96,metalness:0.02});
+    followCoverSurface(bagMaterial);
+    const bags=new THREE.InstancedMesh(DIG_IN_BAG_GEOMETRY,bagMaterial,5);
+    bags.userData.sharedAssetGeometry=true;
+    bags.visible=false;
+    bags.castShadow=true;
+    bags.receiveShadow=true;
+    const matrix=new THREE.Matrix4(),position=new THREE.Vector3(),rotation=new THREE.Quaternion(),scale=new THREE.Vector3(1,1,1);
+    for(let i=0;i<5;i++) {
+      const angle=(-50+i*25)*Math.PI/180;
+      const x=Math.sin(angle)*0.91,z=-Math.cos(angle)*0.91;
+      rotation.setFromAxisAngle(new THREE.Vector3(0,1,0),-angle);
+      position.set(x,0.13,z);
+      matrix.compose(position,rotation,scale);bags.setMatrixAt(i,matrix);
+    }
+    bags.instanceMatrix.needsUpdate=true;
+    cue.add(bags);
+
+    const tickMaterial=new THREE.MeshBasicMaterial({color:0xffe18a,
+      transparent:true,opacity:0.95,depthWrite:false,toneMapped:false});
+    followCoverSurface(tickMaterial);
+    const ticks=new THREE.InstancedMesh(DIG_IN_SETUP_TICK_GEOMETRY,tickMaterial,5);
+    ticks.userData.sharedAssetGeometry=true;
+    const tickScale=new THREE.Vector3(1.5,1.5,1.5);
+    for(let i=0;i<5;i++) {
+      const angle=(-60+i*30)*Math.PI/180;
+      position.set(Math.sin(angle)*1.48,0.075,-Math.cos(angle)*1.48);
+      matrix.compose(position,new THREE.Quaternion(),tickScale);ticks.setMatrixAt(i,matrix);
+    }
+    ticks.instanceMatrix.needsUpdate=true;
+    ticks.count=0;
+    cue.add(ticks);
+    cue.userData={sector,outline,bags,ticks,factionColor,sectorRange};
+    return cue;
+  }
+
+  _makeEngineerRolePip() {
+    const pip=new THREE.Group();
+    const diamond=(halfWidth,top,bottom)=>{
+      const shape=new THREE.Shape();
+      shape.moveTo(0,top);shape.lineTo(halfWidth,0);shape.lineTo(0,bottom);
+      shape.lineTo(-halfWidth,0);shape.closePath();
+      return new THREE.ShapeGeometry(shape);
+    };
+    const backing=new THREE.Mesh(diamond(0.22,0.24,-0.24),new THREE.MeshBasicMaterial({
+      color:0x06120e,side:THREE.DoubleSide,depthTest:false,depthWrite:false,toneMapped:false}));
+    const crossShape=new THREE.Shape();
+    crossShape.moveTo(-0.045,0.12);crossShape.lineTo(0.045,0.12);crossShape.lineTo(0.045,0.045);
+    crossShape.lineTo(0.12,0.045);crossShape.lineTo(0.12,-0.045);crossShape.lineTo(0.045,-0.045);
+    crossShape.lineTo(0.045,-0.12);crossShape.lineTo(-0.045,-0.12);crossShape.lineTo(-0.045,-0.045);
+    crossShape.lineTo(-0.12,-0.045);crossShape.lineTo(-0.12,0.045);crossShape.lineTo(-0.045,0.045);
+    crossShape.closePath();
+    const cross=new THREE.Mesh(new THREE.ShapeGeometry(crossShape),new THREE.MeshBasicMaterial({
+      color:0xb8f5b0,side:THREE.DoubleSide,depthTest:false,depthWrite:false,toneMapped:false}));
+    backing.renderOrder=13;cross.renderOrder=14;cross.position.z=0.003;
+    pip.add(backing,cross);
+    pip.visible=false;
+    return pip;
+  }
+
+  _syncEngineerRolePip(state,o,game) {
+    const visible=game.mode==='campaign'&&game.campaignMission===15&&
+      game.campaignState?.engineerId===o.id&&o.owner==='player'&&!o.embarkedIn&&o.hp>0;
+    if(!visible) {
+      this._disposeEntityCue(state,'engineerRolePip');
+      return;
+    }
+    if(!state.engineerRolePip) {
+      state.engineerRolePip=this._makeEngineerRolePip();
+      state.group.add(state.engineerRolePip);
+    }
+    const pip=state.engineerRolePip;
+    pip.visible=true;
+    pip.position.set(0,1.82,0);
+    pip.quaternion.copy(state.group.quaternion).invert().multiply(this.camera.quaternion);
+  }
+
+  _syncUnitAbilityVisuals(state,o,game,time,wideDigInId=null) {
     const animation=state.animation;
     if(!animation||state.building) return;
+    this._syncEngineerRolePip(state,o,game);
+    const digOrder=o.order?.type==='digIn'?o.order:o.digIn;
+    const digStart=Number(digOrder?.readyAt)-DIG_IN_SETUP_SECONDS;
+    const digging=/^(rifle|rocket)$/.test(o.defId)&&digOrder&&Number.isFinite(digOrder.readyAt)&&
+      Number.isFinite(digOrder.expiresAt)&&
+      game.time<digOrder.expiresAt&&game.time>=digStart-1e-6;
+    const digActive=!!digging&&game.time>=digOrder.readyAt;
+    animation.digInPosture=!!digging;
+    if(digging) {
+      if(!state.digInCue) {
+        state.digInCue=this._makeDigInCue(o,game);
+        state.group.add(state.digInCue);
+      }
+      const cue=state.digInCue,userData=cue.userData;
+      const facing=Number.isFinite(digOrder.facing)?digOrder.facing:(o.facing||0);
+      cue.rotation.y=-(facing-(o.facing||0));
+      cue.scale.set(1/Math.max(0.001,state.group.scale.x),1/Math.max(0.001,state.group.scale.y),
+        1/Math.max(0.001,state.group.scale.z));
+      cue.visible=true;
+      userData.sector.material.color.setHex(digActive?userData.factionColor:0xf6d279);
+      const sectorRange=userData.sectorRange;
+      const wideSector=digActive&&o.id===wideDigInId;
+      userData.sector.material.opacity=digActive?(wideSector?0.28:0.15):0.12;
+      userData.sector.scale.setScalar(wideSector?1:Math.min(1,1.55/sectorRange));
+      userData.outline.visible=wideSector;
+      userData.bags.visible=digActive;
+      if(digActive) userData.ticks.count=0;
+      else {
+        const progress=clamp((game.time-digStart)/DIG_IN_SETUP_SECONDS,0,1);
+        userData.ticks.count=Math.min(5,Math.ceil(progress*5));
+        userData.ticks.material.opacity=0.72+0.22*progress;
+      }
+    } else {
+      this._disposeEntityCue(state,'digInCue');
+      animation.digInPosture=false;
+    }
     const braced=o.defId==='guardian'&&o.faction==='aegis'&&(o.braceUntil||0)>game.time;
     const ghosting=o.defId==='stealthTank'&&o.faction==='vesper'&&(o.ghostRunUntil||0)>game.time;
     const suppressed=Number.isFinite(o.suppressedUntil)&&o.suppressedUntil>game.time;
@@ -4871,6 +5076,14 @@ export class Renderer3D {
     selected.clear();
     acquiredTargets.clear();
     for (const id of game.selection || []) selected.add(id);
+    let wideDigInId=null;
+    for(const unit of game.units) {
+      if(!selected.has(unit.id))continue;
+      const order=unit.order?.type==='digIn'?unit.order:unit.digIn;
+      if(unit.owner==='player'&&/^(rifle|rocket)$/.test(unit.defId)&&!unit.embarkedIn&&
+        Number.isFinite(order?.readyAt)&&Number.isFinite(order?.expiresAt)&&
+        game.time>=order.readyAt&&game.time<order.expiresAt) {wideDigInId=unit.id;break;}
+    }
     // Mark only enemies currently engaged by our forces. Entity visibility is
     // still the final gate below, so a stale attack order cannot reveal fog.
     for(const unit of game.units||[]) {
@@ -5108,11 +5321,18 @@ export class Renderer3D {
       } else if(state.healthBar) state.healthBar.group.visible=false;
       // Keep the tactical footprint fixed while giving infantry bodies a
       // little more height and width at the strategic camera scale.
-      if(state.unitVisual&&state.unitVisualBaseScale)
+      const activeDigOrder=o.order?.type==='digIn'?o.order:o.digIn;
+      const digInPosture=infantry&&activeDigOrder&&Number.isFinite(activeDigOrder.readyAt)&&
+        Number.isFinite(activeDigOrder.expiresAt)&&game.time>=activeDigOrder.readyAt-DIG_IN_SETUP_SECONDS-1e-6&&
+        game.time<activeDigOrder.expiresAt;
+      if(state.animation) state.animation.digInPosture=!!digInPosture;
+      if(state.unitVisual&&state.unitVisualBaseScale) {
         state.unitVisual.scale.copy(state.unitVisualBaseScale).multiplyScalar(crowdViewScale*(infantry?1.16:1));
+        if(digInPosture) state.unitVisual.scale.y*=0.84;
+      }
       if(!building) this._animateMotion(state,speed,dx,dz,time);
       this._animateEntity(state,o,game,time);
-      if(!building) this._syncUnitAbilityVisuals(state,o,game,time);
+      if(!building) this._syncUnitAbilityVisuals(state,o,game,time,wideDigInId);
       if(building) this._syncRefineryTransfer(state,o,game,time);
       if(building) this._setCampaignShield(state,o,time);
       // Damage tint is expressed with a subtle red emergency light.
