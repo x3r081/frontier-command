@@ -217,7 +217,7 @@ function addElevatedSectorContours(group, game, style, tmpObj) {
     if(!elevated(x-1,z))edges.push({x:x,z:z+0.5,axis:'z'});
   }
   if(!edges.length)return;
-  const makeBand=(height,width,y,color,emissive=0)=>{
+  const makeBand=(height,width,topWidth,y,color,{emissive=0,eroded=false,name='elevated-sector-contour'}={})=>{
     const material=new THREE.MeshStandardMaterial({color,emissive,emissiveIntensity:0.22,
       roughness:0.86,metalness:0.08,flatShading:true});
     if(height>0.1) {
@@ -249,26 +249,42 @@ function addElevatedSectorContours(group, game, style, tmpObj) {
       };
       material.needsUpdate=true;
     }
-    const mesh=new THREE.InstancedMesh(new THREE.BoxGeometry(1,height,width),material,edges.length);
-    mesh.name='elevated-sector-contour';mesh.count=edges.length;
+    const geometry=new THREE.BoxGeometry(1,height,width);
+    const positions=geometry.attributes.position;
+    const topScale=topWidth/width;
+    for(let vertex=0;vertex<positions.count;vertex++) {
+      const upper=clamp((positions.getY(vertex)+height/2)/height,0,1);
+      positions.setZ(vertex,positions.getZ(vertex)*(1-upper*(1-topScale)));
+    }
+    positions.needsUpdate=true;geometry.computeVertexNormals();
+    const mesh=new THREE.InstancedMesh(geometry,material,edges.length);
+    mesh.name=name;mesh.count=edges.length;
     mesh.castShadow=false;mesh.receiveShadow=true;mesh.frustumCulled=false;mesh.raycast=()=>{};
     edges.forEach((edge,index)=>{
       tmpObj.position.set(edge.x,y,edge.z);
       tmpObj.rotation.set(0,edge.axis==='z'?Math.PI/2:0,0);
-      tmpObj.scale.set(1.005,1,1);
+      const length=eroded?0.46+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),949)*0.34:1.005;
+      tmpObj.scale.set(length,1,1);
+      if(eroded)tmpObj.translateX((hash(Math.floor(edge.x*2),Math.floor(edge.z*2),951)-0.5)*0.22);
       tmpObj.updateMatrix();mesh.setMatrixAt(index,tmpObj.matrix);
-      const variation=0.91+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),941)*0.17;
+      const variation=eroded
+        ?0.83+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),941)*0.20
+        :0.91+hash(Math.floor(edge.x*2),Math.floor(edge.z*2),941)*0.17;
       mesh.setColorAt(index,new THREE.Color(variation,variation,variation));
     });
     mesh.instanceMatrix.needsUpdate=true;
     if(mesh.instanceColor)mesh.instanceColor.needsUpdate=true;
     group.add(mesh);
   };
-  // A deeper, warm cut bank gives each elevated patch a readable vertical
-  // face. The overhanging cap makes the shelf silhouette read as a landform
-  // from the standard oblique camera, rather than as a line on the sand.
-  makeBand(0.22,0.105,0.045,new THREE.Color(style.shelf).lerp(new THREE.Color(style.rock),0.34));
-  makeBand(0.032,0.145,0.166,new THREE.Color(style.patch).lerp(new THREE.Color(0xf0d49a),0.38),0x33230c);
+  // The tapered bank keeps the whole tactical boundary while reading as a
+  // low mineral shelf. Shorter, muted crest fragments suggest worn strata
+  // instead of a continuous constructed curb.
+  makeBand(0.18,0.17,0.08,0.045,
+    new THREE.Color(style.shelf).lerp(new THREE.Color(style.rock),0.24),
+    {name:'elevated-sector-contour-bank'});
+  makeBand(0.024,0.105,0.068,0.145,
+    new THREE.Color(style.patch).lerp(new THREE.Color(style.shelf),0.56),
+    {name:'elevated-sector-contour-crest',eroded:true});
 }
 
 function mat(color, opts = {}) {
