@@ -1739,6 +1739,70 @@ test('websocket multiplayer requires a bearer token and projects an oriented lob
   host.close(); guest.close(); other.close();
 });
 
+test('websocket reverse move dispatch enforces ownership and queue booleans', async () => {
+  const hostProfile = await createProfile('Reverse Move Host');
+  const guestProfile = await createProfile('Reverse Move Guest');
+  const host = await openSocket(hostProfile.token);
+  const guest = await openSocket(guestProfile.token);
+  try {
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'hello')));
+    sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+    const lobbyMessage = await nextMessage(host, message => message.type === 'lobby');
+    sendSocket(guest, { type: 'join_lobby', code: lobbyMessage.code });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.length === 2);
+    await nextMessage(guest, message => message.type === 'lobby');
+    sendSocket(host, { type: 'set_ready', ready: true });
+    sendSocket(guest, { type: 'set_ready', ready: true });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.every(player => player.ready));
+    sendSocket(host, { type: 'start_match' });
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'match_start')));
+
+    const liveLobby = lobbies.get(lobbyMessage.code);
+    const ownTank = liveLobby.game.units.find(unit => unit.owner === 'player' && unit.defId === 'lightTank');
+    const foreignTank = liveLobby.game.units.find(unit => unit.owner === 'enemy' && unit.defId === 'lightTank');
+    assert.ok(ownTank && foreignTank, 'the match has player and opponent armor');
+    const destination = { x: ownTank.x + 2, y: ownTank.y + 2 };
+
+    sendSocket(host, { type: 'command', requestId: 'reverse-own', command: 'issueReverseMove',
+      ids: [ownTank.id], ...destination });
+    const accepted = await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'reverse-own');
+    assert.equal(accepted.ok, true);
+    assert.equal(ownTank.order.type, 'move');
+    assert.equal(ownTank.order.reverse, true);
+
+    sendSocket(host, { type: 'command', requestId: 'reverse-queued', command: 'issueReverseMove',
+      ids: [ownTank.id], x: destination.x + 2, y: destination.y, queue: true });
+    const queued = await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'reverse-queued');
+    assert.equal(queued.ok, true, 'a boolean queue flag is accepted');
+    assert.equal(ownTank.order.queue?.at(-1)?.reverse, true,
+      'the queued order retains reverse movement');
+
+    const foreignOrder = structuredClone(foreignTank.order);
+    sendSocket(host, { type: 'command', requestId: 'reverse-foreign', command: 'issueReverseMove',
+      ids: [foreignTank.id], x: foreignTank.x + 2, y: foreignTank.y });
+    const denied = await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'reverse-foreign');
+    assert.equal(denied.ok, false, 'a host cannot command the guest tank');
+    assert.deepEqual(foreignTank.order, foreignOrder);
+
+    sendSocket(host, { type: 'command', requestId: 'reverse-bad-queue', command: 'issueReverseMove',
+      ids: [ownTank.id], x: destination.x + 3, y: destination.y, queue: 'true' });
+    const badQueue = await nextMessage(host, message => message.type === 'command_result' &&
+      message.requestId === 'reverse-bad-queue');
+    assert.equal(badQueue.ok, false, 'the queue flag must be a boolean');
+    assert.equal(ownTank.order.queue.length, 1, 'a malformed flag cannot append a reverse order');
+
+    const hostEnded = nextMessage(host, message => message.type === 'match_end');
+    const guestEnded = nextMessage(guest, message => message.type === 'match_end');
+    sendSocket(host, { type: 'leave_lobby' });
+    await Promise.all([hostEnded, guestEnded]);
+  } finally {
+    host.close(); guest.close();
+  }
+});
+
 test('casual matchmaking pairs FIFO into a normal lobby and still requires explicit ready and host start', async () => {
   const one = await createProfile('Queue One'); const host = await openSocket(one.token);
   const duplicate = await openSocket(one.token);

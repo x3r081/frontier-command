@@ -1081,7 +1081,7 @@ function startMatch(lobby) {
   return true;
 }
 
-const commandNames = new Set(['issueMove', 'issueForceMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
+const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
   'toggleRepair', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
@@ -1089,7 +1089,7 @@ function command(lobby, member, message) {
   if (!game || game.status !== 'playing') return { ok: false, reason: 'No active match.' };
   if (!commandNames.has(message.command)) return { ok: false, reason: 'Unknown command.' };
   if (message.queue !== undefined && (typeof message.queue !== 'boolean' ||
-      !['issueMove', 'issueForceMove', 'issueAttack'].includes(message.command)))
+      !['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack'].includes(message.command)))
     return { ok: false, reason: 'Invalid queued order.' };
   const ids = Array.isArray(message.ids) ? message.ids.filter(id => typeof id === 'string').slice(0, 100) : [];
   member.selection = ids.filter(id => game.getEntity(id)?.owner === member.side);
@@ -1100,6 +1100,7 @@ function command(lobby, member, message) {
     switch (message.command) {
       case 'issueMove': return game.issueMove(n(message.x), n(message.y), Boolean(message.attackMove), message.queue === true);
       case 'issueForceMove': return game.issueForceMove(n(message.x), n(message.y), message.queue === true);
+      case 'issueReverseMove': return game.issueReverseMove(n(message.x), n(message.y), message.queue === true);
       case 'issueAttack': return game.issueAttack(message.targetId, message.queue === true);
       case 'issueHarvest': return game.issueHarvest();
       case 'issueBloomExpedition': return game.issueBloomExpedition();

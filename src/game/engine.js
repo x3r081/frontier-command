@@ -49,6 +49,7 @@ export const SIEGE_EXPANSION_RULES_VERSION = 54;
 export const AI_HARVESTER_RETREAT_RULES_VERSION = 56;
 export const AI_COUNTER_PLAN_RULES_VERSION = 59;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
+export const REVERSE_MOVE_RULES_VERSION = 61;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
@@ -1276,6 +1277,29 @@ export class Game {
     return { ok: true };
   }
 
+  issueReverseMove(x, y, queue = false) {
+    if (!this._validatePoint(x, y)) return { ok: false, reason: 'Destination is outside the map.' };
+    if (this.replayVersion != null && this.replayVersion < REVERSE_MOVE_RULES_VERSION)
+      return { ok: false, reason: 'Reverse movement is unavailable in this replay.' };
+    if (queue && this.replayVersion != null && this.replayVersion < QUEUED_ORDERS_RULES_VERSION)
+      return { ok: false, reason: 'Queued orders are unavailable in this replay.' };
+    const units = this._selectedCommandUnits().filter(unit => {
+      const def = UNIT_DEFS[unit.defId];
+      return !unit.embarkedIn && !!def?.weapon && !def.flying && ['light', 'heavy'].includes(def.armor);
+    });
+    if (!units.length) return { ok: false, reason: 'Select armed ground units with directional armor.' };
+    if (queue && !this._canQueueUnitOrders(units))
+      return { ok: false, reason: `A squad can queue at most ${MAX_QUEUED_ORDERS} orders.` };
+    const destinations = this._formationDestinations(units, x, y);
+    for (const unit of units) {
+      this._queueOrIssueUnitOrder(unit, {
+        type: 'move', ...(destinations.get(unit.id) || { x, y }), reverse: true, attackMove: false,
+      }, queue);
+    }
+    this._event('order', { order: 'reverseMove', queued: !!queue, ids: units.map(unit => unit.id), x, y });
+    return { ok: true };
+  }
+
   issueForceMove(x, y, queue = false) {
     if (!this._validatePoint(x, y)) return { ok: false, reason: 'Destination is outside the map.' };
     if (queue && this.replayVersion != null && this.replayVersion < QUEUED_ORDERS_RULES_VERSION)
@@ -2435,15 +2459,17 @@ export class Game {
       unit.defId === 'guardian' && unit.braceUntil > this.time) return false;
     const ghostRun = (this.replayVersion == null || this.replayVersion >= UNIT_ABILITY_RULES_VERSION) &&
       unit.defId === 'stealthTank' && unit.ghostRunUntil > this.time;
+    const reverse = (this.replayVersion == null || this.replayVersion >= REVERSE_MOVE_RULES_VERSION) &&
+      unit.order?.type === 'move' && unit.order.reverse === true;
     const speed = d.speed * this._campaignUnitMultiplier(unit.owner, 'rapid', 1.12) *
-      (ghostRun ? SPECTER_GHOST_RUN_SPEED_MULTIPLIER : 1);
+      (ghostRun ? SPECTER_GHOST_RUN_SPEED_MULTIPLIER : 1) * (reverse ? 0.65 : 1);
     if (dist(unit.x, unit.y, gx, gy) <= stopDistance) { unit.path = []; return true; }
     if (d.flying) {
       const distance = dist(unit.x, unit.y, gx, gy);
       const step = Math.min(distance, dt * speed * (unit.hp < unit.maxHp * 0.4 ? 0.82 : 1));
       const nx = unit.x + (gx - unit.x) / distance * step;
       const ny = unit.y + (gy - unit.y) / distance * step;
-      unit.facing = Math.atan2(ny - unit.y, nx - unit.x);
+      unit.facing = reverse ? Math.atan2(unit.y - ny, unit.x - nx) : Math.atan2(ny - unit.y, nx - unit.x);
       unit.x = nx; unit.y = ny;
       return distance - step <= stopDistance;
     }
@@ -2470,7 +2496,7 @@ export class Game {
       if (!this._isPassable(Math.floor(nx), Math.floor(ny))) {
         unit.path = []; unit._repath = 0; break;
       }
-      unit.facing = Math.atan2(ny - unit.y, nx - unit.x);
+      unit.facing = reverse ? Math.atan2(unit.y - ny, unit.x - nx) : Math.atan2(ny - unit.y, nx - unit.x);
       unit.x = nx; unit.y = ny; remaining -= step;
       if (d.armor === 'heavy' && d.role !== 'mcv' && d.role !== 'transport') {
         for (const victim of this.units) {
@@ -2543,7 +2569,10 @@ export class Game {
       !this.scans.some(scan => scan.owner !== source.owner && scan.until > this.time &&
         dist(scan.x, scan.y, source.x, source.y) <= scan.radius);
     const center = this._entityCenter(source);
-    source.facing = Math.atan2(to.y - center.y, to.x - center.x);
+    const reversing = (this.replayVersion == null || this.replayVersion >= REVERSE_MOVE_RULES_VERSION) &&
+      source.order?.type === 'move' && source.order.reverse === true;
+    if (!reversing)
+      source.facing = Math.atan2(to.y - center.y, to.x - center.x);
     const damage = weaponDef.damage * (VETERANCY_RANKS[source.veterancy]?.damageMultiplier ?? 1) *
       ('w' in source ? 1 : this._campaignUnitMultiplier(source.owner, 'precision', 1.1));
     this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'projectile', x: center.x, y: center.y,
@@ -6566,7 +6595,12 @@ export class Game {
             return [{ type: 'attack', targetId: order.targetId }];
           if (['move', 'forceMove'].includes(order.type) && game._validatePoint(order.x, order.y))
             return [{ type: order.type, x: order.x, y: order.y,
-              ...(order.type === 'move' ? { attackMove: order.attackMove === true } : {}) }];
+              ...(order.type === 'move' ? {
+                attackMove: order.attackMove === true,
+                ...(order.reverse === true &&
+                  (game.replayVersion == null || game.replayVersion >= REVERSE_MOVE_RULES_VERSION)
+                  ? { reverse: true } : {}),
+              } : {}) }];
           return [];
         });
         if (queue.length) unit.order.queue = queue;

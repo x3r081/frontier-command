@@ -900,6 +900,14 @@ function selectedObjects() {
   const ids = new Set(game.selection || []);
   return [...game.units, ...game.buildings].filter(o => ids.has(o.id) && !o.embarkedIn);
 }
+function reverseMoveUnits(units=selectedObjects()) {
+  if(!game||game.replayVersion!=null&&game.replayVersion<61)return [];
+  return units.filter(unit=>{
+    const def=game.unitDefs?.[unit.defId];
+    return unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&def?.weapon&&
+      !def.flying&&['light','heavy'].includes(def.armor);
+  });
+}
 function battlefieldPickerIsOpen() { return !$('#battlefield-picker-panel').classList.contains('hidden'); }
 function lastSeenHostileContacts() {
   return currentMode === 'skirmish' && game?.victoryMode === 'elimination'
@@ -2446,7 +2454,7 @@ function setRoutePlanMode(enabled){
     const wasActive=routePlanMode;
     routePlanMode=false;
     routePlanSelectionKey='';
-    if(wasActive&&['attack','forceMove'].includes(attackMoveMode)){
+    if(wasActive&&['attack','forceMove','reverseMove'].includes(attackMoveMode)){
       attackMoveMode=false;targetOrderPending=false;targetOrderToken++;hide('#attack-hint');
     }
   }
@@ -2457,13 +2465,13 @@ function setRoutePlanMode(enabled){
   button.title=routePlanMode?'Tap successive waypoints or visible enemies; tap ROUTE again to finish':'Plan a route with successive battlefield taps';
 }
 function targetOrderHint(mode,label,prompt){
-  const routing=['attack','forceMove'].includes(mode);
+  const routing=['attack','forceMove','reverseMove'].includes(mode);
   const touchGuide=matchMedia('(pointer: coarse)').matches||innerWidth<=670;
   return `${label} · ${prompt}${routing?(routePlanMode?' · TAP MORE POINTS TO CONTINUE':touchGuide?' · TAP ROUTE TO QUEUE MORE POINTS':' · SHIFT+CLICK TO QUEUE'):''} <span>·</span> ESC TO CANCEL`;
 }
 function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   if(!game)return;
-  if(!['attack','forceMove'].includes(mode))setRoutePlanMode(false);
+  if(!['attack','forceMove','reverseMove'].includes(mode))setRoutePlanMode(false);
   if(placeId)cancelPlacement();
   commandAbilityToken++;commandAbilityMode=null;commandAbilityPending=false;
   targetOrderPending=false;
@@ -2476,7 +2484,8 @@ function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
 function issueTargetOrder(wx,wy,queue=false){
   if(!game||!attackMoveMode||targetOrderPending)return;
   const mode=attackMoveMode, token=targetOrderToken;
-  const routed=['attack','forceMove'].includes(mode)&&routePlanMode;
+  const label=mode==='attack'?'ATTACK MOVE':keyName(mode).toUpperCase();
+  const routed=['attack','forceMove','reverseMove'].includes(mode)&&routePlanMode;
   queue ||= routed;
   let result, success='', cue='order';
   if(mode==='super'){result=game.useSuperweapon(wx,wy);success='STRATEGIC STRIKE ORDERED';}
@@ -2504,6 +2513,7 @@ function issueTargetOrder(wx,wy,queue=false){
   else if(mode==='unload'){result=game.issueUnload(wx,wy);success='CARRIER MOVING TO UNLOAD';}
   else if(mode==='force'){result=game.issueForceFire(wx,wy);success='FORCE FIRE ORDERED';}
   else if(mode==='forceMove'){result=game.issueForceMove(wx,wy,queue);success=queue?'FORCE MOVE QUEUED':'FORCE MOVE ORDERED';}
+  else if(mode==='reverseMove'){result=game.issueReverseMove(wx,wy,queue);success=queue?'REVERSE MOVE QUEUED':'ARMOR REVERSING · 65% SPEED';}
   else if(mode==='attack'&&game.bridges?.includes(objectAt(wx,wy))) {
     const bridge=objectAt(wx,wy);
     result=game.issueAttack(bridge.id,queue);success=queue?'BRIDGE DEMOLITION QUEUED':'BRIDGE DEMOLITION ORDERED';
@@ -2511,13 +2521,13 @@ function issueTargetOrder(wx,wy,queue=false){
   else {result=game.issueMove(wx,wy,true,queue);success=queue?'ATTACK MOVE QUEUED':'ATTACK MOVE ORDERED';}
   if(result?.pending){
     targetOrderPending=true;
-    $('#attack-hint').innerHTML=`${mode.toUpperCase()} · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL`;
+    $('#attack-hint').innerHTML=`${label} · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL`;
     resultMessage(result,success,cue,{
-      onAccepted:()=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,mode==='attack'?'ATTACK MOVE':'FORCE MOVE','SELECT NEXT DESTINATION');else{attackMoveMode=false;hide('#attack-hint');}}},
-      onSettled:ack=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(!ack?.ok){if(ack?.transportFailure){setRoutePlanMode(false);attackMoveMode=false;hide('#attack-hint');}else $('#attack-hint').innerHTML=`${mode.toUpperCase()} · ORDER REJECTED · SELECT TARGET <span>·</span> ESC TO CANCEL`;}}}
+      onAccepted:()=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,label,'SELECT NEXT DESTINATION');else{attackMoveMode=false;hide('#attack-hint');}}},
+      onSettled:ack=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(!ack?.ok){if(ack?.transportFailure){setRoutePlanMode(false);attackMoveMode=false;hide('#attack-hint');}else $('#attack-hint').innerHTML=`${label} · ORDER REJECTED · SELECT TARGET <span>·</span> ESC TO CANCEL`;}}}
     });
   } else if(resultMessage(result,success,cue)&&targetOrderToken===token&&attackMoveMode===mode){
-    if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,mode==='attack'?'ATTACK MOVE':'FORCE MOVE','SELECT NEXT DESTINATION');
+    if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,label,'SELECT NEXT DESTINATION');
     else{attackMoveMode=false;hide('#attack-hint');}
   }
 }
@@ -2777,10 +2787,11 @@ function drawQueuedRoute(){
     if(!destination)break;
     const from=toScreen(previous.x,previous.y),to=toScreen(destination.x,destination.y);
     const attack=order.type==='attack'||order.attackMove;
-    octx.strokeStyle=attack?'#ffad84d9':'#9deee2d9';
+    const routeColor=attack?'#ffad84':order.reverse?'#f2ca82':'#9deee2';
+    octx.strokeStyle=`${routeColor}d9`;
     octx.beginPath();octx.moveTo(from.x,from.y);octx.lineTo(to.x,to.y);octx.stroke();
     octx.setLineDash([]);
-    octx.fillStyle='#081917dd';octx.strokeStyle=attack?'#ffad84':'#9deee2';
+    octx.fillStyle='#081917dd';octx.strokeStyle=routeColor;
     octx.beginPath();octx.arc(to.x,to.y,9,0,Math.PI*2);octx.fill();octx.stroke();
     octx.fillStyle='#f4fff7';octx.font='700 10px Barlow Condensed, sans-serif';
     octx.textAlign='center';octx.textBaseline='middle';octx.fillText(String(index+1),to.x,to.y+.5);
@@ -3476,6 +3487,16 @@ function updateSelectionCard() {
     ?'Launch an escorted Stormglass Bloom mining run (Shift+H). Press H for ordinary harvesting.'
     :'Harvest crystal (H). During a Stormglass Bloom, select a Harvester and armed ground escort together to launch an expedition.';
   harvestButton.setAttribute('aria-label',harvestButton.title);
+  const reversingArmor=reverseMoveUnits(units);
+  const showReverse=reversingArmor.length>0&&!units.some(unit=>unit.defId==='harvester');
+  harvestButton.classList.toggle('hidden',showReverse);
+  const reverseButton=$('#cmd-reverse');
+  reverseButton.classList.toggle('hidden',!showReverse);
+  reverseButton.disabled=!reversingArmor.length;
+  const reverseActive=reversingArmor.length>0&&reversingArmor.every(unit=>unit.order?.type==='move'&&unit.order.reverse);
+  reverseButton.classList.toggle('active',reverseActive);
+  reverseButton.setAttribute('aria-pressed',String(reverseActive));
+  reverseButton.setAttribute('aria-label','Reverse selected armor at 65% speed while keeping its front opposite its travel direction. Shift+M.');
   const fieldUnit=units.length===1&&selected.length===1&&units[0].owner==='player'&&
     (game.replayVersion==null||game.replayVersion>=36)&&
     ['guardian','stealthTank'].includes(units[0].defId)?units[0]:null;
@@ -3556,7 +3577,7 @@ function updateSelectionCard() {
   const hp=selected.length===1?first.hp:selected.reduce((n,u)=>n+u.hp,0),maxHp=selected.length===1?first.maxHp:selected.reduce((n,u)=>n+u.maxHp,0),pct=Math.max(0,Math.round(hp/maxHp*100));
   const critical=selected.some(o=>o.owner==='player')&&pct<=25;
   $('#selection-card').classList.toggle('is-critical',critical);
-  const unitOrder=first.order?.bloomExpedition?'BLOOM EXPEDITION':first.order?.bloomExpeditionEscort
+  const unitOrder=first.order?.type==='move'&&first.order.reverse?'REVERSING · 65% SPEED':first.order?.bloomExpedition?'BLOOM EXPEDITION':first.order?.bloomExpeditionEscort
     ?'BLOOM ESCORT':first.order?.type==='move'&&first.order.attackMove?'ATTACK MOVE':
       keyName(first.order?.type||'ready').toUpperCase();
   const queuedOrders=!isBuilding&&Array.isArray(first.order?.queue)?first.order.queue.length:0;
@@ -3596,8 +3617,8 @@ function updateSelectionCard() {
       counts.set(label,(counts.get(label)||0)+1);
     }
     const composition=[...counts].map(([label,count])=>`${count} ${label}`).join(' · ');
-    const orders=new Set(units.map(unit=>unit.order?.type==='move'&&unit.order.attackMove
-      ?'attackMove':unit.order?.type||'ready'));
+    const orders=new Set(units.map(unit=>unit.order?.type==='move'&&unit.order.reverse?'reverseMove':
+      unit.order?.type==='move'&&unit.order.attackMove?'attackMove':unit.order?.type||'ready'));
     const routed=units.filter(unit=>unit.order?.queue?.length).length;
     return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${routed?` · ${routed} ROUTED`:''}`;
   })():'';
@@ -5372,7 +5393,7 @@ function sendMatchCommand(command,data={}){
 }
 function installMultiplayerCommandAdapters(target){
   const commands={
-    issueMove:(x,y,attackMove=false,queue=false)=>({x,y,attackMove,queue}),issueForceMove:(x,y,queue=false)=>({x,y,queue}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
+    issueMove:(x,y,attackMove=false,queue=false)=>({x,y,attackMove,queue}),issueForceMove:(x,y,queue=false)=>({x,y,queue}),issueReverseMove:(x,y,queue=false)=>({x,y,queue}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
     issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
     issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:defId=>({defId}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
@@ -6054,11 +6075,12 @@ $('#promotion-modal').addEventListener('click',event=>{
 });
 $('#cmd-attack').addEventListener('click',()=>startTargetOrder('attack','ATTACK MOVE'));
 $('#cmd-move').addEventListener('click',()=>startTargetOrder('forceMove','FORCE MOVE'));
+$('#cmd-reverse').addEventListener('click',()=>startTargetOrder('reverseMove','REVERSE MOVE'));
 $('#route-plan-toggle').addEventListener('click',()=>{
   if(game&&playing&&!paused&&!replayMode)setRoutePlanMode(!routePlanMode);
 });
 $('#command-actions').addEventListener('click',event=>{
-  if(routePlanMode&&event.target.closest('button:not(#cmd-attack):not(#cmd-move)'))setRoutePlanMode(false);
+  if(routePlanMode&&event.target.closest('button:not(#cmd-attack):not(#cmd-move):not(#cmd-reverse)'))setRoutePlanMode(false);
 },true);
 $('#cmd-guard').addEventListener('click',()=>resultMessage(game?.issueGuard?.(),'GUARD POSITION SET'));
 $('#cmd-patrol').addEventListener('click',()=>startTargetOrder('patrol','PATROL'));
@@ -6320,7 +6342,10 @@ window.addEventListener('keydown',e=>{
   if(e.code==='KeyL'&&selectedObjects().some(o=>game.unitDefs?.[o.defId]?.armor==='infantry'))startTargetOrder('board','BOARD','SELECT FRIENDLY CARRIER');
   if(e.code==='KeyU'&&selectedObjects().some(o=>isTroopCarrier(o)&&o.passengerIds?.length))startTargetOrder('unload','UNLOAD','SELECT DROP SITE');
   if(e.code==='KeyV')startTargetOrder('force','FORCE FIRE');
-  if(e.code==='KeyM')startTargetOrder('forceMove','FORCE MOVE');
+  if(e.code==='KeyM'){
+    if(e.shiftKey&&reverseMoveUnits().length)startTargetOrder('reverseMove','REVERSE MOVE');
+    else if(!e.shiftKey)startTargetOrder('forceMove','FORCE MOVE');
+  }
   if(e.code==='KeyN'){e.preventDefault();if(!e.repeat)cycleUnits();}
   if(e.code==='KeyH'){
     if(e.shiftKey)resultMessage(game.issueBloomExpedition?.()||{ok:false,reason:'Stormglass expeditions are unavailable.'},'STORMGLASS EXPEDITION ORDERED');

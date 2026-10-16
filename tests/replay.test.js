@@ -9,6 +9,29 @@ import { createSoloRecorder, createSoloPlayback, replaySoloRun, validateSoloEnve
 const skirmish = { mode: 'skirmish', difficulty: 'normal', faction: 'aegis', seed: 12345,
   scenarioId: SKIRMISH_MAPS[0].id };
 
+test('v61 reverse movement records facing and rejects older replay rules', () => {
+  const game=new Game({mode:'skirmish',difficulty:skirmish.difficulty,faction:skirmish.faction,
+    seed:skirmish.seed,mapId:skirmish.scenarioId});
+  const tank=game.units.find(unit=>unit.owner==='player'&&unit.defId==='lightTank');
+  assert.ok(tank);
+  const clock={completedTicks:0};
+  const recorder=createSoloRecorder(game,clock);
+  game.select(tank.id);
+  assert.equal(game.issueReverseMove(tank.x-3,tank.y).ok,true);
+  for(let tick=0;tick<45;tick++){game.update(SOLO_STEP_SECONDS);clock.completedTicks++;}
+  recorder.dispose();
+  assert.equal(validateSoloReplay(skirmish,recorder.commands,clock.completedTicks),true);
+  assert.throws(()=>createSoloPlayback(skirmish,recorder.commands,clock.completedTicks,60),/reverse movement requires replay version 61/i);
+  const malformed=structuredClone(recorder.commands);
+  malformed[0].args.push('true');
+  assert.throws(()=>validateSoloReplay(skirmish,malformed,clock.completedTicks),/invalid solo command/i);
+  const playback=createSoloPlayback(skirmish,recorder.commands,clock.completedTicks);
+  playback.step(clock.completedTicks);
+  const replayed=playback.game.getEntity(tank.id);
+  assert.deepEqual({x:replayed.x,y:replayed.y,facing:replayed.facing,order:replayed.order},
+    {x:tank.x,y:tank.y,facing:tank.facing,order:tank.order});
+});
+
 test('solo playback rebuilds the locked skirmish victory mode after reset', () => {
   const playback = createSoloPlayback({ ...skirmish, victoryMode: 'elimination' }, [], 1);
   assert.equal(playback.game.victoryMode, 'elimination');
@@ -254,7 +277,7 @@ test('Cadet relay rush timing is preserved in v12 playback and delayed in v13', 
 });
 
 test('campaign doctrine is validated and reconstructed by playback', () => {
-  assert.equal(SOLO_REPLAY_VERSION, 60);
+  assert.equal(SOLO_REPLAY_VERSION, 61);
   const index = 0;
   const envelope = { mode: 'campaign', difficulty: 'normal', faction: CAMPAIGN_MISSIONS[index].faction,
     seed: 54321, scenarioId: CAMPAIGN_MISSIONS[index].id, doctrineId: 'reinforced' };
@@ -484,7 +507,7 @@ test('field research choice survives recorded playback with the same progress an
 
 test('tactical package commands require replay version 31 while legacy replays remain valid', () => {
   const commands = [{ tick: 0, sequence: 0, method: 'chooseTacticalPackage', args: ['breach'], selectedIds: [] }];
-  assert.equal(SOLO_REPLAY_VERSION, 60);
+  assert.equal(SOLO_REPLAY_VERSION, 61);
   assert.throws(() => createSoloPlayback(skirmish, commands, 1, 30), /tactical packages require replay version 31/i);
   assert.equal(createSoloPlayback(skirmish, commands, 1, 31).game.replayVersion, 31);
   const abilityCommand = [{ tick: 0, sequence: 0, method: 'useCommandAbility', args: ['interdict', 2, 2], selectedIds: [] }];
