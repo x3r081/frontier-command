@@ -3799,9 +3799,20 @@ body:has(#end-modal:not(.hidden)),
   grid-template-rows: 1fr;
   height: 48px; min-height: 48px; flex: 0 0 48px;
 }
+.command-panel .command-actions.bunker-commands {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  grid-template-rows: 1fr;
+  height: 48px; min-height: 48px; flex: 0 0 48px;
+}
+.command-actions.bunker-commands > button:not(#cmd-attack):not(#cmd-move):not(#cmd-repair) { display: none; }
+.selection-card.has-bunker-roster { height: auto; min-height: 104px; overflow-y: auto; }
+.bunker-occupant-roster { display: flex; flex-wrap: wrap; gap: 3px 7px; margin-top: 3px; color: #d5e4ce; font: 600 9px/1.2 "Barlow Condensed", sans-serif; }
+.bunker-occupant-roster span { display: inline-flex; min-width: 0; align-items: baseline; gap: 4px; }
+.bunker-occupant-roster span b { color: #bde483; font-size: 9px; }
+.bunker-occupant-roster > small { color: #93a594; font-size: 9px; }
 .command-actions.production-commands > button:not(#cmd-attack):not(#cmd-move):not(#cmd-repair) { display: none; }
 @media (max-width: 670px) {
-  .main-layout:has(.production-commands) {
+  .main-layout:has(:is(.production-commands, .bunker-commands)) {
     padding-bottom: calc(48px + env(safe-area-inset-bottom));
   }
   .command-panel .command-actions.production-commands {
@@ -3809,7 +3820,13 @@ body:has(#end-modal:not(.hidden)),
     min-height: calc(48px + env(safe-area-inset-bottom));
     padding-bottom: env(safe-area-inset-bottom);
   }
-  .command-panel:not(.deck-collapsed):has(.production-commands) {
+  .command-panel .command-actions.bunker-commands {
+    height: calc(48px + env(safe-area-inset-bottom));
+    min-height: calc(48px + env(safe-area-inset-bottom));
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .command-panel .selection-card.has-bunker-roster { flex-basis: 98px; height: 98px; min-height: 98px; overflow-y: auto; }
+  .command-panel:not(.deck-collapsed):has(:is(.production-commands, .bunker-commands)) {
     flex-basis: calc(clamp(190px, 29dvh, 249px) + 84px);
     height: calc(clamp(190px, 29dvh, 249px) + 84px);
   }
@@ -3822,13 +3839,13 @@ body:has(#end-modal:not(.hidden)),
   .battlefield-wrap:has(.placement-hint:not(.hidden)) .toast-container .toast:not(:last-child) { display: none; }
 }
 @media (max-width: 670px) and (min-height: 720px) {
-  .command-panel:not(.deck-collapsed):has(.production-commands) {
+  .command-panel:not(.deck-collapsed):has(:is(.production-commands, .bunker-commands)) {
     flex-basis: calc(clamp(190px, 29dvh, 249px) + 144px);
     height: calc(clamp(190px, 29dvh, 249px) + 144px);
   }
 }
 @media (max-width: 670px) and (max-height: 520px) {
-  .command-panel:not(.deck-collapsed):has(.production-commands) {
+  .command-panel:not(.deck-collapsed):has(:is(.production-commands, .bunker-commands)) {
     flex-basis: clamp(200px, 43dvh, 224px);
     height: clamp(200px, 43dvh, 224px);
   }
@@ -4013,7 +4030,16 @@ body:has(#end-modal:not(.hidden)),
     font-size: 10px; line-height: 1.3;
   }
   #battlefield-wrap.tactical-targeting .toast-container .toast:not(:last-child) { display: none; }
-  .battlefield-wrap.tactical-targeting .battlefield-picker { top: 134px; }
+  .battlefield-wrap.tactical-targeting .objective-pill { visibility: hidden; }
+  #battlefield-wrap.tactical-targeting .battlefield-picker {
+    top: 10px; left: auto; right: 10px; z-index: 24;
+  }
+  .battlefield-wrap.tactical-targeting .battlefield-picker-toggle { min-height: 44px; }
+  .battlefield-wrap.tactical-targeting .battlefield-picker-squad-tools { display: none; }
+  .battlefield-wrap.tactical-targeting:has(#battlefield-picker-toggle[aria-expanded="true"]) #attack-hint,
+  .battlefield-wrap.tactical-targeting:has(#battlefield-picker-toggle[aria-expanded="true"]) .targeting-cancel {
+    visibility: hidden;
+  }
 }
 .command-panel:not(.deck-collapsed) #selection-card:has(.selection-roster:not(.hidden)) {
   display: flex;

@@ -1091,7 +1091,7 @@ test('Iron Reclaimed tickets follow the verified After the Dawn rescue at the sa
   assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('iron-reclaimed'));
 });
 
-test('v75 combat rules retire older boards without deleting campaign progress', async () => {
+test('v79 combat rules retire older boards without deleting campaign progress', async () => {
   const profile = await createProfile('Recovery Ranking');
   const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
     faction: 'aegis', fieldOrderId: 'none', fieldOrderStatus: 'none', carryoverId: 'none',
@@ -1101,16 +1101,18 @@ test('v75 combat rules retire older boards without deleting campaign progress', 
     { ...base, id: 'recovery-v72-invalid', scenarioId: 'iron-reclaimed', scoreVersion: 72 },
     { ...base, id: 'recovery-v73', scenarioId: 'iron-reclaimed', scoreVersion: 73 },
     { ...base, id: 'recovery-v74', scenarioId: 'iron-reclaimed', scoreVersion: 74 },
+    { ...base, id: 'recovery-v78', scenarioId: 'iron-reclaimed', scoreVersion: 78 },
     { ...base, id: 'rescue-still-v72', scenarioId: 'after-the-dawn', scoreVersion: 72 },
     { ...base, id: 'rescue-now-v73', scenarioId: 'after-the-dawn', scoreVersion: 73 },
-    { ...base, id: 'recovery-v75', scenarioId: 'iron-reclaimed', scoreVersion: SOLO_REPLAY_VERSION },
-    { ...base, id: 'rescue-now-v75', scenarioId: 'after-the-dawn', scoreVersion: SOLO_REPLAY_VERSION });
+    { ...base, id: 'recovery-v79', scenarioId: 'iron-reclaimed', scoreVersion: SOLO_REPLAY_VERSION },
+    { ...base, id: 'rescue-now-v79', scenarioId: 'after-the-dawn', scoreVersion: SOLO_REPLAY_VERSION });
   const rows = async scenario => (await (await api(
     `/api/leaderboard?mode=campaign&scenarioId=${scenario}`, profile.token)).json()).entries.map(row => row.id);
-  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v75']);
-  assert.deepEqual((await rows('after-the-dawn')).filter(id => id.startsWith('rescue-')), ['rescue-now-v75']);
+  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v79']);
+  assert.deepEqual((await rows('after-the-dawn')).filter(id => id.startsWith('rescue-')), ['rescue-now-v79']);
   assert.ok(store.scores.some(score => score.id === 'rescue-still-v72'), 'archived victories stay stored');
-  assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 74);
+  assert.ok(store.scores.some(score => score.id === 'recovery-v78'), 'v78 results remain stored off-board');
+  assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 79);
 });
 
 test('Iron Reclaimed records a server-verified public-command victory on its own board', async () => {
@@ -2376,6 +2378,113 @@ test('authenticated websocket Dig In validates ownership, coordinates and cooldo
     assert.equal(foreign.order.type, 'idle');
   } finally {
     sendSocket(host, { type: 'leave_lobby' }); host.close(); guest.close();
+  }
+});
+
+test('authenticated websocket bunker orders enforce ownership, capacity, focus and evacuation', async () => {
+  const hostProfile = await createProfile('Bunker Protocol Host');
+  const guestProfile = await createProfile('Bunker Protocol Guest');
+  const host = await openSocket(hostProfile.token);
+  const guest = await openSocket(guestProfile.token);
+  try {
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'hello')));
+    sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+    const lobbyMessage = await nextMessage(host, message => message.type === 'lobby');
+    sendSocket(guest, { type: 'join_lobby', code: lobbyMessage.code });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.length === 2);
+    await nextMessage(guest, message => message.type === 'lobby');
+    sendSocket(host, { type: 'set_ready', ready: true });
+    sendSocket(guest, { type: 'set_ready', ready: true });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.every(player => player.ready));
+    sendSocket(host, { type: 'start_match' });
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'match_start')));
+
+    const game = lobbies.get(lobbyMessage.code).game;
+    // The command path is exercised through authenticated sockets; replace
+    // only the battlefield fixture so unit approach and evacuation routes are clear.
+    game.units.length = 0;
+    game.buildings.length = 0;
+    game.wrecks.length = 0;
+    game.selection = [];
+    for (const row of game.terrain) for (const tile of row)
+      Object.assign(tile, { type: 'sand', resource: 0, walkable: true, buildable: true });
+    for (const row of game.fog) row.fill(2);
+
+    const ownBunker = game._createBuilding('player', 'bunker', 18, 18, 1);
+    const enemyBunker = game._createBuilding('enemy', 'bunker', 31, 18, 1);
+    const ownRifles = [
+      game._createUnit('player', 'rifle', 17.5, 18.5),
+      game._createUnit('player', 'rifle', 18.5, 17.5),
+      game._createUnit('player', 'rifle', 19.5, 20.5),
+      game._createUnit('player', 'rifle', 20.5, 18.5),
+    ];
+    const ownEngineer = game._createUnit('player', 'engineer', 17.5, 19.5);
+    const foreignRifle = game._createUnit('enemy', 'rifle', 30.5, 21.5);
+    const visibleTarget = game._createUnit('enemy', 'rifle', 25.5, 18.5);
+    const issue = async (requestId, command, payload = {}) => {
+      sendSocket(host, { type: 'command', requestId, command, ...payload });
+      return nextMessage(host, message => message.type === 'command_result' && message.requestId === requestId);
+    };
+
+    const malformed = await issue('bunker-malformed-id', 'issueGarrison', {
+      ids: [ownRifles[0].id], buildingId: 41,
+    });
+    assert.equal(malformed.ok, false);
+    assert.match(malformed.reason, /completed friendly Field Bunker/);
+    const foreignBuilding = await issue('bunker-foreign-building', 'issueGarrison', {
+      ids: [ownRifles[0].id], buildingId: enemyBunker.id,
+    });
+    assert.equal(foreignBuilding.ok, false);
+    assert.match(foreignBuilding.reason, /completed friendly Field Bunker/);
+    const foreignUnit = await issue('bunker-foreign-unit', 'issueGarrison', {
+      ids: [foreignRifle.id], buildingId: ownBunker.id,
+    });
+    assert.equal(foreignUnit.ok, false, 'the socket cannot select a guest rifle into its own order');
+    assert.match(foreignUnit.reason, /Select armed infantry/);
+    const incompatible = await issue('bunker-incompatible-unit', 'issueGarrison', {
+      ids: [ownEngineer.id], buildingId: ownBunker.id,
+    });
+    assert.equal(incompatible.ok, false, 'an unarmed Engineer is not a garrison crew member');
+    assert.match(incompatible.reason, /Select armed infantry/);
+    const overCapacity = await issue('bunker-over-capacity', 'issueGarrison', {
+      ids: ownRifles.map(unit => unit.id), buildingId: ownBunker.id,
+    });
+    assert.equal(overCapacity.ok, false, 'four armed infantry cannot reserve a three-person bunker');
+    assert.match(overCapacity.reason, /insufficient space/);
+
+    const accepted = await issue('bunker-garrison', 'issueGarrison', {
+      ids: ownRifles.slice(0, 3).map(unit => unit.id), buildingId: ownBunker.id,
+    });
+    assert.equal(accepted.ok, true, 'a friendly bunker accepts three armed infantry');
+    for (let tick = 0; tick < 5 && ownBunker.garrisonIds.length < 3; tick++) game.update(0.1);
+    assert.deepEqual(ownBunker.garrisonIds, ownRifles.slice(0, 3).map(unit => unit.id));
+    assert.ok(ownRifles.slice(0, 3).every(unit => unit.embarkedIn === ownBunker.id));
+    const fullBunker = await issue('bunker-full-capacity', 'issueGarrison', {
+      ids: [ownRifles[3].id], buildingId: ownBunker.id,
+    });
+    assert.equal(fullBunker.ok, false, 'a fourth order is rejected after all three slots fill');
+    assert.match(fullBunker.reason, /insufficient space/);
+
+    const attack = await issue('bunker-focus', 'issueAttack', {
+      ids: [ownBunker.id], targetId: visibleTarget.id,
+    });
+    assert.equal(attack.ok, true, 'selected friendly bunker crew can focus a visible valid enemy');
+    assert.equal(ownBunker._garrisonTargetId, visibleTarget.id);
+
+    const foreignEvacuation = await issue('bunker-evacuate-foreign', 'issueEvacuateGarrison', {
+      ids: [], buildingId: enemyBunker.id,
+    });
+    assert.equal(foreignEvacuation.ok, false, 'host cannot evacuate the guest bunker');
+    const evacuation = await issue('bunker-evacuate-own', 'issueEvacuateGarrison', {
+      ids: [], buildingId: ownBunker.id,
+    });
+    assert.equal(evacuation.ok, true);
+    assert.equal(ownBunker.garrisonIds.length, 0);
+    assert.ok(ownRifles.slice(0, 3).every(unit => unit.embarkedIn === null),
+      'accepted evacuation leaves each former passenger unembarked');
+  } finally {
+    sendSocket(host, { type: 'leave_lobby' });
+    host.close(); guest.close();
   }
 });
 
@@ -3706,6 +3815,21 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
   friendlyBuilding.powerStandby = true;
   const member = { side: 'player', selection: [],
     explored: Array.from({ length: game.height }, () => Array(game.width).fill(0)) };
+  const friendlyBunker = game._createBuilding('player', 'bunker', 20, 30, 1);
+  const hostileBunker = game._createBuilding('enemy', 'bunker', 30, 30, 1);
+  const friendlyCrew = game._createUnit('player', 'rifle', 21, 31);
+  const hostileCrew = game._createUnit('enemy', 'rifle', 31, 31);
+  const guestObserver = game._createUnit('enemy', 'scout', 24, 31);
+  friendlyCrew.embarkedIn = friendlyBunker.id;
+  hostileCrew.embarkedIn = hostileBunker.id;
+  friendlyBunker.garrisonIds = [friendlyCrew.id];
+  hostileBunker.garrisonIds = [hostileCrew.id];
+  friendlyBunker.garrisonFireUntil = game.time + 0.2;
+  hostileBunker.garrisonFireUntil = game.time + 0.2;
+  friendlyBunker._garrisonTargetId = hostile.id;
+  hostileBunker._garrisonTargetId = friendlyBuilding.id;
+  game.fog[Math.floor(hostileBunker.y + hostileBunker.h / 2)]
+    [Math.floor(hostileBunker.x + hostileBunker.w / 2)] = 2;
 
   const projection = projectedState({ game }, member);
   const projectedHostile = projection.units.find(unit => unit.id === hostile.id);
@@ -3726,6 +3850,22 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
     'projection leaves authoritative repeat intent intact');
   assert.equal(projection.buildings.find(building => building.id === friendlyBuilding.id).powerStandby, true,
     'the commander retains its own building standby state');
+  const projectedFriendlyBunker = projection.buildings.find(building => building.id === friendlyBunker.id);
+  const projectedHostileBunker = projection.buildings.find(building => building.id === hostileBunker.id);
+  assert.deepEqual(projectedFriendlyBunker.garrisonIds, [friendlyCrew.id],
+    'the commander retains friendly bunker crew relationships');
+  assert.equal(projectedFriendlyBunker.garrisonFireUntil, friendlyBunker.garrisonFireUntil,
+    'public bunker firing feedback survives for the owner');
+  assert.ok(projectedHostileBunker, 'the visible hostile bunker remains available to the tactical view');
+  assert.equal('garrisonIds' in projectedHostileBunker, false,
+    'a hostile bunker does not reveal passenger identities');
+  assert.equal(projectedHostileBunker.garrisonFireUntil, hostileBunker.garrisonFireUntil,
+    'public bunker firing feedback remains visible to the opponent');
+  assert.equal('_garrisonTargetId' in projectedHostileBunker, false,
+    'the hostile bunker focus target remains private');
+  const hostRoundTrip = Game.deserialize(projection);
+  assert.deepEqual(hostRoundTrip.getEntity(friendlyBunker.id).garrisonIds, [friendlyCrew.id]);
+  assert.equal(hostRoundTrip.getEntity(friendlyCrew.id).embarkedIn, friendlyBunker.id);
   assert.deepEqual(hostile.order, { type: 'move', x: game.width - 1, y: game.height - 1 },
     'projection does not mutate authoritative unit orders');
 
@@ -3746,6 +3886,20 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
   assert.ok(guestViewFriendlyBuilding, 'the enemy scout makes the building visible for projection');
   assert.equal('powerStandby' in guestViewFriendlyBuilding, false,
     'visible opponent buildings still hide their standby state');
+  const guestViewFriendlyBunker = guestProjection.buildings.find(building => building.id === friendlyBunker.id);
+  const guestViewOwnBunker = guestProjection.buildings.find(building => building.id === hostileBunker.id);
+  assert.ok(guestViewFriendlyBunker, 'the guest scout can see the host bunker');
+  assert.equal('garrisonIds' in guestViewFriendlyBunker, false,
+    'host bunker crew identities are hidden in the guest orientation too');
+  assert.equal(guestViewFriendlyBunker.garrisonFireUntil, friendlyBunker.garrisonFireUntil);
+  assert.deepEqual(guestViewOwnBunker.garrisonIds, [hostileCrew.id],
+    'guest-owned bunker crew relationships are oriented as friendly state');
+  assert.equal(guestViewOwnBunker.garrisonFireUntil, hostileBunker.garrisonFireUntil);
+  assert.equal('_garrisonTargetId' in guestViewFriendlyBunker, false,
+    'guest-facing projection also strips hostile bunker focus');
+  const guestRoundTrip = Game.deserialize(guestProjection);
+  assert.deepEqual(guestRoundTrip.getEntity(hostileBunker.id).garrisonIds, [hostileCrew.id]);
+  assert.equal(guestRoundTrip.getEntity(hostileCrew.id).embarkedIn, hostileBunker.id);
 });
 
 test('embarked passengers do not reveal targets or placement tiles for the guest', () => {

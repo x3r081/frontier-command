@@ -55,6 +55,7 @@ ASSETS = {
     "command": ("command-yard", "all"), "power": ("power-plant", "all"),
     "command-vesper": ("vesper-command-yard", "vesper"),
     "power-vesper": ("vesper-power-plant", "vesper"),
+    "bunker": ("bunker", "aegis"), "bunker-vesper": ("vesper-bunker", "vesper"),
     "barracks-vesper": ("vesper-barracks", "vesper"),
     "radar-vesper": ("vesper-radar-array", "vesper"),
     "tech-vesper": ("vesper-research-center", "vesper"),
@@ -126,9 +127,9 @@ def setup_render(meshes, faction, asset_id=None):
     front_view = asset_id in {"apache", "harvester", "guardian", "stealthTank", "serviceBay",
                               "lightTank", "rifle", "rocket", "engineer", "power", "scout-vesper", "harvester-vesper",
                               "radar-vesper", "tech-vesper", "buggy-vesper", "factory"}
-    if asset_id in {"barracks", "barracks-vesper"}:
-        # Barracks entrances are authored on Blender -Y so the RTS camera sees
-        # them from Three.js +Z after glTF axis conversion.
+    if asset_id in {"barracks", "barracks-vesper", "bunker", "bunker-vesper"}:
+        # Barracks and bunker entrances are authored on Blender -Y so the
+        # tactical camera sees them from Three.js +Z after glTF axis conversion.
         direction = Vector((5.5, -8.0, 5.6)).normalized()
     else:
         direction = Vector((5.5, 8.0 if front_view else -8.0, 5.6)).normalized()

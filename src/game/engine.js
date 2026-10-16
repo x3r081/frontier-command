@@ -85,6 +85,7 @@ export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
 export const HARVESTER_HOME_RULES_VERSION = 77;
 export const PRODUCTION_REPEAT_RULES_VERSION = 78;
+export const GARRISON_RULES_VERSION = 79;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
 export const DOCTRINE_REPLACEMENT_COST = 1350;
@@ -214,6 +215,9 @@ export const BUILDING_DEFS = Object.freeze({
   wall: { id: 'wall', name: 'Defense Wall', cost: 60, buildTime: 3, w: 1, h: 1, health: 360, armor: 'structure', sight: 0,
     power: 0, requires: ['command'], blocksGround: true, victoryCritical: false,
     description: 'Blocks ground movement and protects nearby friendly ground units from direct fire behind it. Splash and flanking attacks bypass cover. Does not count as a base structure.' },
+  bunker: { id: 'bunker', name: 'Field Bunker', cost: 650, buildTime: 20, w: 2, h: 2, health: 800,
+    armor: 'structure', sight: 7, power: 0, requires: ['barracks'], garrisonCapacity: 3, victoryCritical: false,
+    description: 'Shelters up to three armed infantry. Garrisoned weapons gain one tile of range; flame can burn the crew through the bunker.' },
   command: { id: 'command', name: 'Construction Yard', cost: 0, buildTime: 0, w: 3, h: 3, health: 1600, armor: 'structure', sight: 7,
     power: 0, requires: [], description: 'Builds structures and anchors a base.' },
   power: { id: 'power', name: 'Power Plant', cost: 300, buildTime: 12, w: 2, h: 2, health: 560, armor: 'structure', sight: 4,
@@ -372,6 +376,7 @@ export class Game {
     this.replayVersion = replayVersion;
     this.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     this.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
+    this.garrisonRulesVersion = GARRISON_RULES_VERSION;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     this.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
@@ -1146,6 +1151,10 @@ export class Game {
       progress, queue: [], rally: { x: x + d.w / 2, y: y + d.h + 2 }, repairing: false, powered: true,
       powerStandby: false, repeatUnitDefId: null,
       cooldown: 0, facing: owner === 'player' ? -Math.PI / 4 : Math.PI * 0.75, selected: false };
+    if (defId === 'bunker') {
+      b.garrisonIds = [];
+      b.garrisonFireUntil = 0;
+    }
     this.buildings.push(b);
     this._event('buildingCreated', { id: b.id, owner, defId, x: b.x, y: b.y });
     return b;
@@ -1748,17 +1757,27 @@ export class Game {
     const target = this.getEntity(targetId);
     if (!target || target.hp <= 0 || target.owner === owner) return { ok: false, reason: 'Choose a living enemy target.' };
     if (!this.isVisible(target, owner)) return { ok: false, reason: 'Target is outside current vision.' };
+    const selectedBunkers = this.selectedBuildings.filter(building => building.owner === owner && building.hp > 0 &&
+      building.defId === 'bunker');
+    if (queue && selectedBunkers.length) return { ok: false, reason: 'Field Bunker focus fire cannot be queued.' };
     const units = this._selectedCommandUnits().filter(u => this._weaponCanTarget(UNIT_DEFS[u.defId].weapon, target));
-    if (!units.length) return { ok: false, reason: 'Selected units cannot attack.' };
+    const bunkers = selectedBunkers.filter(building => this._garrisonEnabled() && building.progress >= 1 &&
+      (building.garrisonIds || []).some(id => {
+        const crew = this.getEntity(id);
+        return crew?.hp > 0 && crew.owner === owner && crew.embarkedIn === building.id &&
+          this._isGarrisonEligibleUnit(crew) && this._weaponCanTarget(UNIT_DEFS[crew.defId]?.weapon, target);
+      }));
+    if (!units.length && !bunkers.length) return { ok: false, reason: 'Selected units cannot attack.' };
     if (queue && !this._canQueueUnitOrders(units))
       return { ok: false, reason: `A squad can queue at most ${MAX_QUEUED_ORDERS} orders.` };
     for (const u of units) this._queueOrIssueUnitOrder(u, { type: 'attack', targetId }, queue);
+    for (const bunker of bunkers) bunker._garrisonTargetId = targetId;
     if (owner === 'player' && this.mode === 'campaign' &&
       this.campaignFieldOrderId?.endsWith('-intercept') &&
       this.campaignState?.fieldOrderStatus === 'active' &&
       targetId === this.campaignState.fieldOrderTargetId)
       this.campaignState.fieldOrderEngaged = true;
-    this._event('order', { order: 'attack', queued: !!queue, ids: units.map(u => u.id), targetId });
+    this._event('order', { order: 'attack', queued: !!queue, ids: [...units.map(u => u.id), ...bunkers.map(b => b.id)], targetId });
     return { ok: true };
   }
 
@@ -1777,6 +1796,236 @@ export class Game {
     }
     this._event('order', { order: 'follow', ids: units.map(u => u.id), targetId });
     return { ok: true };
+  }
+
+  _isGarrisonEligibleUnit(unit) {
+    return !!unit && ['scout', 'rifle', 'rocket', 'flamer'].includes(unit.defId) &&
+      !!UNIT_DEFS[unit.defId]?.weapon;
+  }
+
+  _selectedCommandBunkers() {
+    const owner = this.commandOwner || 'player';
+    return this.selectedBuildings.filter(building => building.owner === owner && building.hp > 0 &&
+      building.defId === 'bunker');
+  }
+
+  _garrisonApproaches(bunker, unit, reserved = new Set()) {
+    const candidates = [];
+    const center = this._entityCenter(bunker);
+    for (let y = bunker.y - 1; y <= bunker.y + bunker.h; y++) for (let x = bunker.x - 1; x <= bunker.x + bunker.w; x++) {
+      if (x >= bunker.x && x < bunker.x + bunker.w && y >= bunker.y && y < bunker.y + bunker.h) continue;
+      if (!this._isPassable(x, y)) continue;
+      if (reserved.has(`${x},${y}`)) continue;
+      const px = x + 0.5, py = y + 0.5;
+      const path = this._findPath(unit.x, unit.y, px, py);
+      if (!path.length && dist(unit.x, unit.y, px, py) > 0.35) continue;
+      candidates.push({ x: px, y: py, score: path.length * 10 + dist(unit.x, unit.y, px, py) +
+        dist(px, py, center.x, center.y) * 0.01 });
+    }
+    return candidates.sort((a, b) => a.score - b.score || a.y - b.y || a.x - b.x);
+  }
+
+  _garrisonEgressSlots(bunker, reserved = new Set()) {
+    const slots = [];
+    const center = this._entityCenter(bunker);
+    // Search the surrounding 3-tile ring in distance order. Use perimeter
+    // tiles only so a living bunker never has units emerge through its hull.
+    for (let radius = 1; radius <= 3; radius++) {
+      for (let y = bunker.y - radius; y < bunker.y + bunker.h + radius; y++)
+        for (let x = bunker.x - radius; x < bunker.x + bunker.w + radius; x++) {
+          const onRing = x < bunker.x || x >= bunker.x + bunker.w ||
+            y < bunker.y || y >= bunker.y + bunker.h;
+          const ringDistance = Math.max(bunker.x - x, x - (bunker.x + bunker.w - 1),
+            bunker.y - y, y - (bunker.y + bunker.h - 1));
+          if (!onRing || ringDistance !== radius || !this._isPassable(x, y)) continue;
+          const key = `${x},${y}`;
+          if (reserved.has(key) || this.units.some(unit => unit.hp > 0 && !unit.embarkedIn &&
+            Math.hypot(unit.x - x - 0.5, unit.y - y - 0.5) < 0.72)) continue;
+          slots.push({ x, y, key, score: dist(x + 0.5, y + 0.5, center.x, center.y) });
+        }
+      if (slots.length) break;
+    }
+    return slots.sort((a, b) => a.score - b.score || a.y - b.y || a.x - b.x);
+  }
+
+  _evacuateBunker(bunker, emergency = false) {
+    if (!bunker || bunker.defId !== 'bunker') return false;
+    const remaining = [];
+    const reserved = new Set();
+    for (const id of bunker.garrisonIds || []) {
+      const unit = this.getEntity(id);
+      if (!unit || unit.hp <= 0 || unit.embarkedIn !== bunker.id) continue;
+      const slot = this._garrisonEgressSlots(bunker, reserved)[0];
+      if (!slot) {
+        if (emergency) {
+          unit.embarkedIn = null;
+          unit.hp = 0;
+          this._destroyEntity(unit, null, null);
+          this._event('unitGarrisonLost', { id: unit.id, bunkerId: bunker.id });
+        } else remaining.push(id);
+        continue;
+      }
+      reserved.add(slot.key);
+      unit.x = slot.x + 0.5; unit.y = slot.y + 0.5;
+      unit.embarkedIn = null;
+      unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+      unit.selected = false; this.selection = this.selection.filter(selectedId => selectedId !== unit.id);
+      if (emergency) unit.hp = Math.max(1, unit.hp * 0.5);
+      this._event('unitEvacuated', { id: unit.id, bunkerId: bunker.id,
+        x: unit.x, y: unit.y, emergency });
+    }
+    bunker.garrisonIds = remaining;
+    if (remaining.length && !emergency) bunker._garrisonEvacuating = true;
+    else delete bunker._garrisonEvacuating;
+    if (!remaining.length) delete bunker._garrisonTargetId;
+    return remaining.length === 0;
+  }
+
+  issueGarrison(buildingId) {
+    const owner = this.commandOwner || 'player';
+    if (this.status !== 'playing') return { ok: false, reason: 'The battle is over.' };
+    if (!this._garrisonEnabled()) return { ok: false, reason: `Field Bunker orders require replay version ${GARRISON_RULES_VERSION}.` };
+    const bunker = this.getEntity(buildingId);
+    if (!bunker || bunker.defId !== 'bunker' || bunker.hp <= 0 || bunker.progress < 1 || bunker.owner !== owner)
+      return { ok: false, reason: 'Choose a completed friendly Field Bunker.' };
+    const units = this._selectedCommandUnits().filter(unit => this._isGarrisonEligibleUnit(unit) && !unit.embarkedIn);
+    if (!units.length) return { ok: false, reason: 'Select armed infantry to garrison.' };
+    const reserved = this.units.filter(unit => unit.hp > 0 && !unit.embarkedIn && unit.order?.type === 'garrison' &&
+      unit.order.bunkerId === bunker.id && !units.includes(unit)).length;
+    if ((bunker.garrisonIds?.length || 0) + reserved + units.length > BUILDING_DEFS.bunker.garrisonCapacity)
+      return { ok: false, reason: 'Field Bunker has insufficient space.' };
+    const approaches = new Map();
+    const selectedIds = new Set(units.map(unit => unit.id));
+    const reservedApproaches = new Set(this.units.filter(unit => unit.hp > 0 && !unit.embarkedIn &&
+      !selectedIds.has(unit.id) && unit.order?.type === 'garrison' && unit.order.bunkerId === bunker.id &&
+      Number.isFinite(unit.order.approachX) && Number.isFinite(unit.order.approachY))
+      .map(unit => `${Math.floor(unit.order.approachX)},${Math.floor(unit.order.approachY)}`));
+    for (const unit of units) {
+      const approach = this._garrisonApproaches(bunker, unit, reservedApproaches)[0];
+      if (!approach) return { ok: false, reason: 'No reachable entrance to the Field Bunker.' };
+      approaches.set(unit.id, approach);
+      reservedApproaches.add(`${Math.floor(approach.x)},${Math.floor(approach.y)}`);
+    }
+    for (const unit of units) {
+      const approach = approaches.get(unit.id);
+      unit.order = { type: 'garrison', bunkerId: bunker.id, approachX: approach.x, approachY: approach.y };
+      unit.path = []; unit._pathGoal = null;
+    }
+    this._event('order', { order: 'garrison', ids: units.map(unit => unit.id), bunkerId: bunker.id });
+    return { ok: true };
+  }
+
+  issueEvacuateGarrison(buildingId) {
+    const owner = this.commandOwner || 'player';
+    if (this.status !== 'playing') return { ok: false, reason: 'The battle is over.' };
+    if (!this._garrisonEnabled()) return { ok: false, reason: `Field Bunker orders require replay version ${GARRISON_RULES_VERSION}.` };
+    const bunker = this.getEntity(buildingId);
+    if (!bunker || bunker.defId !== 'bunker' || bunker.hp <= 0 || bunker.owner !== owner)
+      return { ok: false, reason: 'Choose a living friendly Field Bunker.' };
+    const incoming = this.units.filter(unit => unit.hp > 0 && !unit.embarkedIn &&
+      unit.owner === owner && unit.order?.type === 'garrison' && unit.order.bunkerId === bunker.id);
+    if (!bunker.garrisonIds?.length && !incoming.length)
+      return { ok: false, reason: 'Field Bunker has no occupants or incoming infantry.' };
+    for (const unit of incoming) {
+      unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+    }
+    this._evacuateBunker(bunker, false);
+    this._event('order', { order: 'evacuateGarrison', ids: [buildingId] });
+    return { ok: true, remaining: bunker.garrisonIds.length };
+  }
+
+  _updateGarrisonOrder(unit, dt) {
+    const bunker = this.getEntity(unit.order?.bunkerId);
+    if (!this._garrisonEnabled() || !bunker || bunker.defId !== 'bunker' || bunker.hp <= 0 ||
+        bunker.owner !== unit.owner || bunker.progress < 1 || !this._isGarrisonEligibleUnit(unit) ||
+        (bunker.garrisonIds?.length || 0) >= BUILDING_DEFS.bunker.garrisonCapacity) {
+      unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+      return;
+    }
+    let approach = Number.isFinite(unit.order.approachX) && Number.isFinite(unit.order.approachY) &&
+      this._isPassable(Math.floor(unit.order.approachX), Math.floor(unit.order.approachY))
+      ? { x: unit.order.approachX, y: unit.order.approachY } : null;
+    if (!approach) {
+      approach = this._garrisonApproaches(bunker, unit)[0];
+      if (approach) { unit.order.approachX = approach.x; unit.order.approachY = approach.y; }
+    }
+    if (!approach) return;
+    if (dist(unit.x, unit.y, approach.x, approach.y) <= 0.65) {
+      if (!bunker.garrisonIds.includes(unit.id)) bunker.garrisonIds.push(unit.id);
+      unit.embarkedIn = bunker.id;
+      unit.x = bunker.x + bunker.w / 2; unit.y = bunker.y + bunker.h / 2;
+      unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+      unit.selected = false; this.selection = this.selection.filter(id => id !== unit.id);
+      this._event('unitGarrisoned', { id: unit.id, bunkerId: bunker.id });
+      return;
+    }
+    this._moveUnit(unit, approach.x, approach.y, dt, 0.05);
+  }
+
+  _updateBunkerGarrison(bunker, dt) {
+    bunker.garrisonIds = [...new Set((bunker.garrisonIds || []).filter(id => {
+      const unit = this.getEntity(id);
+      return unit?.hp > 0 && unit.owner === bunker.owner && unit.embarkedIn === bunker.id &&
+        this._isGarrisonEligibleUnit(unit);
+    }))].slice(0, BUILDING_DEFS.bunker.garrisonCapacity);
+    if (bunker._garrisonEvacuating) this._evacuateBunker(bunker, false);
+    const center = this._entityCenter(bunker);
+    for (const id of bunker.garrisonIds) {
+      const unit = this.getEntity(id);
+      if (!unit || unit.hp <= 0) continue;
+      unit.x = center.x; unit.y = center.y;
+      unit.cooldown = Math.max(0, unit.cooldown - dt);
+      const weapon = UNIT_DEFS[unit.defId]?.weapon;
+      if (!weapon || unit.stance === 'holdFire' && !bunker._garrisonTargetId) continue;
+      const effectiveRange = this._unitWeaponRange(unit, weapon) + 1;
+      let target = bunker._garrisonTargetId ? this.getEntity(bunker._garrisonTargetId) : null;
+      if (!target || target.hp <= 0 || target.owner === bunker.owner || !this.isVisible(target, bunker.owner) ||
+          !this._weaponCanTarget(weapon, target)) target = null;
+      const canShoot = candidate => {
+        if (!candidate || candidate.hp <= 0 || candidate.owner === bunker.owner ||
+            !this.isVisible(candidate, bunker.owner) || !this._weaponCanTarget(weapon, candidate)) return false;
+        const origin = this._bunkerMuzzle(bunker, candidate);
+        const targetCenter = this._entityCenter(candidate);
+        return this._distanceToEntity(origin.x, origin.y, candidate) <= effectiveRange &&
+          this._hasLineOfSight(origin.x, origin.y, targetCenter.x, targetCenter.y);
+      };
+      if (!canShoot(target)) target = this._findBunkerEnemy(bunker, weapon,
+        effectiveRange + Math.max(bunker.w, bunker.h) / 2, effectiveRange);
+      if (!target || unit.cooldown > 0) continue;
+      const targetCenter = this._entityCenter(target);
+      const muzzle = this._bunkerMuzzle(bunker, target);
+      const source = { ...unit, x: muzzle.x, y: muzzle.y, embarkedIn: null };
+      const effectStart = this.effects.length;
+      this._fireAt(source, targetCenter, weapon, target.id);
+      for (const effect of this.effects.slice(effectStart))
+        if (effect.type === 'projectile' || effect.type === 'muzzle') effect.launchHeight = 0.74;
+      unit.cooldown = source.cooldown;
+      unit.facing = source.facing;
+      bunker.garrisonFireUntil = this.time + 0.3;
+    }
+    bunker.garrisonFireUntil = Number.isFinite(bunker.garrisonFireUntil) && bunker.garrisonFireUntil > this.time
+      ? bunker.garrisonFireUntil : 0;
+  }
+
+  _bunkerMuzzle(bunker, target) {
+    const center = this._entityCenter(bunker);
+    const targetCenter = this._entityCenter(target);
+    const dx = targetCenter.x - center.x, dy = targetCenter.y - center.y;
+    const scale = 1 / Math.max(Math.abs(dx) / (bunker.w / 2), Math.abs(dy) / (bunker.h / 2), 0.001);
+    return { x: center.x + dx * scale * 1.02, y: center.y + dy * scale * 1.02 };
+  }
+
+  _findBunkerEnemy(bunker, weapon, radius, range = weapon.range + 1) {
+    const center = this._entityCenter(bunker);
+    return [...this.units, ...this.buildings].filter(entity => entity.owner !== bunker.owner && entity.hp > 0 &&
+      !entity.embarkedIn && (!('w' in entity) || entity.progress >= 1) &&
+      this._weaponCanTarget(weapon, entity) && this._canDetect({ x: center.x, y: center.y }, entity) &&
+      this.isVisible(entity, bunker.owner) && this._distanceToEntity(center.x, center.y, entity) <= radius &&
+      this._distanceToEntity(this._bunkerMuzzle(bunker, entity).x, this._bunkerMuzzle(bunker, entity).y, entity) <= range &&
+      this._hasLineOfSight(this._bunkerMuzzle(bunker, entity).x, this._bunkerMuzzle(bunker, entity).y,
+        this._entityCenter(entity).x, this._entityCenter(entity).y))
+      .sort((a, b) => this._distanceToEntity(center.x, center.y, a) - this._distanceToEntity(center.x, center.y, b) ||
+        (('w' in a ? 0.6 : 0) - ('w' in b ? 0.6 : 0)) || a.id.localeCompare(b.id))[0] || null;
   }
 
   issueBoard(carrierId) {
@@ -2025,12 +2274,15 @@ export class Game {
 
   issueStop() {
     const units = this._selectedCommandUnits();
-    if (!units.length) return { ok: false, reason: 'Select units first.' };
+    const bunkers = this.selectedBuildings.filter(building => building.owner === (this.commandOwner || 'player') &&
+      building.hp > 0 && building.defId === 'bunker' && building._garrisonTargetId);
+    if (!units.length && !bunkers.length) return { ok: false, reason: 'Select units first.' };
     for (const u of units) {
       if (u.defId === 'harvester') this._releaseHarvesterDock(u);
       u.order = { type: 'idle' }; u.path = []; u._pathGoal = null;
     }
-    this._event('order', { order: 'stop', ids: units.map(u => u.id) });
+    for (const bunker of bunkers) delete bunker._garrisonTargetId;
+    this._event('order', { order: 'stop', ids: [...units.map(u => u.id), ...bunkers.map(b => b.id)] });
     return { ok: true };
   }
 
@@ -2275,6 +2527,10 @@ export class Game {
     return this.replayVersion == null || this.replayVersion >= PRODUCTION_REPEAT_RULES_VERSION;
   }
 
+  _garrisonEnabled() {
+    return this.replayVersion == null || this.replayVersion >= GARRISON_RULES_VERSION;
+  }
+
   _productionRepeatDefinition(building, unitDefId) {
     const definition = UNIT_DEFS[unitDefId];
     return building && ['barracks', 'factory', 'helipad'].includes(building.defId) &&
@@ -2417,6 +2673,8 @@ export class Game {
   canBuild(defId, owner = 'player') {
     const d = BUILDING_DEFS[defId];
     if (!d || defId === 'command') return { ok: false, reason: 'Unknown or unavailable structure.' };
+    if (defId === 'bunker' && !this._garrisonEnabled())
+      return { ok: false, reason: `Field Bunker requires replay version ${GARRISON_RULES_VERSION}.` };
     if (d.faction && d.faction !== ownerFaction(this, owner)) return { ok: false, reason: 'Structure is unavailable to this faction.' };
     if (!this.hasBuilding(owner, 'command')) return { ok: false, reason: 'A construction yard is required.' };
     for (const req of d.requires || []) if (!this.hasBuilding(owner, req))
@@ -3247,12 +3505,21 @@ export class Game {
         owner: target.owner, wreckId: chosen.wreck.id, ttl: 0.28, maxTtl: 0.28 } };
   }
 
-  _applyDamage(target, damage, damageType, attackerOwner, sourceId = null, sourcePosition = null, areaDamage = false) {
-    if (!target || target.hp <= 0 || target.embarkedIn) return;
+  _applyDamage(target, damage, damageType, attackerOwner, sourceId = null, sourcePosition = null,
+    areaDamage = false, allowEmbarked = false) {
+    if (!target || target.hp <= 0 || target.embarkedIn && !allowEmbarked) return;
     // Campaign-only authored defenses can make a structure invulnerable until
     // its mission phase changes. Return before XP, salvage, or destruction logic.
     if (target.campaignShielded === true) return;
     if (target._campaignRecoveryUntil > this.time) return;
+    if (target.defId === 'bunker' && damageType === 'flame') {
+      for (const id of target.garrisonIds || []) {
+        const crew = this.getEntity(id);
+        if (crew?.hp > 0 && crew.embarkedIn === target.id)
+          this._applyDamage(crew, damage * 0.35, damageType, attackerOwner, sourceId,
+            sourcePosition, areaDamage, true);
+      }
+    }
     const armor = UNIT_DEFS[target.defId]?.armor || BUILDING_DEFS[target.defId]?.armor || 'structure';
     const wallCover = this._wallCoverProtection(target, damageType, attackerOwner, sourceId, sourcePosition, areaDamage);
     const digInCover = this._digInDamageMultiplier(target, damageType, attackerOwner, sourceId, sourcePosition,
@@ -3396,6 +3663,7 @@ export class Game {
       return;
     }
     if (UNIT_DEFS[entity.defId]?.role === 'transport') this._unloadPassengers(entity, true);
+    if (entity.defId === 'bunker') this._evacuateBunker(entity, true);
     const isBuilding = 'w' in entity;
     const center = this._entityCenter(entity);
     const unitDef = !isBuilding ? UNIT_DEFS[entity.defId] : null;
@@ -3873,12 +4141,18 @@ export class Game {
     }
     if (this.bridges.includes(target)) { u.order = { type: 'idle' }; return true; }
     if (target.owner !== u.owner && target.hp / target.maxHp <= 0.75) {
+      if (target.defId === 'bunker' && target.garrisonIds?.length) {
+        u.order = { type: 'idle' }; u.path = []; u._pathGoal = null;
+        return true;
+      }
       target.owner = u.owner; target.faction = ownerFaction(this, u.owner);
       target.hp = Math.max(target.hp, target.maxHp * 0.45);
       target.queue = [];
       target.repairing = false;
       target.powerStandby = false;
       target.repeatUnitDefId = null;
+      delete target._garrisonTargetId; delete target._garrisonEvacuating;
+      if (target.defId === 'bunker') target.garrisonFireUntil = 0;
       this._event('buildingCaptured', { id: target.id, owner: target.owner, by: u.id });
       this._refreshPower();
       u.hp = 0; this._destroyEntity(u, null, null);
@@ -3938,6 +4212,8 @@ export class Game {
     if (!target || !('w' in target) || this.bridges.includes(target) && !target.destroyed)
       return { ok: false, reason: 'Choose a damaged structure or destroyed bridge.' };
     if (target.owner !== owner && !this.isVisible(target, owner)) return { ok: false, reason: 'Target is outside current vision.' };
+    if (target.defId === 'bunker' && target.owner !== owner && target.garrisonIds?.length)
+      return { ok: false, reason: 'Clear the enemy Field Bunker before capturing it.' };
     const engineers = this._selectedCommandUnits().filter(u => u.defId === 'engineer');
     if (!engineers.length) return { ok: false, reason: 'Select an engineer.' };
     for (const u of engineers) { u.order = { type: 'engineer', targetId }; u.path = []; u._pathGoal = null; }
@@ -4315,6 +4591,10 @@ export class Game {
       this._applyDamage(u, dt * 2.6, 'ion', null, null);
     if (u.hp <= 0) return;
     const order = u.order || { type: 'idle' };
+    if (order.type === 'garrison') {
+      this._updateGarrisonOrder(u, dt);
+      return;
+    }
     if ((this.replayVersion == null || this.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION) &&
         order.type === 'digIn') {
       this._updateDigInOrder(u, weaponRange, order);
@@ -4762,6 +5042,7 @@ export class Game {
         if (b.progress >= 1) this._onBuildingComplete(b);
         continue;
       }
+      if (b.defId === 'bunker' && this._garrisonEnabled()) this._updateBunkerGarrison(b, dt);
       if (b.repairing && !(b.captureOnly && b.owner === 'enemy') && b.hp < b.maxHp &&
           this._repairCreditsAvailable(b.owner) > 0) {
         const amount = Math.min(b.maxHp - b.hp, dt * 33, this._repairCreditsAvailable(b.owner) * 3.7);
@@ -4888,6 +5169,7 @@ export class Game {
     const refund = Math.round(BUILDING_DEFS[b.defId].cost * 0.5);
     this.credits[owner] = Math.min(this.creditCapacity[owner], this.credits[owner] + refund);
     b.hp = 0; b._dead = true;
+    if (b.defId === 'bunker') this._evacuateBunker(b, true);
     this._event('buildingSold', { id: b.id, defId: b.defId, refund });
     this._refreshPower();
     return { ok: true, refund };
@@ -7997,6 +8279,11 @@ export class Game {
     const elimination = ['skirmish', 'multiplayer'].includes(this.mode) && this.victoryMode === 'elimination';
     const alive = owner => this.buildings.some(b => b.owner === owner && b.hp > 0 &&
       (elimination ? ELIMINATION_ACTIVE_BUILDINGS.has(b.defId) ||
+        b.defId === 'bunker' && (b.garrisonIds || []).some(id => {
+          const crew = this.getEntity(id);
+          return crew?.hp > 0 && crew.owner === owner && crew.embarkedIn === b.id &&
+            !!UNIT_DEFS[crew.defId]?.weapon;
+        }) ||
         !!(BUILDING_DEFS[b.defId]?.weapon && b.powered) : BUILDING_DEFS[b.defId]?.victoryCritical !== false)) ||
       this.units.some(u => u.owner === owner && u.hp > 0 &&
         (!elimination || UNIT_DEFS[u.defId]?.weapon || ['mcv', 'engineer'].includes(u.defId)));
@@ -8032,6 +8319,11 @@ export class Game {
       throw new Error('Invalid Crystalline Front save data.');
     const game = Object.create(Game.prototype);
     Object.assign(game, data);
+    // Markerless v78 saves predate Field Bunkers. Pin them before all other
+    // migrations so neither bunker commands nor bunker combat can appear.
+    if (game.replayVersion == null && data.productionRepeatRulesVersion === PRODUCTION_REPEAT_RULES_VERSION &&
+        data.garrisonRulesVersion !== GARRISON_RULES_VERSION)
+      game.replayVersion = GARRISON_RULES_VERSION - 1;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -8176,6 +8468,7 @@ export class Game {
       game.replayVersion = HARVESTER_HOME_RULES_VERSION - 1;
     game.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     game.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
+    game.garrisonRulesVersion = GARRISON_RULES_VERSION;
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     game.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
@@ -8482,6 +8775,10 @@ export class Game {
       unit._stormglassCargo = game._stormglassBloomEnabled() && unit.defId === 'harvester' &&
         Number.isFinite(unit._stormglassCargo) ? clamp(unit._stormglassCargo, 0, Math.max(0, unit.cargo || 0)) : 0;
     }
+    const savedBunkerState = new Map(game.buildings.filter(building => building.defId === 'bunker')
+      .map(building => [building.id, { garrisonIds: Array.isArray(building.garrisonIds)
+        ? [...building.garrisonIds] : [], garrisonFireUntil: building.garrisonFireUntil,
+      garrisonTargetId: building._garrisonTargetId, garrisonEvacuating: building._garrisonEvacuating === true }]));
     for (const building of game.buildings) {
       building.powerStandby = game._powerStandbyEnabled() &&
         data.powerStandbyRulesVersion === POWER_STANDBY_RULES_VERSION &&
@@ -8504,6 +8801,67 @@ export class Game {
         building.hp > 0 && building.progress >= 1
         ? game._productionRepeatDefinition(building, building.repeatUnitDefId) : null;
       building.repeatUnitDefId = repeatDefinition ? building.repeatUnitDefId : null;
+      if (building.defId === 'bunker') {
+        building.garrisonIds = [];
+        building.garrisonFireUntil = 0;
+        delete building._garrisonTargetId; delete building._garrisonEvacuating;
+      } else {
+        delete building.garrisonIds; delete building.garrisonFireUntil;
+        delete building._garrisonTargetId; delete building._garrisonEvacuating;
+      }
+    }
+    const garrisonDataEnabled = game._garrisonEnabled() &&
+      (data.garrisonRulesVersion === GARRISON_RULES_VERSION ||
+        game.replayVersion != null && game.replayVersion >= GARRISON_RULES_VERSION);
+    const assignedGarrisonUnits = new Set();
+    for (const building of game.buildings) {
+      if (building.defId !== 'bunker') continue;
+      const saved = savedBunkerState.get(building.id);
+      const source = garrisonDataEnabled && building.hp > 0 && building.progress >= 1
+        ? saved?.garrisonIds || [] : [];
+      building.garrisonIds = [];
+      for (const id of source) {
+        const unit = game.units.find(candidate => candidate.id === id);
+        if (building.garrisonIds.length >= BUILDING_DEFS.bunker.garrisonCapacity || assignedGarrisonUnits.has(id) ||
+            !unit || unit.hp <= 0 || unit.owner !== building.owner || unit.embarkedIn !== building.id ||
+            !game._isGarrisonEligibleUnit(unit)) continue;
+        assignedGarrisonUnits.add(id);
+        building.garrisonIds.push(id);
+      }
+      const fireUntil = saved?.garrisonFireUntil;
+      building.garrisonFireUntil = garrisonDataEnabled && Number.isFinite(fireUntil) &&
+        fireUntil > game.time && fireUntil <= game.time + 0.3 ? fireUntil : 0;
+      const targetId = saved?.garrisonTargetId;
+      const target = typeof targetId === 'string' ? game.getEntity(targetId) : null;
+      if (garrisonDataEnabled && target && target.hp > 0 && target.owner !== building.owner &&
+          building.garrisonIds.some(id => game._weaponCanTarget(UNIT_DEFS[game.getEntity(id)?.defId]?.weapon, target)))
+        building._garrisonTargetId = targetId;
+      if (garrisonDataEnabled && saved?.garrisonEvacuating && building.garrisonIds.length)
+        building._garrisonEvacuating = true;
+    }
+    const pendingGarrisons = new Map();
+    for (const unit of game.units) {
+      if (unit.embarkedIn && game.buildings.some(building => building.id === unit.embarkedIn &&
+          building.defId === 'bunker') && !assignedGarrisonUnits.has(unit.id)) {
+        unit.embarkedIn = null;
+        unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+      }
+      if (unit.order?.type !== 'garrison') continue;
+      const order = unit.order;
+      const bunker = game.getEntity(order.bunkerId);
+      const reserved = pendingGarrisons.get(order.bunkerId) || 0;
+      const validApproach = Number.isFinite(order.approachX) && Number.isFinite(order.approachY) &&
+        game._validatePoint(order.approachX, order.approachY) &&
+        game._isPassable(Math.floor(order.approachX), Math.floor(order.approachY));
+      if (!garrisonDataEnabled || !bunker || bunker.defId !== 'bunker' || bunker.hp <= 0 || bunker.progress < 1 ||
+          bunker.owner !== unit.owner || unit.hp <= 0 || unit.embarkedIn || !game._isGarrisonEligibleUnit(unit) ||
+          !validApproach || (bunker.garrisonIds?.length || 0) + reserved >= BUILDING_DEFS.bunker.garrisonCapacity) {
+        unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+      } else {
+        pendingGarrisons.set(order.bunkerId, reserved + 1);
+        unit.order = { type: 'garrison', bunkerId: bunker.id,
+          approachX: order.approachX, approachY: order.approachY };
+      }
     }
     const activeEngineerRaid = game._aiEngineerRaidState.active;
     if (activeEngineerRaid) {

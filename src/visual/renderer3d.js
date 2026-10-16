@@ -166,7 +166,7 @@ const HIDDEN_INSTANCE_MATRIX = new THREE.Matrix4().makeTranslation(0,-10000,0);
 const BUILDING_RUIN_FAMILIES = Object.freeze({
   command:'mast',radar:'mast',tech:'mast',
   refinery:'tank',power:'tank',advancedPower:'tank',silo:'tank',
-  factory:'slab',barracks:'slab',serviceBay:'slab',helipad:'slab',vesperFactory:'slab',
+  factory:'slab',barracks:'slab',bunker:'slab',serviceBay:'slab',helipad:'slab',vesperFactory:'slab',
   turret:'mount',guardTower:'mount',aaTower:'mount',sam:'mount',obelisk:'mount',superweapon:'mount',warhead:'mount',
   wall:'wall',
 });
@@ -1319,10 +1319,10 @@ export class Renderer3D {
     const modelLoads=[];
     for (const [key,file] of Object.entries({
       command:'command-yard.glb', power:'power-plant.glb', advancedPower:'advanced-power.glb',
-      refinery:'refinery.glb', barracks:'barracks.glb', factory:'factory.glb', serviceBay:'service-bay.glb',
+      refinery:'refinery.glb', barracks:'barracks.glb', bunker:'bunker.glb', factory:'factory.glb', serviceBay:'service-bay.glb',
       silo:'crystal-silo.glb',
       vesperCommand:'vesper-command-yard.glb', vesperPower:'vesper-power-plant.glb',
-      vesperRefinery:'vesper-refinery.glb', vesperBarracks:'vesper-barracks.glb', vesperFactory:'vesper-factory.glb',
+      vesperRefinery:'vesper-refinery.glb', vesperBarracks:'vesper-barracks.glb', vesperBunker:'vesper-bunker.glb', vesperFactory:'vesper-factory.glb',
       vesperRadar:'vesper-radar-array.glb', vesperTech:'vesper-research-center.glb',
       radar:'radar-array.glb', turret:'defense-turret.glb', wall:'modular-wall.glb', obelisk:'signal-obelisk.glb',
       helipad:'helipad.glb', tech:'research-center.glb', guardTower:'aegis-watchtower.glb',
@@ -1338,7 +1338,7 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         if(['rifle','rocket'].includes(key)) gltf.scene.traverse(object=>{
@@ -3751,7 +3751,7 @@ export class Renderer3D {
     const x=Math.floor(pointerWorld.x),z=Math.floor(pointerWorld.y);
     const okay=game.canPlaceBuilding?.(placeId,x,z)?.ok??false;
     const vesperKey=game.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',
-      refinery:'vesperRefinery',barracks:'vesperBarracks',factory:'vesperFactory',
+      refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
       radar:'vesperRadar',tech:'vesperTech'}[placeId]);
     const assetVersion=this.assetVersions.get(vesperKey||placeId)||0;
     if(!this.placement||this.placement.userData.defId!==placeId||
@@ -3951,7 +3951,7 @@ export class Renderer3D {
       },undefined,err=>console.warn('Guardian tank asset unavailable; using procedural model.',err));
     }
     const vesperStructure=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',
-      refinery:'vesperRefinery',barracks:'vesperBarracks',factory:'vesperFactory',
+      refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
       radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
     const modelKey=o.defId==='guardian'&&o.faction!=='aegis'?'none':
       o.defId==='scout'&&o.faction==='vesper'?'scoutVesper':
@@ -4079,6 +4079,10 @@ export class Renderer3D {
       animation.commandGantry = authoredPart(group,
         o.faction === 'vesper' ? 'Vesper salvage signal arm' : 'Aegis construction jib');
       if (animation.commandGantry) animation.commandGantryBaseYaw = animation.commandGantry.rotation.y;
+    }
+    if (o.defId === 'bunker' && authored) {
+      animation.lights = emissiveParts(group,
+        ['Bunker firing slit 1', 'Bunker firing slit 2', 'Bunker firing slit 3']);
     }
     if (o.defId === 'barracks' && authored) {
       animation.lights = emissiveParts(group, o.faction === 'vesper'
@@ -4398,7 +4402,12 @@ export class Renderer3D {
         arm.part.rotation.z = arm.pose.z + swing * 0.025;
       }
     }
-    if (o.defId === 'command' && a.commandGantry) {
+    if (o.defId === 'bunker') {
+      // The pulse is observable fire activity, not an occupancy indicator.
+      // It also works with opponent snapshots whose crew roster is private.
+      const firing = built && Number.isFinite(o.garrisonFireUntil) && o.garrisonFireUntil > game.time;
+      lightLevel = firing ? 1.65 + 0.35 * Math.sin(time * 26 + a.phase) : 0.55;
+    } else if (o.defId === 'command' && a.commandGantry) {
       const active = built && powered;
       const sweep = active ? 0.34 : built ? 0 : 0.68;
       const rate = active ? 0.42 : 1.25;
@@ -5365,7 +5374,7 @@ export class Renderer3D {
       live.add(o.id);
       let state=this.entities.get(o.id);
       const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',
-        refinery:'vesperRefinery',barracks:'vesperBarracks',factory:'vesperFactory',
+        refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
         radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
       const assetVersion=this.assetVersions.get(assetKey||o.defId)||0;
       if(state && (state.version!==assetVersion||state.owner!==o.owner||state.faction!==o.faction)) {
@@ -5685,12 +5694,19 @@ export class Renderer3D {
     const object=(game.units||[]).find(u=>u.id===id)||(game.buildings||[]).find(b=>b.id===id);
     const building=object&&'w' in object;
     const definition=building?game.buildingDefs?.[object.defId]:game.unitDefs?.[object?.defId];
-    const range=building?definition?.weapon?.range:
+    const bunker=building&&object.defId==='bunker';
+    const crew=bunker?(object.garrisonIds||[]).map(id=>(game.units||[]).find(unit=>unit.id===id))
+      .filter(unit=>unit?.hp>0&&unit.owner===object.owner&&unit.embarkedIn===object.id):[];
+    const crewRange=bunker?Math.max(0,...crew.map(unit=>{
+      const weapon=game.unitDefs?.[unit.defId]?.weapon;
+      return weapon?(typeof game._unitWeaponRange==='function'?game._unitWeaponRange(unit,weapon):weapon.range)+1:0;
+    })):0;
+    const range=bunker?crewRange>0?crewRange+Math.min(object.w,object.h)/2:0:building?definition?.weapon?.range:
       (typeof game._unitWeaponRange==='function'
         ? game._unitWeaponRange(object,definition?.weapon)
         : unitWeaponRange(object,definition?.weapon,game.replayVersion));
     if(!object||object.owner!=='player'||!Number.isFinite(range)||range<=0||
-      object.hp<=0||object.embarkedIn||(building&&(object.progress<1||!object.powered))) {
+      object.hp<=0||object.embarkedIn||(building&&(object.progress<1||!bunker&&!object.powered))) {
       this.rangeIndicator.visible=false;
       this.armorFacingIndicator.visible=false;
       return;
@@ -6155,7 +6171,9 @@ export class Renderer3D {
           g.userData.visualProjectileOrigin={
             offsetX:muzzle?muzzle.x-start.x:0,
             offsetZ:muzzle?muzzle.z-start.z:0,
-            sourceHeight:muzzle?muzzle.y:source?source.group.position.y+(source.building?0.5:0.12):this.visualHeightAt(start.x,start.z)+0.42,
+            sourceHeight:muzzle?muzzle.y:Number.isFinite(fx.launchHeight)
+              ?this.visualHeightAt(start.x,start.z)+clamp(fx.launchHeight,0,3)
+              :source?source.group.position.y+(source.building?0.5:0.12):this.visualHeightAt(start.x,start.z)+0.42,
           };
         }
         const {offsetX,offsetZ,sourceHeight}=g.userData.visualProjectileOrigin;
@@ -6199,6 +6217,7 @@ export class Renderer3D {
         }
         const muzzle=g.userData.visualMuzzleOrigin;
         if(muzzle) g.position.set(muzzle.x,muzzle.y,muzzle.z);
+        else if(Number.isFinite(fx.launchHeight))g.position.y=this.visualHeightAt(fx.x,fx.y)+clamp(fx.launchHeight,0,3)-0.3;
         g.rotation.y=projectileYaw(g.position.x,g.position.z,muzzleTarget.x,muzzleTarget.y);
       }
       const life=g.userData.stormcallVisual

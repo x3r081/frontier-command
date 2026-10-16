@@ -6,7 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  INFANTRY_DIG_IN_RULES_VERSION, WRECK_COVER_RULES_VERSION,
+  INFANTRY_DIG_IN_RULES_VERSION, GARRISON_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -30,7 +30,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 74;
+const RANKED_SEASON = 79;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -76,9 +76,11 @@ const RANKED_SEASON = 74;
 // routing or AI policy. Comparison floors and the multiplayer season remain.
 // Version 78 adds opt-in continuous training at a selected producer. Without
 // that command, queue and AI behavior are unchanged; comparison floors stay 75.
-const CAMPAIGN_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
+// Version 79 introduces crewed Field Bunkers. The new combat option starts
+// fresh solo comparison boards and multiplayer Season 79; archives remain.
+const CAMPAIGN_SCORE_FLOOR = GARRISON_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = GARRISON_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = GARRISON_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -897,6 +899,7 @@ function projectedState(lobby, member) {
     if ('order' in entity) delete entity.order;
     delete entity.homeRefineryId;
     delete entity.repeatUnitDefId;
+    delete entity.garrisonIds;
     if ('path' in entity) entity.path = [];
     // Standby is private economy state. An opponent snapshot must not reveal
     // whether a hidden or visible building has been switched off.
@@ -1128,7 +1131,7 @@ function startMatch(lobby) {
   return true;
 }
 
-const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
+const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueGarrison', 'issueEvacuateGarrison', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
   'toggleRepair', 'setBuildingPower', 'setProductionRepeat', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'useSelectedUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
@@ -1172,6 +1175,12 @@ function command(lobby, member, message) {
       case 'issuePatrol': return game.issuePatrol(n(message.x), n(message.y));
       case 'issueFollow': return game.issueFollow(message.targetId);
       case 'issueBoard': return game.issueBoard(message.carrierId);
+      case 'issueGarrison': return typeof message.buildingId === 'string'
+        ? game.issueGarrison(message.buildingId)
+        : { ok: false, reason: 'Choose a completed friendly Field Bunker.' };
+      case 'issueEvacuateGarrison': return typeof message.buildingId === 'string'
+        ? game.issueEvacuateGarrison(message.buildingId)
+        : { ok: false, reason: 'Choose a completed friendly Field Bunker.' };
       case 'issueUnload': return game.issueUnload(n(message.x), n(message.y));
       case 'issueForceFire': return game.issueForceFire(n(message.x), n(message.y));
       case 'issueScatter': return game.issueScatter();

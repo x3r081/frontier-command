@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -46,17 +46,18 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
-  ? id === 'scout' ? 'scout-vesper'
+  ? id === 'bunker' ? 'bunker-vesper'
+    : id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
       : id === 'buggy' ? 'buggy-vesper'
-      : ['command','power','refinery','barracks','factory','radar','tech'].includes(id) ? `${id}-vesper` : id
+        : ['command','power','refinery','barracks','factory','radar','tech'].includes(id) ? `${id}-vesper` : id
   : id;
 const assetCache = new Map();
 const oreCrystal = new Image();oreCrystal.src = `${ASSET_PATH}ore-crystal.svg`;
 const fallbackSymbols = { command:'⌂', power:'ϟ', refinery:'◈', barracks:'♟', factory:'▣', radar:'◎', turret:'✦', silo:'⬡', infantry:'♟', engineer:'✚', scout:'➤', tank:'▰', artillery:'✹', harvester:'◈', aircraft:'▲' };
-const STRUCTURE_PRIORITY = Object.freeze({refinery:0,power:1,barracks:2,factory:3,wall:4,silo:5,serviceBay:6,radar:7});
+const STRUCTURE_PRIORITY = Object.freeze({refinery:0,power:1,barracks:2,bunker:3,factory:4,wall:5,silo:6,serviceBay:7,radar:8});
 const FIXED_FORCE_MISSION_IDS = new Set(['ashes-in-transit', 'after-the-dawn', 'ghost-channel', 'iron-reclaimed']);
 const STANCE_UI = Object.freeze({
   aggressive:{short:'AGGR',name:'AGGRESSIVE',icon:'✦'},
@@ -164,6 +165,7 @@ let messageQueue = [];
 let lastProductionSignature = '';
 let lastProductionTab = '';
 const pendingProductionRepeat = new Map();
+const pendingBunkerCommands = new Map();
 let activeRunId = null;
 let activeRunRecorder = null;
 let activeReplayEnvelope = null;
@@ -569,6 +571,7 @@ function advanceDeploymentIntro(now) {
 
 function assetKey(id) {
   const s = String(id).toLowerCase().replace(/[_\s]/g, '-');
+  if (s === 'bunker') return 'turret';
   if (['scout','rifle','rocket','medic','flamer'].includes(s)) return 'infantry';
   if (s === 'guardian') return 'tank';
   if (s === 'mcv') return 'mcv';
@@ -979,7 +982,13 @@ function lockFieldAbilityIds(ids,abilityId){
     fieldAbilityLocks.set(id,lock);
   }
 }
-function definitionMap(kind) { return kind === 'structures' ? (game?.buildingDefs || {}) : (game?.unitDefs || {}); }
+function definitionMap(kind) {
+  const definitions=kind==='structures'?(game?.buildingDefs||{}):(game?.unitDefs||{});
+  if(kind==='structures'&&definitions.bunker&&!garrisonRulesInGame()){
+    const visible={...definitions};delete visible.bunker;return visible;
+  }
+  return definitions;
+}
 function selectedObjects() {
   if (!game) return [];
   const ids = new Set(game.selection || []);
@@ -1051,9 +1060,12 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
     const name = game.buildingDefs?.[building.defId]?.name || keyName(building.defId);
     const health = `${Math.max(0, Math.round(building.hp / Math.max(1, building.maxHp) * 100))}% health`;
     const sector = buildingSectorLabel(building);
+    const bunker=building.defId==='bunker'&&friendly&&garrisonRulesInGame();
+    const bunkerCapacity=building.garrisonCapacity||game.buildingDefs?.bunker?.garrisonCapacity||3;
+    const crew=bunker?` · ${bunkerOccupants(building).length}/${bunkerCapacity} GARRISONED`:'';
     entries.push({ key: `building:${building.id}`, entity: building, friendly,
-      label: `${friendly ? 'Friendly' : 'Enemy'} ${name} · ${health} · ${sector}`,
-      ariaLabel: `${friendly ? 'Select friendly' : 'Center camera on visible enemy'} ${name} at sector ${sector}, ${health}` });
+      label: `${friendly ? 'Friendly' : 'Enemy'} ${name} · ${health}${crew} · ${sector}`,
+      ariaLabel: `${friendly ? 'Select friendly' : 'Center camera on visible enemy'} ${name} at sector ${sector}, ${health}${crew}` });
   }
   for (const wreck of game.wrecks || []) if (wreck.expiresAt > game.time && fogAt(wreck.x, wreck.y) === 2) {
     const factionName = wreck.faction === 'vesper' ? 'Vesper' : 'Aegis';
@@ -1154,6 +1166,11 @@ function activateBattlefieldObject(key, { additive = false } = {}) {
   }
   if (attackMoveMode === 'assignRefinery') {
     issueAssignRefineryTarget(entry.entity);
+    renderBattlefieldPicker();
+    return;
+  }
+  if(['board','bunkerAttack'].includes(attackMoveMode)){
+    issueTargetOrder(x,y,false,entry.entity);
     renderBattlefieldPicker();
     return;
   }
@@ -1279,6 +1296,54 @@ function activateGuardCommand() {
   resultMessage(game?.issueGuard?.(),'GUARD POSITION SET');
 }
 function selectedBuilding() { return selectedObjects().find(o => 'w' in o && o.owner === 'player'); }
+function garrisonRulesInGame() {
+  return !!game&&(game.replayVersion==null||game.replayVersion>=GARRISON_RULES_VERSION)&&!!game.buildingDefs?.bunker;
+}
+function garrisonRulesAvailable() {
+  return garrisonRulesInGame()&&!replayMode&&
+    typeof game.issueGarrison==='function'&&typeof game.issueEvacuateGarrison==='function';
+}
+function isFriendlyFieldBunker(building,completed=true) {
+  return !!building&&'w' in building&&building.owner==='player'&&building.defId==='bunker'&&
+    building.hp>0&&(!completed||building.progress>=1)&&garrisonRulesInGame();
+}
+function selectedFieldBunker() {
+  const selected=selectedObjects();
+  return selected.length===1&&isFriendlyFieldBunker(selected[0])?selected[0]:null;
+}
+function bunkerOccupants(building) {
+  return (building?.garrisonIds||[]).map(id=>game.getEntity?.(id)||game.units.find(unit=>unit.id===id))
+    .filter(unit=>unit&&unit.hp>0&&unit.owner===building.owner&&unit.embarkedIn===building.id);
+}
+function bunkerIncomingUnits(building) {
+  return (game?.units||[]).filter(unit=>unit.owner===building.owner&&unit.hp>0&&!unit.embarkedIn&&
+    unit.order?.type==='garrison'&&unit.order.bunkerId===building.id);
+}
+function isBunkerEligibleInfantry(unit) {
+  return !!unit&&!('w' in unit)&&unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
+    ['scout','rifle','rocket','flamer'].includes(unit.defId)&&game.unitDefs?.[unit.defId]?.armor==='infantry';
+}
+function issueBunkerCommand(buildingId,action) {
+  if(!game||paused||gameEnded||!garrisonRulesAvailable()||pendingBunkerCommands.has(buildingId))return;
+  const building=game.getEntity?.(buildingId);
+  if(!isFriendlyFieldBunker(building)){toast('FIELD BUNKER NO LONGER AVAILABLE',true);return;}
+  const method=action==='evacuate'?'issueEvacuateGarrison':'issueGarrison';
+  const result=game[method](buildingId);
+  const success=action==='evacuate'?'EVACUATION ORDERED':'INFANTRY ENTERING FIELD BUNKER';
+  if(result?.pending){
+    const token=Symbol(`bunker-${action}`);
+    pendingBunkerCommands.set(buildingId,token);
+    updateSelectionCard();
+    resultMessage(result,'','order',{
+      onAccepted:()=>updateSelectionCard(),
+      onSettled:()=>{
+        if(pendingBunkerCommands.get(buildingId)!==token)return;
+        pendingBunkerCommands.delete(buildingId);
+        updateUI(true);
+      },
+    });
+  }else if(resultMessage(result,success))updateUI(true);
+}
 function selectedProductionBuilding() {
   const selected=selectedObjects();
   const building=selected.length===1?selected[0]:null;
@@ -2801,6 +2866,8 @@ function issueContext(wx, wy, queue = false) {
   }
   if(hit?.owner==='player'&&isTroopCarrier(hit)&&own.some(o=>game.unitDefs?.[o.defId]?.armor==='infantry'))
     resultMessage(game.issueBoard(hit.id),'BOARDING CARRIER');
+  else if(isFriendlyFieldBunker(hit)&&own.some(isBunkerEligibleInfantry))
+    issueBunkerCommand(hit.id,'garrison');
   else if (hit && 'w' in hit && own.some(o=>o.defId==='engineer')) {
     const armed=own.some(o=>game.unitDefs?.[o.defId]?.weapon);
     if(armed&&hit.owner==='enemy'){
@@ -3011,10 +3078,10 @@ function issueRecommissionWreckTarget(wreck) {
   renderBattlefieldPicker();
   return accepted;
 }
-function issueTargetOrder(wx,wy,queue=false){
+function issueTargetOrder(wx,wy,queue=false,targetOverride=null){
   if(!game||!attackMoveMode||targetOrderPending)return;
   const mode=attackMoveMode, token=targetOrderToken;
-  const label=mode==='attack'?'ATTACK MOVE':keyName(mode).toUpperCase();
+  const label=mode==='attack'?'ATTACK MOVE':mode==='bunkerAttack'?'BUNKER ATTACK':keyName(mode).toUpperCase();
   const routed=['attack','forceMove','reverseMove'].includes(mode)&&routePlanMode;
   queue ||= routed;
   let result, success='', cue='order';
@@ -3046,8 +3113,16 @@ function issueTargetOrder(wx,wy,queue=false){
     result=target?game.issueFollow(target.id):{ok:false,reason:'Select a friendly unit or structure to follow.'};success='ESCORT ORDERED';
   }
   else if(mode==='board'){
-    const target=objectAt(wx,wy);
-    result=target&&isTroopCarrier(target)?game.issueBoard(target.id):{ok:false,reason:'Select a friendly troop carrier.'};success='BOARDING CARRIER';
+    const target=targetOverride||objectAt(wx,wy);
+    if(target&&isTroopCarrier(target)){result=game.issueBoard(target.id);success='BOARDING CARRIER';}
+    else if(isFriendlyFieldBunker(target)&&selectedObjects().some(isBunkerEligibleInfantry)){
+      result=game.issueGarrison(target.id);success='GARRISONING FIELD BUNKER';
+    }else result={ok:false,reason:'Choose a completed friendly troop carrier or Field Bunker.'};
+  }
+  else if(mode==='bunkerAttack'){
+    const target=targetOverride||objectAt(wx,wy);
+    result=target&&target.owner==='enemy'?game.issueAttack(target.id,queue):{ok:false,reason:'Choose a visible enemy target for the Field Bunker.'};
+    success='FIELD BUNKER TARGET SET';
   }
   else if(mode==='service'){
     const target=objectAt(wx,wy);
@@ -3995,6 +4070,9 @@ function drawSalvageDropMinimapMarker(cw,ch){
 function hasPrerequisites(def) { const req=def.prerequisites||def.requires||[]; const list=Array.isArray(req)?req:[req]; return list.every(id=>game.buildings.some(b=>b.owner==='player'&&b.defId===id)); }
 function availableForFaction(def) { if(!def.faction&&!def.factions)return true; const f=def.faction||def.factions; return Array.isArray(f)?f.includes(faction):f===faction||f==='all'; }
 function factionDescription(viewFaction,id,def) {
+  if(id==='bunker')return viewFaction==='vesper'
+    ?'A reinforced Vesper firing post. Garrison up to three armed infantry for protection and +1 weapon range. Flame penetrates the bunker and damages its crew.'
+    :'An Aegis Field Bunker protects up to three armed infantry and adds +1 weapon range. Flame penetrates the bunker and damages its crew.';
   if(viewFaction==='vesper'&&id==='refinery')return 'Converts harvested crystal into credits. Protect harvesters and keep storage available.';
   if(viewFaction==='vesper'&&id==='harvester')return 'Collects crystal and delivers it to a refinery for credits.';
   return def.description||keyName(id);
@@ -4075,6 +4153,7 @@ function updateProductionSite() {
 }
 function resetProductionRepeatControls() {
   pendingProductionRepeat.clear();
+  pendingBunkerCommands.clear();
   const select=$('#production-repeat-unit'),wrap=$('#production-repeat-controls');
   delete select.dataset.authorityKey;
   delete wrap.dataset.siteId;
@@ -4344,12 +4423,14 @@ function updateProductionScrollCue() {
 function updateAttackMoveButton(units=selectedObjects().filter(o=>!('w' in o))) {
   syncTargetingFocus();
   const producer=selectedProductionBuilding();
-  const active=producer?tab==='units':attackMoveMode==='attack'||(units.length>0&&units.every(unit=>
+  const bunker=selectedFieldBunker();
+  const active=bunker?attackMoveMode==='bunkerAttack'||!!bunker._garrisonTargetId:producer?tab==='units':attackMoveMode==='attack'||(units.length>0&&units.every(unit=>
     unit.order?.type==='move'&&unit.order.attackMove));
   const button=$('#cmd-attack');
   button.querySelector('span').textContent=producer?'▣':'⌖';
   button.lastChild.textContent=producer?'PRODUCE':'ATTACK';
-  button.title=producer?'Open unit production for the selected building':'Attack move (Shift+A)';
+  button.title=bunker?'Set a stationary Field Bunker target. Garrisoned armed infantry fire without moving.':producer?'Open unit production for the selected building':'Attack move (Shift+A)';
+  button.setAttribute('aria-label',bunker?'Set a stationary target for Field Bunker garrison':button.title);
   button.classList.toggle('active',active);
   button.setAttribute('aria-pressed',String(active));
   if(producer){
@@ -4358,6 +4439,10 @@ function updateAttackMoveButton(units=selectedObjects().filter(o=>!('w' in o))) 
     rallyButton.classList.toggle('active',targeting);
     rallyButton.setAttribute('aria-pressed',String(targeting));
   }
+}
+function startAttackTargetOrder() {
+  if(selectedFieldBunker())startTargetOrder('bunkerAttack','BUNKER ATTACK','SELECT VISIBLE ENEMY');
+  else startTargetOrder('attack','ATTACK MOVE');
 }
 function matchPaceGroundUnits(units=selectedObjects().filter(object=>!('w' in object))) {
   return units.filter(unit=>unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
@@ -4474,8 +4559,10 @@ function updateSelectionCard() {
   $('#mobile-deck-peek').textContent=`COMMAND DECK · ${String(selected.length).padStart(2,'0')} ACTIVE`;
   const units=selected.filter(o=>!('w' in o));
   const productionBuilding=selectedProductionBuilding();
-  $('#command-actions').setAttribute('aria-label',productionBuilding?'Selected production building commands':'Selected unit commands');
-  $('#command-actions').classList.toggle('production-commands',!!productionBuilding);
+  const fieldBunker=selectedFieldBunker();
+  $('#command-actions').setAttribute('aria-label',productionBuilding?'Selected production building commands':fieldBunker?'Selected Field Bunker commands':'Selected unit commands');
+  $('#command-actions').classList.toggle('production-commands',!!productionBuilding||!!fieldBunker);
+  $('#command-actions').classList.toggle('bunker-commands',!!fieldBunker);
   updateMatchPaceControl(units);
   updateRoutePlanControl(units);
   const bloomHarvesters=units.filter(unit=>unit.owner==='player'&&unit.hp>0&&unit.defId==='harvester'&&
@@ -4665,13 +4752,29 @@ function updateSelectionCard() {
     $(button).classList.toggle('active',active);
     $(button).setAttribute('aria-pressed',String(active));
   }
+  $('#cmd-board').title='Choose a friendly ground or air carrier, or a completed friendly Field Bunker for eligible infantry (L).';
+  $('#cmd-board').setAttribute('aria-label',$('#cmd-board').title);
   updateAttackMoveButton(units);
   for(const id of ['attack','move','guard','patrol','follow','stop','harvest','scatter','force','board','unload','deploy'])
     $(`#cmd-${id}`).disabled=units.length===0 || (id==='deploy'&&!units.some(unit=>unit.defId==='mcv')&&!digInUnits.length) || (id==='harvest'&&!units.some(unit=>unit.defId==='harvester')) || (id==='force'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.weapon)) || (id==='board'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.armor==='infantry')) || (id==='unload'&&!units.some(unit=>isTroopCarrier(unit)&&unit.passengerIds?.length));
   const moveButton=$('#cmd-move');
   moveButton.lastChild.textContent=productionBuilding?'RALLY':'MOVE';
   moveButton.title=productionBuilding?'Set this building’s reinforcement rally point (M)':'Force move without engaging (M or Alt+click)';
+  moveButton.setAttribute('aria-label',moveButton.title);
   if(productionBuilding){$('#cmd-attack').disabled=false;moveButton.disabled=false;}
+  if(fieldBunker){
+    const crew=bunkerOccupants(fieldBunker);
+    const incoming=bunkerIncomingUnits(fieldBunker);
+    const pending=pendingBunkerCommands.has(fieldBunker.id);
+    const armedCrew=crew.some(unit=>game.unitDefs?.[unit.defId]?.weapon);
+    $('#cmd-attack').disabled=!armedCrew||replayMode||paused;
+    $('#cmd-attack').title=armedCrew?'Set a stationary target for garrisoned infantry; the bunker will not move.':'Garrison armed infantry before setting a bunker target.';
+    $('#cmd-attack').setAttribute('aria-label','Set a stationary target for Field Bunker garrison');
+    moveButton.lastChild.textContent=pending?'WAIT…':'EVACUATE';
+    moveButton.disabled=(!crew.length&&!incoming.length)||pending||replayMode||paused;
+    moveButton.title=crew.length?'Evacuate occupants to nearby clear ground and cancel incoming garrison orders. Blocked occupants wait for space.':incoming.length?'Cancel incoming garrison orders.':'The Field Bunker is empty.';
+    moveButton.setAttribute('aria-label',moveButton.title);
+  }
   if(mobileRecommissionUnit)fieldButton.disabled=!recommissionRulesAvailable();
   else if(fieldAbilityGroup)fieldButton.disabled=paused||replayMode||(game.replayVersion!=null&&game.replayVersion<36)||
     (!!pendingFieldAbility||fieldAbilityGroup.ids.some(id=>fieldAbilityLocks.has(id)))||
@@ -4716,7 +4819,7 @@ function updateSelectionCard() {
   if(!selected.length){
     $('#cmd-repair').disabled=true;$('#cmd-repair').lastChild.textContent='REPAIR';$('#cmd-repair').title='Repair selected structure (R)';$('#cmd-repair').setAttribute('aria-label','Repair selected structure (R)');
     $('#cmd-guard').lastChild.textContent='GUARD';$('#cmd-guard').title='Guard this position (G)';$('#cmd-guard').setAttribute('aria-label','Guard this position (G)');
-    $('#selection-card').classList.remove('is-critical','has-promotion-choice','has-power-control');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;
+    $('#selection-card').classList.remove('is-critical','has-promotion-choice','has-power-control','has-bunker-roster');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;
   }
   const first=selected[0],isBuilding='w' in first,def=isBuilding?game.buildingDefs?.[first.defId]:game.unitDefs?.[first.defId];
   const hp=selected.length===1?first.hp:selected.reduce((n,u)=>n+u.hp,0),maxHp=selected.length===1?first.maxHp:selected.reduce((n,u)=>n+u.maxHp,0),pct=Math.max(0,Math.round(hp/maxHp*100));
@@ -4818,13 +4921,22 @@ function updateSelectionCard() {
     ?game.units.filter(unit=>unit.owner==='player'&&unit.defId==='harvester'&&unit.homeRefineryId===first.id).length:0;
   const bayMeta=isBuilding&&selected.length===1&&first.owner==='player'&&first.defId==='refinery'
     ?` · UNLOAD BAY ${first._unloadHarvesterId?'BUSY':'READY'}${harvesterHomeRulesAvailable()?` · HOME HARVESTERS ${assignedHarvesterCount}`:''}`:'';
+  const bunkerOccupantsNow=fieldBunker?bunkerOccupants(fieldBunker):[];
+  const bunkerCapacity=fieldBunker?(fieldBunker.garrisonCapacity||def?.garrisonCapacity||3):0;
+  const bunkerIncoming=fieldBunker?bunkerIncomingUnits(fieldBunker).length:0;
+  const bunkerMeta=fieldBunker?` · GARRISON ${bunkerOccupantsNow.length}/${bunkerCapacity}${bunkerIncoming?` · ${bunkerIncoming} INCOMING`:''}${fieldBunker._garrisonEvacuating?' · EXIT BLOCKED':''}`:'';
+  const bunkerRoster=fieldBunker?`<div class="bunker-occupant-roster" role="list" aria-label="Field Bunker occupants">${bunkerOccupantsNow.map(unit=>{
+    const unitName=game.unitDefs?.[unit.defId]?.name||keyName(unit.defId);
+    const health=Math.max(0,Math.round(unit.hp/Math.max(1,unit.maxHp)*100));
+    return `<span role="listitem" title="${unitName} · ${health}% health">${unitName}<b>${health}%</b></span>`;
+  }).join('')||'<small>NO OCCUPANTS</small>'}</div>`:'';
   const selectedGunships=selected.length===units.length?gunships:[];
   const ammoCapacity=selectedGunships.reduce((sum,unit)=>sum+game.unitDefs[unit.defId].ammoMax,0);
   const readyShots=selectedGunships.reduce((sum,unit)=>sum+Math.floor(Math.max(0,unit.ammo||0)+.001),0);
   const ammoMeta=selectedGunships.length===selected.length&&ammoCapacity>0?`AMMO ${readyShots}/${ammoCapacity} · INTEGRITY ${pct}%`:null;
   const ammoProgress=ammoCapacity?Math.min(100,Math.max(0,selectedGunships.reduce((sum,unit)=>sum+(unit.ammo||0),0)/ammoCapacity*100)):0;
   const ammoLine=ammoMeta?`<div class="ammunition-track" role="progressbar" aria-label="Gunship ammunition" aria-valuenow="${readyShots}" aria-valuemin="0" aria-valuemax="${ammoCapacity}" aria-valuetext="${readyShots} shots ready of ${ammoCapacity}"><span style="width:${ammoProgress}%"></span></div>`:'';
-  const meta=ammoMeta||((rank?`INTEGRITY ${pct}% · ${first.kills||0} KILLS · ${nextRank?`${Math.max(0,Math.ceil(nextRank.xp-(first.xp||0)))} XP TO ${nextRank.name.toUpperCase()}`:promotionName?promotionName:'MAX RANK'}`:`ARMOR INTEGRITY · ${pct}%${isBuilding&&first.queue?.length?` · ${first.queue.length} QUEUED`:''}`)+cargoMeta+bayMeta+(queuedOrders?` · ${queuedOrders} QUEUED`:''));
+  const meta=ammoMeta||((rank?`INTEGRITY ${pct}% · ${first.kills||0} KILLS · ${nextRank?`${Math.max(0,Math.ceil(nextRank.xp-(first.xp||0)))} XP TO ${nextRank.name.toUpperCase()}`:promotionName?promotionName:'MAX RANK'}`:`ARMOR INTEGRITY · ${pct}%${isBuilding&&first.queue?.length?` · ${first.queue.length} QUEUED`:''}`)+cargoMeta+bayMeta+bunkerMeta+(queuedOrders?` · ${queuedOrders} QUEUED`:''));
   const elevationBadge=elevatedAdvantage?`<small class="elevation-advantage" title="Elevated position improves sight by 1 and weapon reach by 0.5">HIGH GROUND · +1 SIGHT${unitDef?.weapon?' · +0.5 REACH':''}</small>`:'';
   const powerToggleEligible=selected.length===1&&isBuilding&&first.owner==='player'&&first.hp>0&&first.progress>=1&&Number(def?.power)<0;
   $('#selection-card').classList.toggle('has-power-control',!!powerToggleEligible);
@@ -4838,7 +4950,8 @@ function updateSelectionCard() {
   const archivedRecommission=replayMode||game.replayVersion!=null&&game.replayVersion<72;
   const ironReclaimedRestore=currentMode==='campaign'&&missionIndex===15;
   const recommissionControl=selectedEngineer?`<button class="selection-recommission${ironReclaimedRestore?' selection-recommission-iron-reclaimed':''}" type="button" data-recommission-wreck ${recommissionEnabled?'':'disabled'} aria-label="${archivedRecommission?'Recommissioning unavailable in this archived battle. Start a new battle to enable it.':ironReclaimedRestore?'Restore the marked Guardian wreck with this Engineer at the powered Field Workshop.':'Choose a compatible visible wreck to recommission. Requires a powered Field Workshop within 6 tiles and credits; takes 12 seconds.'}" title="${archivedRecommission?'Start a new battle to enable recommissioning.':!recommissionEnabled?'Recommissioning is unavailable in this battle.':ironReclaimedRestore?'Select the marked Guardian wreck · powered Field Workshop nearby · costs 520 credits · restored at 40% integrity · 12 seconds':'Select a compatible visible wreck · powered Field Workshop within 6 tiles · 40% unit cost · 12 seconds'}">${archivedRecommission?'NEW BATTLE REQUIRED':ironReclaimedRestore?'<span class="selection-recommission-desktop">RECOMMISSION WRECK</span><span class="selection-recommission-mobile">RESTORE</span>':'RECOMMISSION WRECK'}</button><small class="selection-recommission-help">${archivedRecommission?'Unavailable in this archived battle · start a new battle.':ironReclaimedRestore?'Marked Guardian · 520 credits · 40% integrity · 12s · powered Workshop.':'Restore a compatible visible vehicle at 40% health · 40% cost · 12s · powered Workshop within 6 tiles.'}</small>`:'';
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${powerControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
+  $('#selection-card').classList.toggle('has-bunker-roster',!!fieldBunker);
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${bunkerRoster}${powerControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
 }
 function placeSquadControlBar() {
   const bar=$('#mobile-squads');
@@ -6747,7 +6860,7 @@ function sendMatchCommand(command,data={}){
 function installMultiplayerCommandAdapters(target){
   const commands={
     issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueFormationMove:(x,y,formationId,movement='move',queue=false,matchPace=false)=>({x,y,formationId,movement,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
-    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issueAssignRefinery:(refineryId=null)=>({refineryId}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueDigIn:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
+    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issueAssignRefinery:(refineryId=null)=>({refineryId}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueGarrison:buildingId=>({buildingId}),issueEvacuateGarrison:buildingId=>({buildingId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueDigIn:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
     issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueRecommissionWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:(defId,producerId)=>({defId,...(producerId!==undefined?{producerId}:{})}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
@@ -7544,9 +7657,10 @@ $('#cmd-attack').addEventListener('click',()=>{
     closeBlueprintDetails();tab='units';
     document.querySelectorAll('.tab').forEach(button=>button.classList.toggle('active',button.dataset.tab===tab));
     setMobileDeckExpanded(true);updateUI(true);
-  }else startTargetOrder('attack','ATTACK MOVE');
+  }else startAttackTargetOrder();
 });
 function activateMoveOrRally(){
+  if(selectedFieldBunker()){issueBunkerCommand(selectedFieldBunker().id,'evacuate');return;}
   startTargetOrder(selectedProductionBuilding()?'rally':'forceMove',selectedProductionBuilding()?'RALLY POINT':'FORCE MOVE');
 }
 $('#cmd-move').addEventListener('click',activateMoveOrRally);
@@ -7578,7 +7692,7 @@ $('#cmd-guard').addEventListener('click',activateGuardCommand);
 $('#cmd-patrol').addEventListener('click',()=>startTargetOrder('patrol','PATROL'));
 $('#cmd-follow').addEventListener('click',()=>startTargetOrder('follow','FOLLOW','SELECT FRIENDLY TARGET'));
 $('#cmd-service').addEventListener('click',()=>startTargetOrder('service','SERVICE','SELECT FRIENDLY FIELD WORKSHOP'));
-$('#cmd-board').addEventListener('click',()=>startTargetOrder('board','BOARD','SELECT FRIENDLY CARRIER'));
+$('#cmd-board').addEventListener('click',()=>startTargetOrder('board','BOARD','SELECT FRIENDLY CARRIER OR FIELD BUNKER'));
 $('#cmd-unload').addEventListener('click',()=>startTargetOrder('unload','UNLOAD','SELECT DROP SITE'));
 $('#cmd-stop').addEventListener('click',()=>resultMessage(game?.issueStop?.()));
 $('#cmd-harvest').addEventListener('click',()=>{
@@ -7905,7 +8019,7 @@ window.addEventListener('keydown',e=>{
     !(e.shiftKey&&['KeyA','KeyS'].includes(e.code))){
     e.preventDefault();if(!e.repeat)nudgeCamera(cameraKeyDirections[e.code],.75);panKeys.add(e.code);return;
   }
-  if(e.code==='KeyA'&&e.shiftKey&&!e.repeat){e.preventDefault();panKeys.delete(e.code);startTargetOrder('attack','ATTACK MOVE');return;}
+  if(e.code==='KeyA'&&e.shiftKey&&!e.repeat){e.preventDefault();panKeys.delete(e.code);startAttackTargetOrder();return;}
   if(e.code==='KeyS'&&e.shiftKey&&!e.repeat){e.preventDefault();panKeys.delete(e.code);resultMessage(game.issueStop(),'ORDERS STOPPED');return;}
   if(e.target.closest?.('button,a,summary,[role="button"]'))return;
   if(['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.code)){
@@ -7916,7 +8030,7 @@ window.addEventListener('keydown',e=>{
   if(e.code==='KeyG')activateGuardCommand();
   if(e.code==='KeyP')startTargetOrder('patrol','PATROL');
   if(e.code==='KeyF')startTargetOrder('follow','FOLLOW','SELECT FRIENDLY TARGET');
-  if(e.code==='KeyL'&&selectedObjects().some(o=>game.unitDefs?.[o.defId]?.armor==='infantry'))startTargetOrder('board','BOARD','SELECT FRIENDLY CARRIER');
+  if(e.code==='KeyL'&&selectedObjects().some(o=>game.unitDefs?.[o.defId]?.armor==='infantry'))startTargetOrder('board','BOARD','SELECT FRIENDLY CARRIER OR FIELD BUNKER');
   if(e.code==='KeyU'&&selectedObjects().some(o=>isTroopCarrier(o)&&o.passengerIds?.length))startTargetOrder('unload','UNLOAD','SELECT DROP SITE');
   if(e.code==='KeyV')startTargetOrder('force','FORCE FIRE');
   if(e.code==='KeyM'){
