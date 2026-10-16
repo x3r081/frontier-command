@@ -44,7 +44,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'?'?rev=2':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'||id==='guardian'?'?rev=2':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
@@ -2269,10 +2269,19 @@ function centerCamera(x, y) { camera.x = x - visibleW / (2 * TILE_SIZE * camera.
 function clampCamera() {
   if (!game) return;
   const tilesW = visibleW / (TILE_SIZE * camera.zoom), tilesH = visibleH / (TILE_SIZE * camera.zoom);
+  if(renderer3d){
+    // The isometric view can look beyond the map's diorama rim. Bound its
+    // center so edge bases and units can actually be centered at every zoom.
+    camera.x=Math.max(0,Math.min(game.width,camera.x+tilesW/2))-tilesW/2;
+    camera.y=Math.max(0,Math.min(game.height,camera.y+tilesH/2))-tilesH/2;
+    return;
+  }
   camera.x = Math.max(-1, Math.min(game.width - tilesW + 1, camera.x));
   camera.y = Math.max(-1, Math.min(game.height - tilesH + 1, camera.y));
 }
 function resizeCanvases() {
+  const focus=renderer3d&&game&&playing
+    ?{x:camera.x+visibleW/(2*scale()),y:camera.y+visibleH/(2*scale())}:null;
   const rect = canvas.parentElement.getBoundingClientRect();
   dpr = Math.min(devicePixelRatio || 1, 2);
   visibleW = rect.width; visibleH = rect.height;
@@ -2282,6 +2291,7 @@ function resizeCanvases() {
   if(renderer3d)renderer3d.resize(rect.width,rect.height,dpr);
   else {canvas.width = Math.round(rect.width * dpr);canvas.height = Math.round(rect.height * dpr);ctx.setTransform(dpr,0,0,dpr,0,0);}
   octx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  if(focus){camera.x=focus.x-visibleW/(2*scale());camera.y=focus.y-visibleH/(2*scale());}
   clampCamera();
   syncRendererView();
 }
@@ -2308,7 +2318,7 @@ function refreshPointerLabel() {
   if($('#coord-label').textContent!==label)$('#coord-label').textContent=label;
 }
 function panCameraByScreen(dx,dy) {
-  if(renderer3d){const c=toWorld(visibleW/2,visibleH/2),shifted=toWorld(visibleW/2-dx,visibleH/2-dy);camera.x+=shifted.x-c.x;camera.y+=shifted.y-c.y;}
+  if(renderer3d){syncRendererView();const delta=renderer3d.screenDeltaToWorld(-dx,-dy);camera.x+=delta.x;camera.y+=delta.y;}
   else{camera.x-=dx/scale();camera.y-=dy/scale();}
   clampCamera();syncRendererView();
 }
@@ -3799,6 +3809,13 @@ function placeSquadControlBar() {
   }
 }
 placeSquadControlBar();
+function setSquadControlsExpanded(expanded){
+  const toggle=$('#mobile-squads-toggle');
+  $('#mobile-squads').dataset.expanded=String(expanded);
+  toggle.setAttribute('aria-expanded',String(expanded));
+  toggle.setAttribute('aria-label',`${expanded?'Collapse':'Expand'} squad controls`);
+  toggle.querySelector('.mobile-squads-chevron').textContent=expanded?'⌃':'⌄';
+}
 function updateMobileSquads() {
   if(!game)return;
   const livingIds=new Set([...game.units,...game.buildings].filter(entity=>entity.hp>0).map(entity=>entity.id));
@@ -3814,7 +3831,7 @@ function updateMobileSquads() {
     recall.querySelector('span').textContent=ids.length?String(ids.length):'—';
     recall.disabled=ids.length===0;
     recall.setAttribute('aria-pressed',String(active));
-    recall.setAttribute('aria-label',ids.length?`Recall squad ${digit}, ${ids.length} ${ids.length===1?'unit':'units'}${active?', selected':''}`:`Squad ${digit} is empty`);
+    recall.setAttribute('aria-label',ids.length?`Select and center squad ${digit}, ${ids.length} ${ids.length===1?'unit':'units'}${active?', selected':''}`:`Squad ${digit} is empty`);
     assign.disabled=selected.size===0;
     assign.title=selected.size?`Assign ${selected.size} selected ${selected.size===1?'unit':'units'} to squad ${digit}`:'Select units to assign a squad';
   }
@@ -3948,6 +3965,7 @@ function updateRelayLocator() {
   const name=['WESTERN','CENTRAL','EASTERN'][index]||`RELAY ${index+1}`;
   const sectorX=Math.floor(relay.x),sectorY=Math.floor(relay.y);
   if(scoutUnknown){
+    locator.dataset.compactLabel='SCOUT RELAY';
     $('#relay-locator-text').textContent=`SCOUT ${name} RELAY · STATUS UNKNOWN · ${sectorX}//${sectorY}`;
     locator.setAttribute('aria-label',scoutReason==='opening'
       ?`Center on public ${name.toLowerCase()} relay site at sector ${sectorX} by ${sectorY}. Ownership is unknown under fog.`
@@ -3963,6 +3981,7 @@ function updateRelayLocator() {
   delete locator.dataset.scoutReason;
   const progress=Math.max(0,Math.min(100,Math.round(Math.abs(relay.progress||0)*100)));
   const contested=game._relayIsContested(relay);
+  locator.dataset.compactLabel=contested?'CONTESTED':relay.owner==='enemy'?'ENEMY RELAY':'NEUTRAL RELAY';
   const capture=contested?' · CONTESTED':relay.owner===null&&progress>0?` · ${relay.progress>0?'YOUR':'ENEMY'} ${progress}%`:'';
   const ownership=relay.owner==='enemy'?'ENEMY-HELD ':'NEUTRAL ';
   $('#relay-locator-text').textContent=`${ownership}${name} RELAY · ${sectorX}//${sectorY}${capture}`;
@@ -5667,11 +5686,15 @@ function frame(now) {
       });
     }else gameSeconds=Math.max(gameSeconds,game.time||0);
     displayTime+=dt;uiTimer+=dt;minimapTimer+=dt;
-    const panSpeed=13*dt/camera.zoom;
-    if(panKeys.has('ArrowLeft')||panKeys.has('KeyA')||panKeys.has('KeyQ')||panKeys.has('PanLeft'))camera.x-=panSpeed;
-    if(panKeys.has('ArrowRight')||panKeys.has('KeyD')||panKeys.has('PanRight'))camera.x+=panSpeed;
-    if(panKeys.has('ArrowUp')||panKeys.has('KeyW')||panKeys.has('PanUp'))camera.y-=panSpeed;
-    if(panKeys.has('ArrowDown')||panKeys.has('KeyS')||panKeys.has('PanDown'))camera.y+=panSpeed;
+    const left=panKeys.has('ArrowLeft')||panKeys.has('KeyA')||panKeys.has('KeyQ')||panKeys.has('PanLeft');
+    const right=panKeys.has('ArrowRight')||panKeys.has('KeyD')||panKeys.has('PanRight');
+    const up=panKeys.has('ArrowUp')||panKeys.has('KeyW')||panKeys.has('PanUp');
+    const down=panKeys.has('ArrowDown')||panKeys.has('KeyS')||panKeys.has('PanDown');
+    const panX=Number(right)-Number(left),panY=Number(down)-Number(up);
+    if(panX||panY){
+      const distance=13*TILE_SIZE*dt/Math.max(1,Math.hypot(panX,panY));
+      panCameraByScreen(-panX*distance,-panY*distance);
+    }
     clampCamera();
     if(!replayMode&&currentMode!=='multiplayer'){
       processEvents();
@@ -6360,9 +6383,7 @@ const cameraKeyDirections={KeyW:'up',KeyA:'left',KeyS:'down',KeyD:'right',KeyQ:'
 function nudgeCamera(direction,tiles=3){
   if(!game)return;
   const [dx,dy]=cameraPanOffsets[direction];
-  camera.x+=dx*tiles/camera.zoom;
-  camera.y+=dy*tiles/camera.zoom;
-  clampCamera();
+  panCameraByScreen(-dx*tiles*TILE_SIZE,-dy*tiles*TILE_SIZE);
 }
 document.querySelectorAll('[data-camera-pan]').forEach(button=>{
   const direction=button.dataset.cameraPan;
@@ -6397,11 +6418,7 @@ $('#mobile-squads').addEventListener('click',e=>{
   const toggle=e.target.closest('#mobile-squads-toggle');
   if(toggle){
     const expanded=toggle.getAttribute('aria-expanded')==='true';
-    const nextExpanded=!expanded;
-    $('#mobile-squads').dataset.expanded=String(nextExpanded);
-    toggle.setAttribute('aria-expanded',String(nextExpanded));
-    toggle.setAttribute('aria-label',`${nextExpanded?'Collapse':'Expand'} squad assignment controls`);
-    toggle.querySelector('.mobile-squads-chevron').textContent=nextExpanded?'⌃':'⌄';
+    setSquadControlsExpanded(!expanded);
     return;
   }
   const assign=e.target.closest('[data-squad-assign]');
@@ -6418,7 +6435,12 @@ $('#mobile-squads').addEventListener('click',e=>{
     const ids=(groups[digit]||[]).filter(id=>alive.has(id));
     if(!ids.length)return;
     game.select(ids);
+    const members=selectedObjects();
+    if(members.length)centerCamera(
+      members.reduce((sum,member)=>sum+member.x+(member.w||0)/2,0)/members.length,
+      members.reduce((sum,member)=>sum+member.y+(member.h||0)/2,0)/members.length);
   }
+  if(matchMedia('(max-width: 670px) and (max-height: 719px)').matches)setSquadControlsExpanded(false);
   updateSelectionCard();
 });
 window.addEventListener('keydown',e=>{

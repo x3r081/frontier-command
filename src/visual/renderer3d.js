@@ -1802,6 +1802,15 @@ export class Renderer3D {
     this.visualHeightUniforms.uVisualHeight.value.needsUpdate=true;
   }
 
+  // Camera motion uses a fixed ground plane. Sampling the raised picking
+  // surface here would change pan speed whenever the view crosses a shelf.
+  screenDeltaToWorld(dx,dy) {
+    const p=new THREE.Vector2(dx/this.width*2,-dy/this.height*2);
+    this.raycaster.setFromCamera(p,this.camera);
+    const point=this.raycaster.ray.intersectPlane(this.groundPlane,this.tmpVec);
+    return point?{x:point.x-this.centerX,y:point.z-this.centerY}:{x:0,y:0};
+  }
+
   screenToWorld(px, py) {
     const p = new THREE.Vector2(px / this.width * 2 - 1, 1 - py / this.height * 2);
     this.raycaster.setFromCamera(p, this.camera);
@@ -3555,9 +3564,9 @@ export class Renderer3D {
     if(showFacing) {
       // Unit models face local -Z. The ring's ground-plane rotation maps the
       // chevron's +Y tip to -Z, then the entity's yaw carries it with facing.
-      const width=radius*0.82;
-      const length=radius*0.66;
-      const thickness=radius*0.20;
+      const width=radius*0.58;
+      const length=radius*0.34;
+      const thickness=radius*0.12;
       const shape=new THREE.Shape();
       shape.moveTo(-width/2,0);
       shape.lineTo(-width/2+thickness,0);
@@ -3568,13 +3577,13 @@ export class Renderer3D {
       shape.closePath();
       const backing=new THREE.Mesh(new THREE.ShapeGeometry(shape),
         new THREE.MeshBasicMaterial({color:0x07110f,side:THREE.DoubleSide,depthWrite:false,toneMapped:false}));
-      backing.position.set(0,radius*0.18,0.18);
+      backing.position.set(0,radius*0.82,0.055);
       backing.scale.setScalar(1.2);
       backing.renderOrder=6;
       const chevron=new THREE.Mesh(new THREE.ShapeGeometry(shape),
         new THREE.MeshBasicMaterial({color:faction==='aegis'?0xe9ff8a:0xffc0a7,side:THREE.DoubleSide,depthTest:false,depthWrite:false,toneMapped:false}));
       backing.material.depthTest=false;
-      chevron.position.set(0,radius*0.18,0.184);
+      chevron.position.set(0,radius*0.82,0.060);
       chevron.renderOrder=7;
       ring.userData.facingChevron=chevron;
       ring.add(backing,chevron);
@@ -3659,7 +3668,7 @@ export class Renderer3D {
   _authoredModel(o) {
     if(o.defId==='guardian'&&o.faction==='aegis'&&!this.assetModels.has('guardian')&&!this.guardianRequested) {
       this.guardianRequested=true;
-      new GLTFLoader().load('/assets/models/aegis-heavy-tank-game.glb',gltf=>{
+      new GLTFLoader().load('/assets/models/aegis-heavy-tank-game.glb?rev=2',gltf=>{
         if(!this.renderer) return;
         gltf.scene.updateMatrixWorld(true);
         this.assetModels.set('guardian',gltf.scene);
@@ -3839,16 +3848,17 @@ export class Renderer3D {
       animation.lastShotTime = -Infinity;
       animation.turretBaseZ = animation.pivot?.position.z ?? -0.035;
       animation.recoilDistance = 0.055;
-    } else if (o.defId === 'stealthTank' && authored) {
-      const turret=authoredPart(group,'Stealth turret');
+    } else if ((o.defId === 'stealthTank' || o.defId === 'guardian') && authored) {
+      const turretName=o.defId==='guardian'?'Guardian turret assembly':'Stealth turret';
+      const turret=authoredPart(group,turretName);
       if(turret?.parent===group) {
-        animation.pivot=animatedPivot(group,['Stealth turret'],
+        animation.pivot=animatedPivot(group,[turretName],
           turret.position.x,turret.position.y,turret.position.z);
         animation.aim=0;
         animation.recoil=0;
         animation.lastShotTime=-Infinity;
         animation.turretBaseZ=animation.pivot.position.z;
-        animation.recoilDistance=0.025;
+        animation.recoilDistance=o.defId==='guardian'?0.035:0.025;
       }
     } else if (o.defId === 'apache' && authored) {
       animation.pivot = animatedPivot(group,
@@ -3929,6 +3939,12 @@ export class Renderer3D {
       muzzleSocket.position.set(0, 0.055, -0.754);
       animation.pivot.add(muzzleSocket);
       animation.muzzleSocket = muzzleSocket;
+    } else if (o.defId === 'guardian' && animation.pivot) {
+      // The barrel face is authored at (0,.535,-.566), relative to the
+      // exported turret race at (0,.421,.035). No extra mesh is required.
+      muzzleSocket.position.set(0,0.114,-0.601);
+      animation.pivot.add(muzzleSocket);
+      animation.muzzleSocket=muzzleSocket;
     } else if (o.defId === 'turret' && animation.pivot) {
       muzzleSocket.position.set(0, 0.37, -1.125);
       animation.pivot.add(muzzleSocket);
@@ -4061,7 +4077,7 @@ export class Renderer3D {
         if (shard.visible) shard.scale.y = 0.28+load*0.72+0.04*Math.sin(phase);
       });
       lightLevel = 0.8 + 0.35 * Math.sin(phase);
-    } else if ((o.defId === 'lightTank' || o.defId === 'stealthTank') && a.pivot) {
+    } else if ((o.defId === 'lightTank' || o.defId === 'stealthTank' || o.defId === 'guardian') && a.pivot) {
       const shot = game.effects?.find(fx => fx.type === 'projectile' && fx.sourceId === o.id &&
         Number.isFinite(fx.tx) && Number.isFinite(fx.ty));
       if (shot) {

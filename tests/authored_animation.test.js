@@ -188,6 +188,40 @@ test('Striker turret tracks a visible projectile and recoils',async()=>{
   assert.ok(animation.pivot.position.z>-0.035,'gun assembly should recoil');
 });
 
+test('Guardian GLB keeps one complete turret assembly and an aligned barrel socket',async()=>{
+  const {group,animation}=await authoredAnimation('guardian','aegis-heavy-tank-game.glb');
+  assert.equal(animation.pivot?.children[0]?.name,'Guardian_turret_assembly');
+  assert.ok(animation.muzzleSocket,'the authored heavy barrel needs its own socket');
+  group.updateMatrixWorld(true);
+  const muzzle=animation.muzzleSocket.getWorldPosition(new THREE.Vector3());
+  assert.ok(muzzle.distanceTo(new THREE.Vector3(0,.535,-.566))<1e-6,
+    'the attached socket must meet the exported bore face without shifting the model');
+  let primitives=0;
+  group.traverse(part=>{if(part.isMesh)primitives++;});
+  assert.ok(primitives<=10,'the refreshed heavy tank must retain its material-submission budget');
+});
+
+test('Guardian weapon follows rendered shots independently of its hull',async()=>{
+  const {renderer,group,entity,animation}=await authoredAnimation('guardian','aegis-heavy-tank-game.glb');
+  group.rotation.y=-Math.PI/2;
+  const state={group,animation,building:false};
+  const game={effects:[{type:'projectile',sourceId:'u1',tx:0,ty:5}],
+    getEntity:()=>{throw new Error('animation must not inspect hidden targets');}};
+  group.updateMatrixWorld(true);
+  const original=animation.muzzleSocket.getWorldPosition(new THREE.Vector3());
+  for(let i=0;i<15;i++)renderer._animateEntity(state,entity,game,1+i/60);
+  group.updateMatrixWorld(true);
+  const firing=animation.muzzleSocket.getWorldPosition(new THREE.Vector3());
+  assert.equal(group.rotation.y,-Math.PI/2,'traverse must not turn the armored hull');
+  assert.ok(firing.distanceTo(original)>.3,'the muzzle must move with the full turret');
+  assert.ok(firing.z>.5&&Math.abs(firing.x)<.1,'the barrel should line up with the visible shot');
+  assert.ok(animation.pivot.position.z>.035,'the upper assembly should react to firing');
+  const lastAim=Math.abs(animation.aim);
+  game.effects=[];
+  renderer._animateEntity(state,entity,game,10);
+  assert.ok(Math.abs(animation.aim)<lastAim,'without a new shot the weapon settles forward');
+});
+
 test('Brace and Ghost Run get transient battlefield cues from live ability clocks',()=>{
   const renderer=Object.create(Renderer3D.prototype);
   const material=new THREE.MeshStandardMaterial();

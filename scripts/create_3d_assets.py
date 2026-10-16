@@ -1602,54 +1602,88 @@ def mobile_command_rig():
 
 
 def guardian_tank():
-    """Aegis heavy tank: broad enclosed tracks and a layered siege turret."""
+    """Low, broad Aegis siege tank with one runtime-aimable turret assembly."""
     global LOW_POLY_BEVEL
+    previous_bevel = LOW_POLY_BEVEL
     LOW_POLY_BEVEL = True
     clean(); m = palette()
-    for x in [-.31, .31]:
-        side = 1 if x > 0 else -1
-        cube("Heavy continuous tread", (x, -.02, .115), (.17, .91, .22), m["rubber"], .045)
-        for y in [-.38,-.19,0,.19,.38]:
-            cylinder("Heavy road wheel", (x+side*.093, y, .12), .067, .025,
+    # Two broad track pods establish the heavy stance. Broken upper guards
+    # reveal the wheel train, while the continuous rubber loop and grousers
+    # keep the silhouette unmistakably tracked at game scale.
+    for side in [-1, 1]:
+        x = side * .315
+        cube("Aegis rubber track loop", (x, -.005, .145), (.155, .92, .235), m["rubber"], .045)
+        for y in [-.355, -.175, .005, .185, .365]:
+            cylinder("Aegis road wheel", (side*.385, y, .145), .074, .035,
                      m["steel"], 10, (0, math.pi/2, 0))
-            cylinder("Armored wheel hub", (x+side*.11, y, .12), .029, .027,
-                     m["edge"], 8, (0, math.pi/2, 0))
-        for y in [-.43,-.33,-.23,-.13,-.03,.07,.17,.27,.37,.47]:
-            cube("Oversize tread grouser", (x, y, .232), (.186, .044, .028), m["dark"], .006)
-        cube("Segmented track skirt", (x, -.035, .265), (.18, .76, .065), m["armor"], .018)
-        for y in [-.30,-.10,.10,.30]:
-            cube("Skirt armor seam", (x+side*.094, y, .27), (.012, .022, .048), m["recess"], .003)
-    faceted_prism("Heavy chamfered chassis", [(-.29,-.45),(.29,-.45),(.36,-.30),(.36,.32),(.25,.47),(-.25,.47),(-.36,.32),(-.36,-.30)],
-                  [(-.23,-.40),(.23,-.40),(.29,-.27),(.29,.27),(.21,.39),(-.21,.39),(-.29,.27),(-.29,-.27)],
-                  .22,.38,m["armor"])
-    faceted_prism("Layered front glacis", [(-.28,.20),(.28,.20),(.25,.45),(-.25,.45)],
-                  [(-.23,.18),(.23,.18),(.19,.39),(-.19,.39)], .37,.43,m["edge"])
-    for x in [-.20,.20]:
-        cube("Glacis armor rib", (x, .29, .445), (.035, .21, .025), m["steel"], .005)
-        cube("Hull forward lamp", (x, .44, .34), (.075, .025, .033), m["accent"], .005)
-        cube("Rear cooling panel", (x, -.36, .392), (.13, .13, .023), m["recess"], .004)
-        for y in [-.40,-.37,-.34,-.31]:
-            cube("Cooling vane", (x, y, .407), (.12, .009, .009), m["steel"], .002)
-    cylinder("Turret ring", (0, -.035, .414), .245, .052, m["dark"], 12)
-    faceted_prism("Rotating heavy turret", [(-.22,-.23),(.22,-.23),(.27,-.09),(.25,.17),(.13,.30),(-.13,.30),(-.25,.17),(-.27,-.09)],
-                  [(-.18,-.19),(.18,-.19),(.22,-.06),(.19,.14),(.10,.24),(-.10,.24),(-.19,.14),(-.22,-.06)],
-                  .43,.565,m["steel"])
-    for x in [-.19,.19]:
-        faceted_prism("Turret cheek armor", [(x-.065,-.04),(x+.065,-.04),(x+.068,.20),(x-.068,.20)],
-                      [(x-.045,-.04),(x+.045,-.04),(x+.055,.17),(x-.055,.17)], .505,.605,m["armor"])
-        cube("Cheek inset", (x, .075, .614), (.055, .16, .014), m["edge"], .004)
-    cube("Turret roof spine", (0, -.055, .579), (.085, .28, .026), m["edge"], .006)
-    cylinder("Commander hatch", (-.095, -.135, .593), .071, .028, m["dark"], 10)
-    cylinder("Hatch rim", (-.095, -.135, .611), .075, .015, m["edge"], 10)
-    cube("Targeting visor", (.125, .112, .592), (.09, .074, .025), m["glass"], .005)
-    cylinder("Main cannon barrel", (0, .345, .515), .052, .38, m["dark"], 10, (math.pi/2,0,0))
-    cylinder("Barrel thermal sleeve", (0, .32, .515), .070, .20, m["edge"], 10, (math.pi/2,0,0))
-    cylinder("Muzzle brake", (0, .535, .515), .078, .058, m["steel"], 10, (math.pi/2,0,0))
-    cylinder("Recessed muzzle bore", (0, .566, .515), .038, .006, m["recess"], 10, (math.pi/2,0,0))
-    cube("Rear turret equipment bustle", (0, -.235, .52), (.32, .11, .085), m["armor"], .015)
-    consolidate_static_meshes(("Rotating heavy turret", "Main cannon barrel"))
+            cylinder("Road wheel hub", (side*.407, y, .145), .031, .018,
+                     m["steel"], 8, (0, math.pi/2, 0))
+        for y in [-.405,-.305,-.205,-.105,-.005,.095,.195,.295,.395]:
+            cube("Track grouser", (x, y, .265), (.164, .043, .026), m["dark"], .005)
+        # Three separate armor plates leave dark gaps above visible wheels.
+        for y in [-.285, .005, .295]:
+            panel = cube("Segmented track guard", (side*.365, y, .302), (.105, .245, .105), m["armor"], .025)
+            panel.rotation_euler[2] = side * math.radians(3)
+            cube("Track guard inset", (side*.421, y, .302), (.012, .145, .052), m["steel"], .006)
+
+    # Low, broad hull with a stepped front glacis and armored rear shoulders.
+    faceted_prism("Low armored hull", [(-.29,-.47),(.29,-.47),(.35,-.34),(.35,.28),(.29,.46),(-.29,.46),(-.35,.28),(-.35,-.34)],
+                  [(-.25,-.42),(.25,-.42),(.30,-.30),(.30,.23),(.24,.39),(-.24,.39),(-.30,.23),(-.30,-.30)],
+                  .235,.405,m["armor"])
+    faceted_prism("Wedge front glacis", [(-.27,.16),(.27,.16),(.24,.45),(-.24,.45)],
+                  [(-.225,.14),(.225,.14),(.185,.39),(-.185,.39)], .365,.435,m["edge"])
+    for side in [-1,1]:
+        cube("Glacis shoulder rib", (side*.19, .285, .444), (.055,.20,.022), m["steel"], .008)
+        cube("Recessed hull lamp", (side*.255, .424, .345), (.073,.018,.035), m["dark"], .006)
+        cube("Hull status aperture", (side*.255, .436, .347), (.035,.009,.014), m["steel"], .003)
+        cube("Rear heat recess", (side*.205, -.367, .406), (.16,.12,.018), m["dark"], .006)
+        for y in [-.395,-.365,-.335]:
+            cube("Rear vent fin", (side*.205,y,.418), (.125,.012,.008), m["steel"], .003)
+
+    # Everything above and including the race rotates as one named glTF node.
+    # Pivot is the center of the hull race; model forward is +Y.
+    turret_parts = []
+    turret_parts.append(cylinder("Guardian turret race", (0,-.035,.421), .245,.055, m["dark"], 12))
+    turret_parts.append(cylinder("Guardian bearing lip", (0,-.035,.452), .208,.018, m["steel"], 12))
+    turret_parts.append(faceted_prism("Aegis low siege turret",
+        [(-.245,-.235),(.245,-.235),(.285,-.10),(.265,.15),(.18,.275),(-.18,.275),(-.265,.15),(-.285,-.10)],
+        [(-.205,-.205),(.205,-.205),(.235,-.08),(.215,.12),(.145,.225),(-.145,.225),(-.215,.12),(-.235,-.08)],
+        .444,.555,m["steel"]))
+    # Deep cheek wells and oversized faceted plates protect a central cannon.
+    for side in [-1,1]:
+        lower = [(side*.105,.005),(side*.255,-.015),(side*.285,.135),(side*.205,.235),(side*.105,.205)]
+        upper = [(side*.12,.005),(side*.235,-.005),(side*.253,.125),(side*.188,.198),(side*.12,.18)]
+        if side < 0:
+            lower.reverse(); upper.reverse()
+        cheek = faceted_prism("Angular turret cheek",
+            lower, upper,
+            .49,.61,m["armor"])
+        turret_parts.append(cheek)
+        turret_parts.append(cube("Cheek shadow well", (side*.201,.103,.615), (.105,.15,.012), m["dark"], .006))
+        turret_parts.append(cube("Cheek alloy lip", (side*.201,.182,.616), (.09,.035,.012), m["edge"], .005))
+        turret_parts.append(cube("Cheek cyan aperture", (side*.201,.102,.624), (.032,.075,.008), m["glass"], .003))
+    # Broad rear bustle is integrated into the traverse assembly.
+    turret_parts.append(cube("Armored turret bustle", (0,-.205,.505), (.37,.13,.105), m["armor"], .022))
+    turret_parts.append(cube("Turret rear recess", (0,-.274,.508), (.22,.018,.045), m["dark"], .006))
+    turret_parts.append(cube("Turret roof mantlet", (0,.185,.56), (.205,.135,.082), m["armor"], .035))
+    # Preserve the established forward envelope (the bore face is y=.566).
+    turret_parts.append(cylinder("Aegis cannon barrel", (0,.35,.535), .050,.36, m["dark"], 10, (math.pi/2,0,0)))
+    turret_parts.append(cylinder("Barrel thermal sleeve", (0,.32,.535), .067,.19, m["edge"], 10, (math.pi/2,0,0)))
+    turret_parts.append(cylinder("Muzzle brake", (0,.532,.535), .074,.058, m["steel"], 10, (math.pi/2,0,0)))
+    turret_parts.append(cylinder("Recessed muzzle bore", (0,.563,.535), .037,.006, m["dark"], 10, (math.pi/2,0,0)))
+    # Useful, low sensor crown: a protected command optic and paired range apertures.
+    turret_parts.append(cylinder("Commander hatch", (-.105,-.105,.568), .064,.020, m["dark"], 10))
+    turret_parts.append(cylinder("Commander hatch rim", (-.105,-.105,.581), .071,.012, m["edge"], 10))
+    turret_parts.append(cube("Sensor crown housing", (.12,.025,.589), (.15,.16,.065), m["armor"], .018))
+    turret_parts.append(cube("Sensor shadow aperture", (.12,.111,.588), (.095,.014,.034), m["dark"], .005))
+    turret_parts.append(cube("Rangefinder cyan lens", (.12,.121,.589), (.054,.008,.017), m["glass"], .003))
+    turret_parts.append(cube("Crown armor brow", (.12,.107,.621), (.12,.025,.014), m["edge"], .005))
+
+    consolidate_static_meshes(
+        join_groups=(("Guardian turret assembly", turret_parts, (0,-.035,.421)),),
+    )
     export("aegis-heavy-tank-game")
-    LOW_POLY_BEVEL = False
+    LOW_POLY_BEVEL = previous_bevel
 
 
 def stealth_tank():
