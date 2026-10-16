@@ -11,6 +11,9 @@ export const RELAY_DOMINION_SECONDS = 90;
 export const CADET_RELAY_DOMINION_SECONDS = 120;
 export const RELAY_DOMINION_MAJORITY = 2;
 const ELIMINATION_ACTIVE_BUILDINGS = new Set(['command', 'barracks', 'factory', 'helipad', 'superweapon', 'warhead']);
+const AI_INFRASTRUCTURE_DEFENSE_ASSETS = new Set([
+  'power', 'advancedPower', 'barracks', 'serviceBay', 'radar', 'helipad', 'tech', 'superweapon', 'warhead',
+]);
 const MAX_LAST_SEEN_HOSTILE_UNITS = 96;
 const relayDominionDuration = (mode, difficulty) =>
   mode === 'skirmish' && difficulty === 'easy' ? CADET_RELAY_DOMINION_SECONDS : RELAY_DOMINION_SECONDS;
@@ -49,6 +52,7 @@ export const SIEGE_EXPANSION_RULES_VERSION = 54;
 export const AI_HARVESTER_RETREAT_RULES_VERSION = 56;
 export const AI_COUNTER_PLAN_RULES_VERSION = 59;
 export const AI_COMMAND_RECOVERY_RULES_VERSION = 62;
+export const AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION = 64;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
@@ -359,6 +363,7 @@ export class Game {
     this.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     this.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     this.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    this.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     this._aiCommandRecovery = null;
     this.salvageDrop = null;
@@ -4654,8 +4659,14 @@ export class Game {
   }
 
   _aiDefend(combatUnits) {
+    const infrastructureDefense = this.mode === 'skirmish' &&
+      (this.replayVersion == null || this.replayVersion >= AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION);
+    const infrastructure = infrastructureDefense ? this.buildings.filter(building =>
+      building.owner === 'enemy' && building.hp > 0 && building.progress >= 1 &&
+      AI_INFRASTRUCTURE_DEFENSE_ASSETS.has(building.defId)) : [];
     const assets = [...this.units, ...this.buildings].filter(e => e.owner === 'enemy' && e.hp > 0 &&
-      (e.defId === 'harvester' || ['command', 'refinery', 'factory'].includes(e.defId)));
+      (e.defId === 'harvester' || ['command', 'refinery', 'factory'].includes(e.defId)))
+      .concat(infrastructure);
     const threats = this.units.filter(u => u.owner === 'player' && u.hp > 0 &&
       this.isVisible(u, 'enemy') && (UNIT_DEFS[u.defId].weapon ||
         (this.mode === 'skirmish' && (this.replayVersion == null || this.replayVersion >= 23) && u.defId === 'medic' &&
@@ -6736,6 +6747,11 @@ export class Game {
     // Unversioned saves written before Match Pace retain their old movement rules.
     if (game.replayVersion == null && data.matchedPaceRulesVersion !== MATCHED_PACE_RULES_VERSION)
       game.replayVersion = MATCHED_PACE_RULES_VERSION - 1;
+    // Markerless skirmish saves predate infrastructure defense. Apply this
+    // after older markers so the earliest missing rule still wins.
+    if (game.mode === 'skirmish' && game.replayVersion == null &&
+        data.aiInfrastructureDefenseRulesVersion !== AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION)
+      game.replayVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6756,6 +6772,7 @@ export class Game {
     game.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     game.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     game.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    game.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     game.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     const savedRecovery = game._aiCommandRecovery;
     game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)

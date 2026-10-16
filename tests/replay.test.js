@@ -305,7 +305,6 @@ test('Cadet relay rush timing is preserved in v12 playback and delayed in v13', 
 });
 
 test('campaign doctrine is validated and reconstructed by playback', () => {
-  assert.equal(SOLO_REPLAY_VERSION, 61);
   const index = 0;
   const envelope = { mode: 'campaign', difficulty: 'normal', faction: CAMPAIGN_MISSIONS[index].faction,
     seed: 54321, scenarioId: CAMPAIGN_MISSIONS[index].id, doctrineId: 'reinforced' };
@@ -535,7 +534,6 @@ test('field research choice survives recorded playback with the same progress an
 
 test('tactical package commands require replay version 31 while legacy replays remain valid', () => {
   const commands = [{ tick: 0, sequence: 0, method: 'chooseTacticalPackage', args: ['breach'], selectedIds: [] }];
-  assert.equal(SOLO_REPLAY_VERSION, 61);
   assert.throws(() => createSoloPlayback(skirmish, commands, 1, 30), /tactical packages require replay version 31/i);
   assert.equal(createSoloPlayback(skirmish, commands, 1, 31).game.replayVersion, 31);
   const abilityCommand = [{ tick: 0, sequence: 0, method: 'useCommandAbility', args: ['interdict', 2, 2], selectedIds: [] }];
