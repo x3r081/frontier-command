@@ -2457,6 +2457,7 @@ function setRoutePlanMode(enabled){
     routePlanSelectionKey='';
     if(wasActive&&['attack','forceMove','reverseMove'].includes(attackMoveMode)){
       attackMoveMode=false;targetOrderPending=false;targetOrderToken++;hide('#attack-hint');
+      updateAttackMoveButton();
     }
   }
   const button=$('#route-plan-toggle');
@@ -2478,6 +2479,7 @@ function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   targetOrderPending=false;
   targetOrderToken++;
   attackMoveMode=mode;
+  updateAttackMoveButton();
   $('#attack-hint').innerHTML=targetOrderHint(mode,label,prompt);
   show('#attack-hint');
   toast(`${label} TARGETING ACTIVE`);
@@ -2524,12 +2526,12 @@ function issueTargetOrder(wx,wy,queue=false){
     targetOrderPending=true;
     $('#attack-hint').innerHTML=`${label} · WAITING FOR SERVER CONFIRMATION <span>·</span> ESC TO CANCEL`;
     resultMessage(result,success,cue,{
-      onAccepted:()=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,label,'SELECT NEXT DESTINATION');else{attackMoveMode=false;hide('#attack-hint');}}},
-      onSettled:ack=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(!ack?.ok){if(ack?.transportFailure){setRoutePlanMode(false);attackMoveMode=false;hide('#attack-hint');}else $('#attack-hint').innerHTML=`${label} · ORDER REJECTED · SELECT TARGET <span>·</span> ESC TO CANCEL`;}}}
+      onAccepted:()=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,label,'SELECT NEXT DESTINATION');else{attackMoveMode=false;hide('#attack-hint');updateAttackMoveButton();}}},
+      onSettled:ack=>{if(targetOrderToken===token&&attackMoveMode===mode){targetOrderPending=false;if(!ack?.ok){if(ack?.transportFailure){setRoutePlanMode(false);attackMoveMode=false;hide('#attack-hint');updateAttackMoveButton();}else $('#attack-hint').innerHTML=`${label} · ORDER REJECTED · SELECT TARGET <span>·</span> ESC TO CANCEL`;}}}
     });
   } else if(resultMessage(result,success,cue)&&targetOrderToken===token&&attackMoveMode===mode){
     if(routed&&routePlanMode)$('#attack-hint').innerHTML=targetOrderHint(mode,label,'SELECT NEXT DESTINATION');
-    else{attackMoveMode=false;hide('#attack-hint');}
+    else{attackMoveMode=false;hide('#attack-hint');updateAttackMoveButton();}
   }
 }
 function startCommandAbility(id){
@@ -2546,6 +2548,7 @@ function startCommandAbility(id){
   }
   if(placeId)cancelPlacement();else placementToken++;
   attackMoveMode=false;targetOrderPending=false;targetOrderToken++;
+  updateAttackMoveButton();
   commandAbilityToken++;commandAbilityPending=false;
   commandAbilityMode=id;
   $('#attack-hint').innerHTML=`${ability.name.toUpperCase()} · ${id==='stormcall'?'SELECT GROUND NEAR A SECURE RELAY':'SELECT TARGET'} <span>·</span> ESC TO CANCEL`;
@@ -3467,6 +3470,13 @@ function updateProductionScrollCue() {
     (tab==='support'&&list.scrollTop>3)||
     list.scrollTop+list.clientHeight>=list.scrollHeight-threshold);
 }
+function updateAttackMoveButton(units=selectedObjects().filter(o=>!('w' in o))) {
+  const active=attackMoveMode==='attack'||(units.length>0&&units.every(unit=>
+    unit.order?.type==='move'&&unit.order.attackMove));
+  const button=$('#cmd-attack');
+  button.classList.toggle('active',active);
+  button.setAttribute('aria-pressed',String(active));
+}
 function updateSelectionCard() {
   const selected=selectedObjects();
   $('#selection-count').textContent=`${String(selected.length).padStart(2,'0')} ACTIVE`;
@@ -3546,6 +3556,7 @@ function updateSelectionCard() {
     $(button).classList.toggle('active',active);
     $(button).setAttribute('aria-pressed',String(active));
   }
+  updateAttackMoveButton(units);
   for(const id of ['attack','move','guard','patrol','follow','stop','harvest','scatter','force','board','unload','deploy'])
     $(`#cmd-${id}`).disabled=units.length===0 || (id==='deploy'&&!units.some(unit=>unit.defId==='mcv')) || (id==='harvest'&&!units.some(unit=>unit.defId==='harvester')) || (id==='force'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.weapon)) || (id==='board'&&!units.some(unit=>game.unitDefs?.[unit.defId]?.armor==='infantry')) || (id==='unload'&&!units.some(unit=>isTroopCarrier(unit)&&unit.passengerIds?.length));
   if(fieldUnit)fieldButton.disabled=!game.canUseUnitAbility?.(fieldUnit.id,fieldAbility)?.ok;
@@ -6323,7 +6334,7 @@ window.addEventListener('keydown',e=>{
     }
     return;
   }
-  if(e.key==='Escape'){if(!$('#manual').classList.contains('hidden'))closeManual();else if(!$('#setup').classList.contains('hidden'))closeSetup();else if(placeId)cancelPlacement();else if(commandAbilityMode)cancelCommandAbility();else if(attackMoveMode||routePlanMode){attackMoveMode=false;hide('#attack-hint');setRoutePlanMode(false);}else if(playing)togglePause();return;}
+  if(e.key==='Escape'){if(!$('#manual').classList.contains('hidden'))closeManual();else if(!$('#setup').classList.contains('hidden'))closeSetup();else if(placeId)cancelPlacement();else if(commandAbilityMode)cancelCommandAbility();else if(attackMoveMode||routePlanMode){attackMoveMode=false;hide('#attack-hint');setRoutePlanMode(false);updateAttackMoveButton();}else if(playing)togglePause();return;}
   if(!playing||paused||e.target.closest?.('input,select,textarea,[contenteditable="true"]'))return;
   if(['KeyW','KeyA','KeyS','KeyD','KeyQ'].includes(e.code)&&
     !(e.shiftKey&&['KeyA','KeyS'].includes(e.code))){

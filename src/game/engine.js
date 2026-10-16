@@ -2754,8 +2754,11 @@ export class Game {
       const falloff = radius > 0.5 ? clamp(1 - distance / (radius * 1.4), 0.22, 1) : 1;
       this._applyDamage(e, damage * falloff, damageType, attackerOwner, sourceId, sourcePosition, true);
     }
-    this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'explosion', x, y,
-      radius: Math.max(0.55, radius), ttl: 0.6, maxTtl: 0.6 });
+    const splashEffect={id:`fx${this._nextEffectId++}`,type:'explosion',x,y,
+      damageType,radius:Math.max(0.55,radius),ttl:0.6,maxTtl:0.6};
+    if(sourcePosition&&Number.isFinite(sourcePosition.x)&&Number.isFinite(sourcePosition.y))
+      splashEffect.impactAngle=Math.atan2(y-sourcePosition.y,x-sourcePosition.x);
+    this.effects.push(splashEffect);
   }
 
   _destroyEntity(entity, attackerOwner, sourceId) {
@@ -2864,7 +2867,9 @@ export class Game {
             if (fx.ambushStrike && hit === target) this._applyAmbushSuppression(hit, fx.sourceId);
           }
           if (hit || fx.forcePoint) this.effects.push({ id: `fx${this._nextEffectId++}`,
-            type: 'impact', x: fx.x, y: fx.y, radius: 0.3, ttl: 0.25, maxTtl: 0.25 });
+            type: 'impact', x: fx.x, y: fx.y, damageType: fx.damageType,
+            impactAngle: Math.atan2(fx.ty - fx.launchY, fx.tx - fx.launchX),
+            radius: 0.3, ttl: 0.25, maxTtl: 0.25 });
         }
       } else {
         fx.x += (fx.tx - fx.x) / distance * step;

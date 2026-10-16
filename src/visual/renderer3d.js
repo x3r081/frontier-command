@@ -4694,6 +4694,13 @@ export class Renderer3D {
     const g=new THREE.Group();
     const ion=/^(ion|nuke)$/.test(fx.type);
     const explosive=/^(explosion|impact|ion|nuke|muzzle)$/.test(fx.type);
+    const impactFamily=(fx.type==='impact'||fx.type==='explosion')?fx.damageType:null;
+    const impactColors={
+      ballistic:0xffdf9b,cannon:0xfff0bd,explosive:0xffa260,
+      ion:0x72f5ff,flame:0xff6a35,
+    };
+    const impactColor=impactColors[impactFamily];
+    g.userData.impactFamily=impactFamily||null;
     if(fx.type==='breach') {
       // A Breach Window marks a persistent assault zone. A restrained filled
       // disk keeps the whole target area readable; segmented range rings make
@@ -4870,7 +4877,7 @@ export class Renderer3D {
       const light=new THREE.PointLight(color,4.2,8);light.position.y=0.75;g.add(light);
       g.userData.stormcallVisual=true;
     } else if(explosive) {
-      const color=ion?0x85ffed:fx.type==='muzzle'?0xffdd94:0xffa260;
+      const color=ion?0x85ffed:impactColor??(fx.type==='muzzle'?0xffdd94:0xffa260);
       const core=addMesh(g,new THREE.IcosahedronGeometry(1,1),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.85,depthWrite:false}),0,0.3,0,false);
       core.userData.core=true;
       const ring=addMesh(g,new THREE.RingGeometry(0.65,0.82,32),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.65,side:THREE.DoubleSide,depthWrite:false}),0,0.08,0,false);
@@ -4882,7 +4889,9 @@ export class Renderer3D {
       if(this.quality!=='eco'&&fx.type!=='muzzle') {
         const shockStrength=this.quality==='ultra'?0.94:0.56;
         const shock=addMesh(g,new THREE.RingGeometry(0.91,0.98,32),new THREE.MeshBasicMaterial({
-          color:ion?0xc7fff5:0xffd49b,transparent:true,opacity:shockStrength,side:THREE.DoubleSide,
+          color:ion?0xc7fff5:impactFamily==='ion'?0xc7fff5:
+            impactFamily==='flame'?0xffc278:impactFamily==='cannon'?0xfff1ca:0xffd49b,
+          transparent:true,opacity:shockStrength,side:THREE.DoubleSide,
           depthWrite:false,blending:THREE.AdditiveBlending,toneMapped:false
         }),0,0.09,0,false);
         shock.rotation.x=-Math.PI/2; shock.userData.shockRing=true; shock.userData.shockStrength=shockStrength;
@@ -4898,8 +4907,10 @@ export class Renderer3D {
       const haze=addMesh(g,new THREE.SphereGeometry(0.52,10,6),new THREE.MeshBasicMaterial({color:ion?0x466776:0x494139,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide}),0,0.42,0,false);
       haze.userData.haze=true;
       const flashCore=addMesh(g,new THREE.SphereGeometry(0.36,10,7),
-        new THREE.MeshBasicMaterial({color:ion?0xc8fff4:0xffe7ae,transparent:true,opacity:0.9,depthWrite:false,toneMapped:false}),
-        0,0.36,0,false);
+        new THREE.MeshBasicMaterial({color:ion?0xc8fff4:impactFamily==='ion'?0xd4ffff:
+          impactFamily==='flame'?0xffb76a:impactFamily==='cannon'?0xffffff:0xffe7ae,
+          transparent:true,opacity:0.9,depthWrite:false,toneMapped:false}),
+        0,impactFamily==='flame'?0.48:0.36,0,false);
       flashCore.userData.flashCore=true;
       if(fx.type==='muzzle') {
         // A narrow, forward-facing plume makes the firing direction readable
@@ -4921,8 +4932,12 @@ export class Renderer3D {
         const a=i*Math.PI/3;
         // Longer shards and a rising path keep the impact readable at tactical
         // zoom while reusing the same six meshes and existing effect lifetime.
-        const spark=box(g,new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.78,depthWrite:false}),0.035,0.04,0.42,Math.cos(a)*0.62,0.27,Math.sin(a)*0.62);
-        spark.rotation.y=a+Math.PI/2;spark.castShadow=false;spark.userData.spark=true;spark.userData.angle=a;
+        const angle=impactFamily==='cannon'&&Number.isFinite(fx.impactAngle)
+          ?fx.impactAngle+[-0.68,-0.43,-0.19,0.19,0.43,0.68][i]
+          :impactFamily==='ion'?a+(i%2===0?0.18:-0.14):a;
+        const spark=box(g,new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.78,depthWrite:false}),0.035,0.04,0.42,Math.cos(angle)*0.62,0.27,Math.sin(angle)*0.62);
+        spark.rotation.y=angle+Math.PI/2;spark.castShadow=false;
+        spark.userData.spark=true;spark.userData.angle=angle;spark.userData.profile=impactFamily;
       }
       if(ion) {
         const shaft=addMesh(g,new THREE.CylinderGeometry(0.11,0.34,5.5,10),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.47,depthWrite:false}),0,2.8,0,false);
@@ -4989,8 +5004,16 @@ export class Renderer3D {
     for(const fx of game.effects||[]) {
       live.add(fx.id);
       let g=this.effects.get(fx.id);
+      const visualSignature=`${fx.type}|${fx.damageType||''}|${Number.isFinite(fx.impactAngle)?Math.round(fx.impactAngle*10000):''}`;
+      if(g&&g.userData.visualSignature!==visualSignature) {
+        this.effectGroup.remove(g);
+        g.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});
+        this.effects.delete(fx.id);
+        g=null;
+      }
       if(!g) {
         g=this._makeEffect(fx); this.effects.set(fx.id,g);
+        g.userData.visualSignature=visualSignature;
         if(g.userData.stormcallVisual) {
           g.userData.stormcallStart=time;
           g.userData.stormcallUntil=time+1.05;
@@ -5135,14 +5158,16 @@ export class Renderer3D {
         }
         if(o.userData.shockRing) {
           const age=1-life;
-          o.scale.setScalar(0.62+age*1.8);
+          const radialExpansion=g.userData.impactFamily==='explosive'?2.35:1.8;
+          o.scale.setScalar(0.62+age*radialExpansion);
           o.material.opacity=o.userData.shockStrength*Math.max(0,1-age*1.35)*life;
         }
         if(o.userData.impactDustWave) {
           const age=1-life;
           // Keep the charcoal edge just outside the brighter shock front at
           // every age instead of letting the early flash cover it entirely.
-          o.scale.setScalar(0.64+age*1.95);
+          const radialExpansion=g.userData.impactFamily==='explosive'?2.35:1.95;
+          o.scale.setScalar(0.64+age*radialExpansion);
           o.material.opacity=0.58*Math.sin(Math.PI*Math.min(0.99,age))*life;
         }
         if(o.userData.wallCoverRing) {
@@ -5198,8 +5223,10 @@ export class Renderer3D {
           (o.userData.shaft?0.42:o.userData.ring?0.62:0.85)*life;
         if(o.userData.spark) {
           const age=1-life;
-          const distance=0.22+age*0.82;
-          o.position.set(Math.cos(o.userData.angle)*distance,0.18+age*0.58+Math.sin(age*Math.PI)*0.16,
+          const profile=o.userData.profile;
+          const distance=profile==='ion'?0.22+age*0.55:profile==='flame'?0.22+age*0.42:0.22+age*0.82;
+          const rise=profile==='flame'?0.18+age*0.98:0.18+age*0.58;
+          o.position.set(Math.cos(o.userData.angle)*distance,rise+Math.sin(age*Math.PI)*(profile==='flame'?0.24:0.16),
             Math.sin(o.userData.angle)*distance);
           o.rotation.x=age*1.4;
           o.rotation.z=age*2.2;
