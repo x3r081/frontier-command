@@ -11,6 +11,7 @@ import {
   MOBILE_RALLY_RULES_VERSION,
   WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY,
   ENGINEER_FIELD_REPAIR_RULES_VERSION, ENGINEER_ESCORT_RULES_VERSION,
+  SIEGE_ANCHOR_RULES_VERSION, SIEGE_ANCHOR_SETUP_SECONDS,
 } from '../game/engine.js';
 
 // The game owns tile coordinates. This renderer only maps tile (x, y) to
@@ -272,6 +273,10 @@ function compactStaticModel(root, preserve=()=>false) {
 
 const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rifleVesper','rocket','rocketVesper','engineer','medic','flamer']);
 const ARTILLERY_MODEL_KEYS = new Set(['artillery','vesperArtillery']);
+// One arm mesh and one pad mesh are instanced per anchored crawler. The
+// geometry is shared by every unit; only the faction-tinted materials vary.
+const SIEGE_ANCHOR_ARM_GEOMETRY = new THREE.BoxGeometry(1, 0.105, 0.145);
+const SIEGE_ANCHOR_PAD_GEOMETRY = new THREE.CylinderGeometry(0.17, 0.19, 0.075, 8);
 function preserveMovingModelPart(key,object) {
   const name=object.name.replace(/_/g,' ').replace(/(\d{3})$/,'.$1');
   if(key==='medic') for(let part=object;part;part=part.parent)
@@ -4249,6 +4254,7 @@ export class Renderer3D {
         animation.lastArtilleryShotId = null;
         animation.lastShotTime = -Infinity;
         animation.recoilDistance = 0.095;
+        animation.anchorAim = 0;
       }
     } else if (o.defId === 'lightTank' && authored) {
       // The Striker GLB keeps the entire upper fighting compartment together
@@ -4709,6 +4715,19 @@ export class Renderer3D {
       }
       const age = Math.max(0,time-a.lastShotTime);
       a.pivot.position.z = -0.48 + a.recoilDistance * Math.exp(-age * 8);
+      const anchored=o.order?.type==='siegeAnchor';
+      if(anchored&&shot&&Number.isFinite(shot.tx)&&Number.isFinite(shot.ty))
+        a.anchorTargetAim=Math.atan2(-(shot.tx-o.x),-(shot.ty-o.y))-state.group.rotation.y;
+      if(anchored) {
+        const target=a.anchorTargetAim||0;
+        const delta=Math.atan2(Math.sin(target-a.anchorAim),Math.cos(target-a.anchorAim));
+        a.anchorAim+=delta*(shot?0.3:0.12);
+        a.pivot.rotation.y=a.anchorAim;
+      } else {
+        a.anchorAim=0;
+        a.anchorTargetAim=0;
+        a.pivot.rotation.y=0;
+      }
     } else if ((o.defId === 'lightTank' || o.defId === 'stealthTank' || o.defId === 'guardian') && a.pivot) {
       const shot = game.effects?.find(fx => fx.type === 'projectile' && fx.sourceId === o.id &&
         Number.isFinite(fx.tx) && Number.isFinite(fx.ty));
@@ -4953,6 +4972,7 @@ export class Renderer3D {
     if(state.dust) {this.effectGroup.remove(state.dust);state.dust.material.dispose();}
     const skeletons=new Set();
     state.group.traverse(obj=>{
+      if(obj.isInstancedMesh)obj.dispose();
       if(obj.geometry&&!obj.userData.sharedAssetGeometry)obj.geometry.dispose();
       if(obj.material)(Array.isArray(obj.material)?obj.material:[obj.material]).forEach(m=>m.dispose());
       if(obj.isSkinnedMesh&&obj.skeleton)skeletons.add(obj.skeleton);
@@ -4966,10 +4986,86 @@ export class Renderer3D {
     if(!cue) return;
     state.group.remove(cue);
     cue.traverse(object=>{
+      if(object.isInstancedMesh)object.dispose();
       if(object.geometry&&!object.userData.sharedAssetGeometry)object.geometry.dispose();
       if(object.material)(Array.isArray(object.material)?object.material:[object.material]).forEach(material=>material.dispose());
     });
     state[key]=null;
+  }
+
+  _syncSiegeAnchorVisual(state,o,game) {
+    const order=o.order?(o.order.type==='siegeAnchor'?o.order:null):o.siegeAnchor;
+    const rulesVersion=Number.isFinite(game.replayVersion)?game.replayVersion:game.siegeAnchorRulesVersion;
+    const supported=!Number.isFinite(rulesVersion)||rulesVersion>=SIEGE_ANCHOR_RULES_VERSION;
+    const active=supported&&!state.building&&o.defId==='artillery'&&o.hp>0&&!o.embarkedIn&&
+      order&&Number.isFinite(order.readyAt)&&Number.isFinite(game.time);
+    if(!active) {
+      this._disposeEntityCue(state,'siegeAnchorCue');
+      return;
+    }
+    if(!state.siegeAnchorCue) {
+      const cue=new THREE.Group();
+      const aegis=o.faction==='aegis';
+      const armMaterial=new THREE.MeshStandardMaterial({
+        color:aegis?0x6c9299:0x9f6a5d,metalness:0.62,roughness:0.43,
+      });
+      const padMaterial=new THREE.MeshStandardMaterial({
+        color:aegis?0x243c43:0x482b32,metalness:0.52,roughness:0.58,
+      });
+      const arms=new THREE.InstancedMesh(SIEGE_ANCHOR_ARM_GEOMETRY,armMaterial,4);
+      const pads=new THREE.InstancedMesh(SIEGE_ANCHOR_PAD_GEOMETRY,padMaterial,4);
+      for(const mesh of [arms,pads]) {
+        mesh.userData.sharedAssetGeometry=true;
+        mesh.frustumCulled=false;
+        mesh.castShadow=true;
+        mesh.receiveShadow=true;
+      }
+      cue.add(arms,pads);
+      cue.userData.arms=arms;
+      cue.userData.pads=pads;
+      cue.userData.dummy=new THREE.Object3D();
+      cue.userData.poseVectors={ground:new THREE.Vector3(),start:new THREE.Vector3(),
+        end:new THREE.Vector3(),delta:new THREE.Vector3(),axis:new THREE.Vector3(1,0,0)};
+      state.group.add(cue);
+      state.siegeAnchorCue=cue;
+    }
+    const cue=state.siegeAnchorCue;
+    const arms=cue.userData.arms,pads=cue.userData.pads,dummy=cue.userData.dummy;
+    const {ground,start,end,delta,axis}=cue.userData.poseVectors;
+    const progress=smooth(clamp((game.time-(order.readyAt-SIEGE_ANCHOR_SETUP_SECONDS))/SIEGE_ANCHOR_SETUP_SECONDS,0,1));
+    const facing=Number.isFinite(order.facing)?order.facing:(o.facing||0);
+    cue.rotation.y=-(facing-(o.facing||0));
+    state.group.updateMatrixWorld(true);
+    cue.updateMatrixWorld(true);
+    const halfPad=0.0375;
+    let index=0;
+    for(const sx of [-1,1]) for(const sz of [-1,1]) {
+      const baseX=sx*0.53,baseZ=sz*0.37,baseY=0.32;
+      const endX=baseX+sx*0.52*progress;
+      const endZ=baseZ+sz*0.48*progress;
+      ground.set(endX,0,endZ);
+      cue.localToWorld(ground);
+      const groundOffset=(this.visualHeightAt(ground.x,ground.z)-state.group.position.y)/
+        Math.max(0.001,state.group.scale.y)+halfPad;
+      const endY=baseY*(1-progress)+groundOffset*progress;
+      start.set(baseX,baseY,baseZ);
+      end.set(endX,endY,endZ);
+      delta.copy(end).sub(start);
+      const length=Math.max(0.001,delta.length());
+      dummy.position.copy(start).add(end).multiplyScalar(0.5);
+      dummy.quaternion.setFromUnitVectors(axis,delta.multiplyScalar(1/length));
+      dummy.scale.set(length,1,1);
+      dummy.updateMatrix();
+      arms.setMatrixAt(index,dummy.matrix);
+      dummy.position.set(endX,endY,endZ);
+      dummy.quaternion.identity();
+      dummy.scale.setScalar(1);
+      dummy.updateMatrix();
+      pads.setMatrixAt(index,dummy.matrix);
+      index++;
+    }
+    arms.instanceMatrix.needsUpdate=true;
+    pads.instanceMatrix.needsUpdate=true;
   }
 
   _makeDigInCue(o,game) {
@@ -5089,6 +5185,7 @@ export class Renderer3D {
     const animation=state.animation;
     if(!animation||state.building) return;
     this._syncEngineerRolePip(state,o,game);
+    this._syncSiegeAnchorVisual(state,o,game);
     const digOrder=o.order?.type==='digIn'?o.order:o.digIn;
     const digStart=Number(digOrder?.readyAt)-DIG_IN_SETUP_SECONDS;
     const digging=/^(rifle|rocket)$/.test(o.defId)&&digOrder&&Number.isFinite(digOrder.readyAt)&&

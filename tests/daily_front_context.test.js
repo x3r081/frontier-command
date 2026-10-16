@@ -18,4 +18,12 @@ test('Daily Front rejects a changed ticket and retains its original date through
   const restored = Game.deserialize(game.serialize());
   assert.deepEqual(dailyFrontFromCheckpoint({ dailyFront: challenge }, restored, SOLO_REPLAY_VERSION), { challenge, practice: true });
   assert.equal(dailyFrontFromCheckpoint({ dailyFront: challenge }, new Game({ seed: 7 }), SOLO_REPLAY_VERSION), null);
+  const archived=dailyFrontForDate('2026-10-16',91);
+  const oldGame=new Game({...archived.setup,mapId:archived.setup.scenarioId,replayVersion:91});
+  const oldRecovered=Game.deserialize(oldGame.serialize());
+  assert.deepEqual(dailyFrontFromCheckpoint({dailyFront:archived},oldRecovered,92),{challenge:archived,practice:true},
+    'a rules update retains the original daily practice date and setup');
+  oldRecovered.replayVersion=92;
+  assert.equal(dailyFrontFromCheckpoint({dailyFront:archived},oldRecovered,92),null,
+    'a current-rules game cannot claim the earlier daily contract');
 });

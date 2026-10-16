@@ -144,3 +144,58 @@ test('cohort activation records only existing per-unit commands in a v77 solo re
   assert.ok(playback.game.getEntity(first.id).braceUntil > 0);
   assert.ok(playback.game.getEntity(second.id).braceUntil > 0);
 });
+
+test('Siege Anchor cohort distinguishes ready, setting-up, and anchored artillery', () => {
+  const game = arena();
+  const [ready, settingUp, anchored] = addUnits(game, 'artillery', 3);
+  settingUp.order = { type: 'siegeAnchor', x: settingUp.x, y: settingUp.y,
+    facing: settingUp.facing, readyAt: game.time + 1.25 };
+  anchored.order = { type: 'siegeAnchor', x: anchored.x, y: anchored.y,
+    facing: anchored.facing, readyAt: game.time - 1 };
+  game.select([ready.id, settingUp.id, anchored.id]);
+
+  const cohort = getFieldAbilityCohort(game);
+  assert.equal(cohort.abilityId, 'siegeAnchor');
+  assert.deepEqual(cohort.readyIds, [ready.id]);
+  assert.deepEqual(cohort.settingUpIds, [settingUp.id]);
+  assert.deepEqual(cohort.anchoredIds, [anchored.id]);
+  assert.equal(cohort.action, 'release');
+  assert.deepEqual(cohort.actionIds, [settingUp.id, anchored.id]);
+
+  const result = activateSelectedUnitAbility(game, 'siegeAnchor');
+  assert.equal(result.ok, true);
+  assert.equal(result.action, 'release');
+  assert.deepEqual(result.activatedIds, [settingUp.id, anchored.id]);
+  assert.deepEqual(result.skippedIds, [ready.id]);
+  assert.equal(settingUp.order.type, 'idle');
+  assert.equal(anchored.order.type, 'idle');
+  assert.notEqual(ready.order.type, 'siegeAnchor');
+
+  const legacy = arena('aegis', 91);
+  const [archivedArtillery] = addUnits(legacy, 'artillery', 1);
+  legacy.select([archivedArtillery.id]);
+  assert.equal(legacy.canUseUnitAbility(archivedArtillery.id, 'siegeAnchor').ok, false);
+  assert.deepEqual(getFieldAbilityCohort(legacy).actionIds, []);
+});
+
+test('Siege Anchor release only clears deployed members; next group press deploys the rest', () => {
+  const game = arena();
+  const [anchored, ready] = addUnits(game, 'artillery', 2);
+  anchored.order = { type: 'siegeAnchor', x: anchored.x, y: anchored.y,
+    facing: anchored.facing, readyAt: game.time - 0.5 };
+  game.select([anchored.id, ready.id]);
+
+  const release = activateSelectedUnitAbility(game, 'siegeAnchor');
+  assert.equal(release.action, 'release');
+  assert.deepEqual(release.activatedIds, [anchored.id]);
+  assert.equal(anchored.order.type, 'idle');
+  assert.notEqual(ready.order.type, 'siegeAnchor');
+
+  const deploy = activateSelectedUnitAbility(game, 'siegeAnchor');
+  assert.equal(deploy.action, 'deploy');
+  assert.deepEqual(deploy.activatedIds, [anchored.id, ready.id]);
+  assert.equal(anchored.order.type, 'siegeAnchor');
+  assert.equal(ready.order.type, 'siegeAnchor');
+  assert.equal(anchored.order.readyAt, game.time + 2.5);
+  assert.equal(ready.order.readyAt, game.time + 2.5);
+});

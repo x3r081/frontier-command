@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, TARGET_PRIORITY_RULES_VERSION, MEDIC_ESCORT_RULES_VERSION, ENGINEER_ESCORT_RULES_VERSION, COMBAT_ESCORT_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, TARGET_PRIORITY_RULES_VERSION, MEDIC_ESCORT_RULES_VERSION, ENGINEER_ESCORT_RULES_VERSION, COMBAT_ESCORT_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, SIEGE_ANCHOR_RULES_VERSION, SIEGE_ANCHOR_SETUP_SECONDS, SIEGE_ANCHOR_RANGE_BONUS, SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, getCounterbatteryView, getDeadSignalView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -991,6 +991,7 @@ function clearPendingFieldAbility(){
   fieldAbilityLocks.clear();
 }
 function fieldAbilityStateIsApplied(unit,abilityId,time){
+  if(abilityId==='siegeAnchor')return unit?.order?.type==='siegeAnchor';
   const activeUntil=abilityId==='brace'?unit?.braceUntil:unit?.ghostRunUntil;
   return (activeUntil||0)>time||(Number(unit?.abilityCooldown)||0)>0;
 }
@@ -2519,7 +2520,7 @@ function dailyFrontStartFailed(challenge,error) {
 function restartSoloGame() {
   if(activeDailyFront){
     const {challenge,practice}=activeDailyFront;
-    if(!practice&&Date.now()>=challenge.expiresAt){returnToMenu();void openDailyFront();return;}
+    if(challenge.rulesVersion!==SOLO_REPLAY_VERSION||!practice&&Date.now()>=challenge.expiresAt){returnToMenu();void openDailyFront();return;}
     void beginDailyFront(challenge,practice);return;
   }
   void beginGame({mode:currentMode,missionIndex,difficulty,mapId:game?.mapId,
@@ -5068,13 +5069,14 @@ function updateSelectionCard() {
   reverseButton.setAttribute('aria-pressed',String(reverseActive));
   reverseButton.setAttribute('aria-label','Reverse selected armor at 65% speed while keeping its front opposite its travel direction. Shift+M.');
   const fieldUnit=units.length===1&&selected.length===1&&units[0].owner==='player'&&
-    (game.replayVersion==null||game.replayVersion>=36)&&
-    ['guardian','stealthTank'].includes(units[0].defId)?units[0]:null;
+    ((game.replayVersion==null||game.replayVersion>=36)&&['guardian','stealthTank'].includes(units[0].defId)||
+      units[0].defId==='artillery')?units[0]:null;
   const fieldAbilityCohort=getFieldAbilityCohort(game);
   const fieldAbilityGroup=fieldAbilityCohort?.ids.length>1?fieldAbilityCohort:null;
+  $('#selection-card').classList.toggle('has-siege-anchor',fieldUnit?.defId==='artillery'||fieldAbilityCohort?.abilityId==='siegeAnchor');
   const mobileRecommissionUnit=units.length===1&&selected.length===1&&units[0].owner==='player'&&
     units[0].defId==='engineer'&&matchMedia('(max-width: 670px)').matches?units[0]:null;
-  const fieldAbility=fieldUnit?.defId==='guardian'?'brace':fieldUnit?'ghostRun':null;
+  const fieldAbility=fieldUnit?.defId==='guardian'?'brace':fieldUnit?.defId==='artillery'?'siegeAnchor':fieldUnit?'ghostRun':null;
   const digInUnits=units.filter(unit=>unit.owner==='player'&&unit.hp>0&&['rifle','rocket'].includes(unit.defId));
   const digInRulesAvailable=!replayMode&&(game.replayVersion==null||game.replayVersion>=INFANTRY_DIG_IN_RULES_VERSION)&&
     typeof game.issueDigIn==='function';
@@ -5141,12 +5143,15 @@ function updateSelectionCard() {
     delete fieldButton.dataset.recommissionWreck;
     delete fieldButton.dataset.unitId;
     fieldButton.dataset.unitAbility=fieldAbilityGroup.abilityId;
+    const siegeAnchor=fieldAbilityGroup.abilityId==='siegeAnchor';
     const brace=fieldAbilityGroup.abilityId==='brace';
-    const label=brace?'BRACE':'GHOST RUN';
+    const label=siegeAnchor?'SIEGE ANCHOR':brace?'BRACE':'GHOST RUN';
     const ready=fieldAbilityGroup.readyIds.length;
     const total=fieldAbilityGroup.ids.length;
     const active=fieldAbilityGroup.activeIds.length;
     const cooling=fieldAbilityGroup.coolingIds.length;
+    const settingUp=fieldAbilityGroup.settingUpIds?.length||0;
+    const anchored=fieldAbilityGroup.anchoredIds?.length||0;
     const needsMove=fieldAbilityGroup.needsMoveIds.length;
     const activeRemaining=Math.max(0,Math.ceil(fieldAbilityGroup.activeRemaining||0));
     const nextCooldown=Math.max(0,Math.ceil(fieldAbilityGroup.nextCooldown||0));
@@ -5154,16 +5159,22 @@ function updateSelectionCard() {
     const lockedCount=lockedIds.length;
     const locked=lockedCount>0;
     const pending=!!pendingFieldAbility;
-    const abilityRulesAvailable=!replayMode&&(game.replayVersion==null||game.replayVersion>=36);
-    fieldButton.querySelector('span').textContent=brace?'⬡':'◇';
+    const abilityRulesAvailable=!replayMode&&(game.replayVersion==null||game.replayVersion>=(siegeAnchor?SIEGE_ANCHOR_RULES_VERSION:36));
+    fieldButton.querySelector('span').textContent=siegeAnchor?'⌖':brace?'⬡':'◇';
     const needsMoveOnly=fieldAbilityGroup.abilityId==='ghostRun'&&ready===0&&needsMove>0;
-    const labelText=pending?'WAITING':needsMoveOnly?'MOVE TO ARM':locked?`${brace?'BRACED':'GHOST'} ${active+lockedCount}`:
+    const labelText=pending?'WAITING':siegeAnchor?fieldAbilityGroup.action==='release'?`RELEASE ${settingUp+anchored}`:`ANCHOR ${ready}/${total}`:needsMoveOnly?'MOVE TO ARM':locked?`${brace?'BRACED':'GHOST'} ${active+lockedCount}`:
       ready?`${brace?'BRACE':'GHOST'} ${ready}/${total}`:active?`${brace?'BRACED':'GHOST'} ${activeRemaining||active}`:
         cooling?`${brace?'BRACE':'GHOST'} ${nextCooldown}`:`${brace?'BRACE':'GHOST'} 0/${total}`;
     fieldButton.lastChild.textContent=labelText;
-    fieldButton.disabled=pending||locked||!abilityRulesAvailable||(ready===0&&!needsMoveOnly);
-    fieldButton.classList.toggle('active',active>0);
+    fieldButton.disabled=pending||locked||!abilityRulesAvailable||(siegeAnchor?!fieldAbilityGroup.actionIds?.length:ready===0&&!needsMoveOnly);
+    fieldButton.classList.toggle('active',siegeAnchor?settingUp+anchored>0:active>0);
     const parts=[`${label} · ${ready}/${total} ready`];
+    if(siegeAnchor){
+      if(settingUp)parts.push(`${settingUp} setting up · ${SIEGE_ANCHOR_SETUP_SECONDS}s before firing`);
+      if(anchored)parts.push(`${anchored} anchored · +${SIEGE_ANCHOR_RANGE_BONUS} range · ${Math.round((1-SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER)*100)}% less ion-storm damage`);
+      parts.push(fieldAbilityGroup.action==='release'?'E releases units setting up or anchored; unanchored units stay put':'E deploys the selected artillery');
+      parts.push('movement or another order releases the anchor');
+    }
     if(active)parts.push(`${active} active${activeRemaining?` · ${activeRemaining}s remaining`:''}`);
     if(cooling)parts.push(`${cooling} cooling${nextCooldown?` · next in ${nextCooldown}s`:''}`);
     if(needsMove)parts.push(`${needsMove} need a move order`);
@@ -5171,29 +5182,37 @@ function updateSelectionCard() {
     else if(locked)parts.push('waiting for the confirmed state update');
     else if(!abilityRulesAvailable)parts.push('unavailable in replay or archived rules');
     else if(needsMoveOnly)parts.push('issue a move order to arm Ghost Run');
-    else if(!ready)parts.push(nextCooldown?`next ready in ${nextCooldown}s`:'no units ready');
-    else parts.push(brace?'Protect nearby armor for 7 seconds':'Move units first to arm Ghost Run; then accelerate their move while weapons are silent for 6 seconds');
+    else if(!ready&&!siegeAnchor)parts.push(nextCooldown?`next ready in ${nextCooldown}s`:'no units ready');
+    else if(!siegeAnchor)parts.push(brace?'Protect nearby armor for 7 seconds':'Move units first to arm Ghost Run; then accelerate their move while weapons are silent for 6 seconds');
     fieldButton.title=`${parts.join(' · ')} (E)`;
     fieldButton.setAttribute('aria-label',fieldButton.title);
   }else if(fieldUnit){
     delete fieldButton.dataset.recommissionWreck;
+    const siegeAnchor=fieldAbility==='siegeAnchor';
+    const anchorOrder=siegeAnchor&&fieldUnit.order?.type==='siegeAnchor'?fieldUnit.order:null;
+    const anchorSettingUp=!!anchorOrder&&(game.time||0)<(Number.isFinite(anchorOrder.readyAt)?anchorOrder.readyAt:game.time||0);
+    const anchorAnchored=!!anchorOrder&&!anchorSettingUp;
     const activeUntil=fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil;
     const active=Math.max(0,Math.ceil((activeUntil||0)-(game.time||0)));
     const cooldown=Math.max(0,Math.ceil(fieldUnit.abilityCooldown||0));
-    const label=fieldAbility==='brace'?'BRACE':'GHOST RUN';
+    const label=siegeAnchor?'SIEGE ANCHOR':fieldAbility==='brace'?'BRACE':'GHOST RUN';
     const locked=fieldAbilityLocks.has(fieldUnit.id);
     const pending=!!pendingFieldAbility;
     const canUse=game.canUseUnitAbility?.(fieldUnit.id,fieldAbility)||{ok:false,reason:'Field action unavailable.'};
+    const abilityRulesAvailable=!siegeAnchor||game.replayVersion==null||game.replayVersion>=SIEGE_ANCHOR_RULES_VERSION;
     const needsMoveAction=fieldAbility==='ghostRun'&&!canUse.ok&&/Ghost Run requires a move order\./i.test(canUse.reason||'');
     fieldButton.dataset.unitAbility=fieldAbility;
     fieldButton.dataset.unitId=fieldUnit.id;
-    fieldButton.querySelector('span').textContent=fieldAbility==='brace'?'⬡':'◇';
-    fieldButton.lastChild.textContent=pending?'WAITING':locked?`${fieldAbility==='brace'?'BRACED':'GHOST'} 1`:needsMoveAction?'MOVE TO ARM':fieldAbility==='brace'
+    fieldButton.querySelector('span').textContent=siegeAnchor?'⌖':fieldAbility==='brace'?'⬡':'◇';
+    fieldButton.lastChild.textContent=pending?'WAITING':locked?(siegeAnchor?'ANCHORING':`${fieldAbility==='brace'?'BRACED':'GHOST'} 1`):siegeAnchor?!abilityRulesAvailable?'NEW BATTLE':anchorSettingUp?'SETTING UP':anchorAnchored?'RELEASE':'ANCHOR':needsMoveAction?'MOVE TO ARM':fieldAbility==='brace'
       ?active?`BRACED ${active}`:cooldown?`BRACE ${cooldown}`:'BRACE'
       :active?`GHOST ${active}`:cooldown?`GHOST ${cooldown}`:'GHOST';
-    fieldButton.disabled=pending||locked||replayMode||paused||(!canUse.ok&&!needsMoveAction);
-    fieldButton.classList.toggle('active',active>0);
-    fieldButton.title=pending?'Waiting for field ability confirmation':locked?'Waiting for the confirmed state update':active?`${label} active · ${active}s remaining`:
+    fieldButton.disabled=pending||locked||replayMode||paused||!abilityRulesAvailable||(!canUse.ok&&!needsMoveAction);
+    fieldButton.classList.toggle('active',siegeAnchor?!!anchorOrder:active>0);
+    fieldButton.title=siegeAnchor?replayMode?'Unavailable in replay':!abilityRulesAvailable?'Unavailable in this archived battle · start a new battle to enable Siege Anchor':pending?'Waiting for Siege Anchor confirmation':locked?'Waiting for the confirmed Siege Anchor state':anchorSettingUp?`Siege Anchor setting up · ${Math.max(0,((anchorOrder.readyAt||game.time)-game.time)).toFixed(1)}s · no firing during setup · E releases`:
+      anchorAnchored?`Siege Anchor active · +${SIEGE_ANCHOR_RANGE_BONUS} weapon range · ${Math.round((1-SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER)*100)}% less ion-storm damage · movement or another order releases it · E releases`:
+        canUse.ok?`Deploy Siege Anchor · ${SIEGE_ANCHOR_SETUP_SECONDS}s setup · +${SIEGE_ANCHOR_RANGE_BONUS} weapon range · ${Math.round((1-SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER)*100)}% less ion-storm damage · movement or another order releases it (E)`:`Siege Anchor unavailable · ${canUse.reason||'Start a new battle to enable it'}`:
+      pending?'Waiting for field ability confirmation':locked?'Waiting for the confirmed state update':active?`${label} active · ${active}s remaining`:
       cooldown?`${label} cooling down · ${cooldown}s remaining`:
       needsMoveAction?'Issue a move order to arm Ghost Run (E)':canUse.ok?`${label} · ${fieldAbility==='brace'?'Protect nearby armor for 7 seconds':'Accelerate an existing move order while weapons are silent for 6 seconds'} (E)`:
         `${label} unavailable · ${canUse.reason||'Choose a valid unit'}`;
@@ -5253,9 +5272,9 @@ function updateSelectionCard() {
     moveButton.setAttribute('aria-label',moveButton.title);
   }
   if(mobileRecommissionUnit)fieldButton.disabled=!recommissionRulesAvailable();
-  else if(fieldAbilityGroup)fieldButton.disabled=paused||replayMode||(game.replayVersion!=null&&game.replayVersion<36)||
+  else if(fieldAbilityGroup)fieldButton.disabled=paused||replayMode||(game.replayVersion!=null&&game.replayVersion<(fieldAbilityGroup.abilityId==='siegeAnchor'?SIEGE_ANCHOR_RULES_VERSION:36))||
     (!!pendingFieldAbility||fieldAbilityGroup.ids.some(id=>fieldAbilityLocks.has(id)))||
-    (fieldAbilityGroup.readyIds.length===0&&!(fieldAbilityGroup.abilityId==='ghostRun'&&fieldAbilityGroup.needsMoveIds.length>0));
+    (fieldAbilityGroup.abilityId==='siegeAnchor'?!fieldAbilityGroup.actionIds?.length:fieldAbilityGroup.readyIds.length===0&&!(fieldAbilityGroup.abilityId==='ghostRun'&&fieldAbilityGroup.needsMoveIds.length>0));
   else if(fieldUnit){
     const check=game.canUseUnitAbility?.(fieldUnit.id,fieldAbility);
     const needsMove=fieldAbility==='ghostRun'&&!check?.ok&&/Ghost Run requires a move order\./i.test(check?.reason||'');
@@ -5310,7 +5329,7 @@ function updateSelectionCard() {
   if(!selected.length){
     $('#cmd-repair').disabled=true;$('#cmd-repair').lastChild.textContent='REPAIR';$('#cmd-repair').title='Repair selected structure (R)';$('#cmd-repair').setAttribute('aria-label','Repair selected structure (R)');
     $('#cmd-guard').lastChild.textContent='GUARD';$('#cmd-guard').title='Guard this position (G)';$('#cmd-guard').setAttribute('aria-label','Guard this position (G)');
-    $('#selection-card').classList.remove('is-critical','has-promotion-choice','has-power-control','has-bunker-roster');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;
+    $('#selection-card').classList.remove('is-critical','has-promotion-choice','has-power-control','has-bunker-roster','has-siege-anchor');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;
   }
   const first=selected[0],isBuilding='w' in first,def=isBuilding?game.buildingDefs?.[first.defId]:game.unitDefs?.[first.defId];
   const hp=selected.length===1?first.hp:selected.reduce((n,u)=>n+u.hp,0),maxHp=selected.length===1?first.maxHp:selected.reduce((n,u)=>n+u.maxHp,0),pct=Math.max(0,Math.round(hp/maxHp*100));
@@ -5353,10 +5372,15 @@ function updateSelectionCard() {
       ?'APPROACHING WRECK':`RECOMMISSIONING · ${Math.min(12,Math.floor(first._wreckRecommissionProgress||0))}/12S`):null;
   const serviceView=vehicleServiceView(game,first);
   const serviceOrderState=serviceView?`${serviceView.statusLabel.toUpperCase()}${serviceView.status==='repairing'?` · ${serviceView.rate} HP/S`:''} · RETURN: ${serviceView.returnLabel.toUpperCase()}`:null;
-  const fieldActive=fieldUnit&&(fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)>(game.time||0)
-    ?`${fieldAbility==='brace'?'BRACED ARMOR':'GHOST RUN'} · ${Math.ceil((fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)-game.time)}S`:null;
+  const anchorOrder=fieldUnit?.defId==='artillery'&&fieldUnit.order?.type==='siegeAnchor'?fieldUnit.order:null;
+  const anchorSetupRemaining=anchorOrder?Math.max(0,(Number.isFinite(anchorOrder.readyAt)?anchorOrder.readyAt:game.time)-game.time):0;
+  const fieldActive=anchorOrder?anchorSetupRemaining>0?`SIEGE ANCHOR · SETTING UP ${anchorSetupRemaining.toFixed(1)}S`:
+    `SIEGE ANCHOR · +${SIEGE_ANCHOR_RANGE_BONUS} RANGE · ION DAMAGE ${Math.round(SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER*100)}%`:
+    fieldUnit&&(fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)>(game.time||0)
+      ?`${fieldAbility==='brace'?'BRACED ARMOR':'GHOST RUN'} · ${Math.ceil((fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)-game.time)}S`:null;
   const fieldHint=fieldAbility==='ghostRun'&&!(fieldUnit.abilityCooldown>0)&&
-    !['move','forceMove'].includes(first.order?.type)?'GHOST RUN · MOVE TO ARM':null;
+    !['move','forceMove'].includes(first.order?.type)?'GHOST RUN · MOVE TO ARM':
+      fieldUnit?.defId==='artillery'&&!anchorOrder?'SIEGE ANCHOR READY · E TO DEPLOY · MOVEMENT RELEASES':null;
   const rearmingAircraft=unitDef?.flying&&Number.isFinite(unitDef.ammoMax)&&first.order?.type==='rearm';
   const rearmPad=rearmingAircraft?game._nearestHelipad?.(first.owner,first.x,first.y):null;
   const aircraftState=rearmingAircraft?!rearmPad?'REARM WAITING · NEED POWERED HELIPAD':
@@ -5406,10 +5430,14 @@ function updateSelectionCard() {
       paceValues.length?paceValues.every(value=>Math.abs(value-paceValues[0])<0.005)
         ?`MATCHED PACE ${paceValues[0].toFixed(2)} T/S`:'MATCHED PACE':'';
     const digInLine=digInUnits.length?` · DIG IN ${digInReadyUnits.length}/${digInUnits.length} READY${digInStates.length?` · ${digInStates[0]}`:''}`:'';
-    return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${paceLabel?` · ${paceLabel}`:''}${routed?` · ${routed} ROUTED`:''}${digInLine}`;
+    const anchorUnits=units.filter(unit=>unit.defId==='artillery'&&unit.owner==='player');
+    const anchorSetup=anchorUnits.filter(unit=>unit.order?.type==='siegeAnchor'&&game.time<(unit.order.readyAt||game.time)).length;
+    const anchored=anchorUnits.filter(unit=>unit.order?.type==='siegeAnchor'&&game.time>=(unit.order.readyAt||game.time)).length;
+    const anchorLine=anchorUnits.length?` · ANCHOR ${anchorUnits.length-anchorSetup-anchored} READY${anchorSetup?` · ${anchorSetup} SETTING UP`:''}${anchored?` · ${anchored} ANCHORED`:''}`:'';
+    return `${composition}${suppressedUnits.length?` · ${suppressedUnits.length} DISRUPTED`:''}${orders.size>1?' · MIXED ORDERS':''}${paceLabel?` · ${paceLabel}`:''}${routed?` · ${routed} ROUTED`:''}${digInLine}${anchorLine}`;
   })():'';
   const rallyLeader=productionBuilding?productionRallyUnit(productionBuilding):null;
-  const subtitleBase=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?first.powerStandby===true?'PAUSED · STANDBY':rallyLeader?`REINFORCE ${game.unitDefs[rallyLeader.defId].name.toUpperCase()}`:workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
+  const subtitleBase=selected.length>1?(groupSummary||`${selected.length} UNITS SELECTED`):isBuilding?first.powerStandby===true?'PAUSED · STANDBY':rallyLeader?`REINFORCE ${game.unitDefs[rallyLeader.defId].name.toUpperCase()}`:workshopState||(first.repairing?'REPAIRING · ':'')+`${first.owner.toUpperCase()} STRUCTURE`:first.defId==='artillery'&&first.owner==='player'?`PLAYER UNIT · ${anchorOrder?anchorSetupRemaining>0?'SETTING UP':'ANCHORED':'READY'}`:`${first.owner.toUpperCase()} UNIT · ${tacticalState}`;
   const coverHintText=digInStatus||singleDigInCooldown||fieldActive||recommissionState||serviceOrderState
     ?'NEAR WRECK':'WRECK NEARBY · KEEP BEHIND HULL';
   const subtitle=`${subtitleBase}${wreckCoverHint?` · ${coverHintText}`:''}`;
@@ -5450,6 +5478,14 @@ function updateSelectionCard() {
   const ammoProgress=ammoCapacity?Math.min(100,Math.max(0,selectedGunships.reduce((sum,unit)=>sum+(unit.ammo||0),0)/ammoCapacity*100)):0;
   const ammoLine=ammoMeta?`<div class="ammunition-track" role="progressbar" aria-label="Gunship ammunition" aria-valuenow="${readyShots}" aria-valuemin="0" aria-valuemax="${ammoCapacity}" aria-valuetext="${readyShots} shots ready of ${ammoCapacity}"><span style="width:${ammoProgress}%"></span></div>`:'';
   const meta=ammoMeta||((rank?`INTEGRITY ${pct}% · ${first.kills||0} KILLS · ${nextRank?`${Math.max(0,Math.ceil(nextRank.xp-(first.xp||0)))} XP TO ${nextRank.name.toUpperCase()}`:promotionName?promotionName:'MAX RANK'}`:`ARMOR INTEGRITY · ${pct}%${isBuilding&&first.queue?.length?` · ${first.queue.length} QUEUED`:''}`)+cargoMeta+bayMeta+bunkerMeta+(queuedOrders?` · ${queuedOrders} QUEUED`:''));
+  const artilleryRange= !isBuilding&&selected.length===1&&first.owner==='player'&&first.defId==='artillery'&&unitDef?.weapon
+    ?Number(game._unitWeaponRange?.(first,unitDef.weapon)??unitDef.weapon.range):null;
+  const artilleryRangeMeta=artilleryRange==null?'':`RANGE ${artilleryRange.toFixed(1)}${anchorOrder&&anchorSetupRemaining<=0?' · STORM ×0.5':''}`;
+  const artilleryRangeTitle=anchorOrder&&anchorSetupRemaining<=0
+    ?`Effective weapon range ${artilleryRange?.toFixed(1)} tiles. Ion-storm damage is reduced by 50%.`
+    :`Effective weapon range ${artilleryRange?.toFixed(1)} tiles. Anchoring adds ${SIEGE_ANCHOR_RANGE_BONUS} range after setup.`;
+  const artilleryHint=fieldUnit?.defId==='artillery'
+    ?`<small class="siege-anchor-hint" title="${anchorOrder?anchorSetupRemaining>0?`Setting up for ${anchorSetupRemaining.toFixed(1)} seconds; cannot fire. E releases during setup. Movement or another order also releases the anchor.`:`Anchored for +${SIEGE_ANCHOR_RANGE_BONUS} range and ${Math.round((1-SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER)*100)}% less ion-storm damage. E releases. Movement or another order also releases the anchor.`:`E deploys; setup takes ${SIEGE_ANCHOR_SETUP_SECONDS} seconds with no firing. Movement or another order releases the anchor.`}">${anchorOrder?anchorSetupRemaining>0?'SETTING UP · NO FIRE · E RELEASES':'ANCHORED · E RELEASES':'E DEPLOYS · MOVEMENT RELEASES'}</small>`:'';
   const elevationBadge=elevatedAdvantage?`<small class="elevation-advantage" title="Elevated position improves sight by 1 and weapon reach by 0.5">HIGH GROUND · +1 SIGHT${unitDef?.weapon?' · +0.5 REACH':''}</small>`:'';
   const powerToggleEligible=selected.length===1&&isBuilding&&first.owner==='player'&&first.hp>0&&first.progress>=1&&Number(def?.power)<0;
   $('#selection-card').classList.toggle('has-power-control',!!powerToggleEligible);
@@ -5466,7 +5502,7 @@ function updateSelectionCard() {
   $('#selection-card').classList.toggle('has-bunker-roster',!!fieldBunker);
   const workshopControl=rosterWorkshop?'<button class="selection-workshop-roster" type="button" data-workshop-roster>VIEW SERVICE ROSTER</button>':'';
   const restoreRosterFocus=document.activeElement?.matches('[data-workshop-roster]');
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${bunkerRoster}${powerControl}${workshopControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${artilleryRangeMeta?`<small class="siege-anchor-range" title="${artilleryRangeTitle}">${artilleryRangeMeta}</small>`:''}${artilleryHint}${bunkerRoster}${powerControl}${workshopControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
   if(restoreRosterFocus)$('#selection-content [data-workshop-roster]')?.focus({preventScroll:true});
 }
 function placeSquadControlBar() {
@@ -8416,13 +8452,13 @@ function activateFieldAbilityOrDeploy(){
     const cohort=getFieldAbilityCohort(game);
     if(!cohort||cohort.abilityId!==abilityId)return;
     if(cohort.ids.some(id=>fieldAbilityLocks.has(id)))return;
-    if(!cohort.readyIds.length){
+    if(abilityId==='siegeAnchor'?!cohort.actionIds?.length:!cohort.readyIds.length){
       if(abilityId==='ghostRun'&&cohort.needsMoveIds.length)startTargetOrder('forceMove','MOVE TO ARM');
       return;
     }
-    const label=abilityId==='brace'?'BRACE':'GHOST RUN';
+    const label=abilityId==='siegeAnchor'?(cohort.action==='release'?'SIEGE ANCHOR RELEASE':'SIEGE ANCHOR DEPLOY'):abilityId==='brace'?'BRACE':'GHOST RUN';
     const successLabel=cohort.ids.length===1
-      ?abilityId==='brace'?'GUARDIAN BRACED':'SPECTER GHOST RUN':null;
+      ?abilityId==='siegeAnchor'?cohort.action==='release'?'SIEGE ANCHOR RELEASED':'SIEGE ANCHOR DEPLOYED':abilityId==='brace'?'GUARDIAN BRACED':'SPECTER GHOST RUN':null;
     if(currentMode==='multiplayer'){
       const result=game.useSelectedUnitAbility?.(abilityId)||{ok:false,reason:'Field ability command unavailable.'};
       if(result?.ok===false){toast(result.reason||'Field ability unavailable.',true);audio.play('error');return;}

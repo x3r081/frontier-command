@@ -4,7 +4,7 @@ import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, C
   INFANTRY_DIG_IN_RULES_VERSION, TACTICAL_FORMATION_RULES_VERSION, HARVESTER_HOME_RULES_VERSION,
   PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION,
   TARGET_PRIORITY_RULES_VERSION, TARGET_PRIORITY_OPTIONS, ENGINEER_FIELD_REPAIR_RULES_VERSION,
-  WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION,
+  WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION, SIEGE_ANCHOR_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
@@ -12,7 +12,7 @@ import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+export const SOLO_REPLAY_VERSION = SIEGE_ANCHOR_RULES_VERSION;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -70,7 +70,7 @@ export const SOLO_COMMAND_METHODS = Object.freeze({
   issuePromoteUnit: args => args.length === 2 && entityId(args[0]) &&
     typeof args[1] === 'string' && Object.hasOwn(UNIT_PROMOTION_DEFS, args[1]),
   useUnitAbility: args => args.length === 2 && entityId(args[0]) &&
-    ['brace', 'ghostRun'].includes(args[1]),
+    ['brace', 'ghostRun', 'siegeAnchor'].includes(args[1]),
   issuePatrol: xy,
   issueScatter: noArgs,
   issueDeploy: args => noArgs(args) || (args.length === 1 && (args[0] === null || entityId(args[0]))),
@@ -188,6 +188,9 @@ export function validateSoloReplay(envelope, commands, completedTicks, replayVer
   if (replayVersion < ENGINEER_FIELD_REPAIR_RULES_VERSION && commands.some(command =>
       ['issueFieldRepair', 'issueRefillRepairKits'].includes(command?.method)))
     throw new TypeError(`Engineer field repair requires replay version ${ENGINEER_FIELD_REPAIR_RULES_VERSION}.`);
+  if (replayVersion < SIEGE_ANCHOR_RULES_VERSION && commands.some(command =>
+      command?.method === 'useUnitAbility' && command?.args?.[1] === 'siegeAnchor'))
+    throw new TypeError(`Siege Anchor requires replay version ${SIEGE_ANCHOR_RULES_VERSION}.`);
   let previousTick = -1;
   for (let i = 0; i < commands.length; i++) {
     const command = commands[i];

@@ -5,7 +5,7 @@ import { isDeepStrictEqual } from 'node:util';
 import { pathToFileURL } from 'node:url';
 import { Game } from '../src/game/engine.js';
 import { currentDailyFront } from '../src/game/dailyFront.js';
-import { createSoloPlayback, createSoloRecorder, SOLO_REPLAY_VERSION, validateSoloReplay } from '../src/game/replay.js';
+import { createSoloPlayback, createSoloRecorder, validateSoloReplay } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
 
 const CONTRACT_DATE = '2026-10-16';
@@ -35,7 +35,7 @@ function bestRevealedBuildSite(game, defId, home) {
 
 function runAttempt(attempt, { captureCheckpoints = false } = {}) {
   assert.equal(attempt, 1, 'the winning route should finish on its first attempt');
-  const daily = currentDailyFront(Date.parse(`${CONTRACT_DATE}T12:00:00.000Z`), SOLO_REPLAY_VERSION);
+  const daily = currentDailyFront(Date.parse(`${CONTRACT_DATE}T12:00:00.000Z`), EXPECTED_RULES_VERSION);
   assert.equal(daily.date, CONTRACT_DATE);
   assert.equal(daily.rulesVersion, EXPECTED_RULES_VERSION);
   assert.deepEqual(daily.setup, { mode: 'skirmish', difficulty: 'normal', faction: 'aegis',

@@ -1,16 +1,22 @@
 const ABILITY_BY_UNIT_TYPE = Object.freeze({
   guardian: 'brace',
   stealthTank: 'ghostRun',
+  artillery: 'siegeAnchor',
 });
 
 function unitActiveUntil(unit, abilityId) {
   return abilityId === 'brace' ? unit.braceUntil : unit.ghostRunUntil;
 }
 
+function siegeAnchorState(unit, time) {
+  if (unit.order?.type !== 'siegeAnchor') return null;
+  const readyAt = Number.isFinite(unit.order.readyAt) ? unit.order.readyAt : time;
+  return time < readyAt ? 'settingUp' : 'anchored';
+}
+
 /**
- * Describe a strict selected Guardian or Specter cohort and its per-unit
- * ability readiness. A mixed, partial, or otherwise invalid selection is not
- * treated as a cohort.
+ * Describe a strict selected unit cohort and its per-unit field ability
+ * readiness. A mixed, partial, or otherwise invalid selection is not a cohort.
  */
 export function getFieldAbilityCohort(game) {
   const selection = game?.selection;
@@ -39,11 +45,26 @@ export function getFieldAbilityCohort(game) {
   const coolingIds = [];
   const needsMoveIds = [];
   const unavailableIds = [];
+  const settingUpIds = [];
+  const anchoredIds = [];
   const cooldowns = [];
   const activeRemainings = [];
   let unavailableReason = '';
 
   for (const unit of units) {
+    if (abilityId === 'siegeAnchor') {
+      const canUse = game.canUseUnitAbility(unit.id, abilityId);
+      if (!canUse?.ok) {
+        unavailableIds.push(unit.id);
+        unavailableReason ||= canUse?.reason || 'Siege Anchor unavailable.';
+        continue;
+      }
+      const anchorState = siegeAnchorState(unit, time);
+      if (anchorState === 'settingUp') settingUpIds.push(unit.id);
+      else if (anchorState === 'anchored') anchoredIds.push(unit.id);
+      else readyIds.push(unit.id);
+      continue;
+    }
     const activeRemaining = Math.max(0, (unitActiveUntil(unit, abilityId) || 0) - time);
     const cooldown = Math.max(0, Number(unit.abilityCooldown) || 0);
     const canUse = game.canUseUnitAbility(unit.id, abilityId);
@@ -70,6 +91,17 @@ export function getFieldAbilityCohort(game) {
     activeIds,
     coolingIds,
     needsMoveIds,
+    ...(abilityId === 'siegeAnchor' ? {
+      settingUpIds,
+      anchoredIds,
+      // A mixed group consistently releases its currently deploying/anchored
+      // units first. A later press deploys the remaining unanchored members.
+      releaseIds: [...settingUpIds, ...anchoredIds],
+      actionIds: settingUpIds.length + anchoredIds.length
+        ? [...settingUpIds, ...anchoredIds]
+        : [...readyIds],
+      action: settingUpIds.length + anchoredIds.length ? 'release' : 'deploy',
+    } : {}),
     nextCooldown: cooldowns.length ? Math.min(...cooldowns) : 0,
     activeRemaining: activeRemainings.length ? Math.max(...activeRemainings) : 0,
     ...(unavailableIds.length ? { unavailableIds, unavailableReason } : {}),
@@ -83,9 +115,32 @@ export function getFieldAbilityCohort(game) {
  */
 export function activateSelectedUnitAbility(game, abilityId) {
   const cohort = getFieldAbilityCohort(game);
-  if (!cohort) return { ok: false, activatedIds: [], skippedIds: [], reason: 'Select only living friendly Guardians or Specters of one type.' };
+  if (!cohort) return { ok: false, activatedIds: [], skippedIds: [], reason: 'Select only living friendly Guardians, Specters, or Siege Crawlers of one type.' };
   if (cohort.abilityId !== abilityId)
     return { ok: false, activatedIds: [], skippedIds: [...cohort.ids], reason: 'That ability does not match the selected unit type.' };
+
+  if (abilityId === 'siegeAnchor') {
+    const targetIds = cohort.actionIds || cohort.readyIds;
+    const activatedIds = [];
+    const skippedIds = cohort.ids.filter(id => !targetIds.includes(id));
+    let reason;
+    for (const unitId of targetIds) {
+      const result = game.useUnitAbility(unitId, abilityId);
+      if (result?.ok) activatedIds.push(unitId);
+      else {
+        skippedIds.push(unitId);
+        reason ||= result?.reason || 'Siege Anchor unavailable.';
+      }
+    }
+    return {
+      ok: activatedIds.length > 0,
+      activatedIds,
+      skippedIds: cohort.ids.filter(id => skippedIds.includes(id)),
+      action: cohort.action,
+      ...(reason ? { reason } : {}),
+      ...(activatedIds.length === 0 && !reason ? { reason: 'No selected artillery could change Siege Anchor state.' } : {}),
+    };
+  }
 
   if (cohort.readyIds.length === 0) {
     let reason = cohort.unavailableReason;

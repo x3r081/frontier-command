@@ -13,7 +13,7 @@ import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESER
   WRECK_RECOMMISSION_RULES_VERSION, WRECK_COVER_RULES_VERSION, GARRISON_RULES_VERSION,
   MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
   AI_ROCKET_PRIORITY_RULES_VERSION, ENGINEER_ESCORT_RULES_VERSION, AI_FIELD_SUPPORT_RULES_VERSION,
-  COMBAT_ESCORT_RULES_VERSION, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION,
+  COMBAT_ESCORT_RULES_VERSION, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION, SIEGE_ANCHOR_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, COUNTERBATTERY_RULES_VERSION,
@@ -626,13 +626,13 @@ test('current Workshop service replay version advances solo floors and ranked se
         `${difficulty} uses its rules-specific comparison floor`);
     }
     const multiplayerRating = await api('/api/multiplayer/rating', profile.token);
-    assert.equal((await multiplayerRating.json()).season, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION,
-      'all-mode service routing advances ranked multiplayer');
+    assert.equal((await multiplayerRating.json()).season, SIEGE_ANCHOR_RULES_VERSION,
+      'Siege Anchor advances ranked multiplayer');
     assert.ok(SOLO_REPLAY_VERSION >= WRECK_RECOMMISSION_RULES_VERSION,
       'the current replay version includes the global solo comparison floor');
     assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
     assert.equal(COUNTERBATTERY_RULES_VERSION, 84);
-    assert.equal(SOLO_REPLAY_VERSION, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION);
+    assert.equal(SOLO_REPLAY_VERSION, SIEGE_ANCHOR_RULES_VERSION);
     assert.equal(AI_ROCKET_PRIORITY_RULES_VERSION, 86);
     assert.equal(ENGINEER_ESCORT_RULES_VERSION, 87);
     assert.equal(AI_FIELD_SUPPORT_RULES_VERSION, 88);
@@ -1223,7 +1223,7 @@ test('Iron Reclaimed tickets follow the verified After the Dawn rescue at the sa
   assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('iron-reclaimed'));
 });
 
-test('v91 campaign floor retires older boards without deleting archived progress', async () => {
+test('v92 campaign floor retires older boards without deleting archived progress', async () => {
   const profile = await createProfile('Recovery Ranking');
   const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
     faction: 'aegis', fieldOrderId: 'none', fieldOrderStatus: 'none', carryoverId: 'none',
@@ -1255,24 +1255,26 @@ test('v91 campaign floor retires older boards without deleting archived progress
     { ...base, id: 'recovery-v90', scenarioId: 'iron-reclaimed', scoreVersion: 90 },
     { ...base, id: 'rescue-now-v90', scenarioId: 'after-the-dawn', scoreVersion: 90 },
     { ...base, id: 'recovery-v91', scenarioId: 'iron-reclaimed', scoreVersion: 91 },
-    { ...base, id: 'rescue-now-v91', scenarioId: 'after-the-dawn', scoreVersion: 91 });
+    { ...base, id: 'rescue-now-v91', scenarioId: 'after-the-dawn', scoreVersion: 91 },
+    { ...base, id: 'recovery-v92', scenarioId: 'iron-reclaimed', scoreVersion: 92 },
+    { ...base, id: 'rescue-now-v92', scenarioId: 'after-the-dawn', scoreVersion: 92 });
   const rows = async scenario => (await (await api(
     `/api/leaderboard?mode=campaign&scenarioId=${scenario}`, profile.token)).json()).entries.map(row => row.id);
-  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v91']);
+  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v92']);
   assert.deepEqual((await rows('after-the-dawn')).filter(id => id.startsWith('rescue-')),
-    ['rescue-now-v91']);
+    ['rescue-now-v92']);
   assert.ok(store.scores.some(score => score.id === 'recovery-v79'), 'archived scores remain stored');
   assert.ok(store.scores.some(score => score.id === 'rescue-still-v72'), 'archived victories stay stored');
   assert.ok(store.scores.some(score => score.id === 'recovery-v78'), 'v78 results remain stored off-board');
   assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season,
-    WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION);
+    SIEGE_ANCHOR_RULES_VERSION);
 });
 
-test('v80 AI bunker history remains stored below the shared v91 comparison floor', async () => {
+test('v80 AI bunker history remains stored below the shared v92 comparison floor', async () => {
   assert.equal(AI_FIELD_BUNKER_RULES_VERSION, 80);
   assert.equal(GARRISON_RULES_VERSION, 79);
   assert.equal(MEDIC_ESCORT_RULES_VERSION, 83);
-  assert.equal(SOLO_REPLAY_VERSION, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION);
+  assert.equal(SOLO_REPLAY_VERSION, SIEGE_ANCHOR_RULES_VERSION);
   const profile = await createProfile('Bunker AI Ranking');
   const common = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis', seconds: 100,
     kills: 4, completedAt: 100, verified: true, result: 'victory' };
@@ -1286,19 +1288,19 @@ test('v80 AI bunker history remains stored below the shared v91 comparison floor
   const rows = [
     campaignScore(78), campaignScore(79), campaignScore(80), campaignScore(82), campaignScore(83),
     campaignScore(84), campaignScore(85), campaignScore(86), campaignScore(87), campaignScore(88), campaignScore(89),
-    campaignScore(90), campaignScore(91),
+    campaignScore(90), campaignScore(91), campaignScore(92),
     skirmishScore('easy', 78), skirmishScore('easy', 79), skirmishScore('easy', 80),
     skirmishScore('easy', 82), skirmishScore('easy', 83), skirmishScore('easy', 84), skirmishScore('easy', 85),
     skirmishScore('easy', 86), skirmishScore('easy', 87), skirmishScore('easy', 88), skirmishScore('easy', 89),
-    skirmishScore('easy', 90), skirmishScore('easy', 91),
+    skirmishScore('easy', 90), skirmishScore('easy', 91), skirmishScore('easy', 92),
     skirmishScore('normal', 79), skirmishScore('normal', 80), skirmishScore('normal', 82),
     skirmishScore('normal', 83), skirmishScore('normal', 84), skirmishScore('normal', 85),
     skirmishScore('normal', 86), skirmishScore('normal', 87), skirmishScore('normal', 88), skirmishScore('normal', 89),
-    skirmishScore('normal', 90), skirmishScore('normal', 91),
+    skirmishScore('normal', 90), skirmishScore('normal', 91), skirmishScore('normal', 92),
     skirmishScore('hard', 79), skirmishScore('hard', 80), skirmishScore('hard', 82),
     skirmishScore('hard', 83), skirmishScore('hard', 84), skirmishScore('hard', 85),
     skirmishScore('hard', 86), skirmishScore('hard', 87), skirmishScore('hard', 88), skirmishScore('hard', 89),
-    skirmishScore('hard', 90), skirmishScore('hard', 91),
+    skirmishScore('hard', 90), skirmishScore('hard', 91), skirmishScore('hard', 92),
   ];
   const history = { id: 'history-bunker-normal-v79', profileId: profile.profile.id,
     mode: 'skirmish', scenarioId: 'shard-valley', scenarioName: 'Shard Valley', difficulty: 'normal',
@@ -1310,21 +1312,21 @@ test('v80 AI bunker history remains stored below the shared v91 comparison floor
   const asSet = values => [...values].sort();
   try {
     assert.deepEqual(asSet(await ids('/api/leaderboard?mode=campaign&scenarioId=first-harvest')),
-      ['bunker-floor-campaign-v91'],
-      'campaign uses the shared v91 comparison floor');
+      ['bunker-floor-campaign-v92'],
+      'campaign uses the shared v92 comparison floor');
     assert.deepEqual(asSet(await ids('/api/leaderboard?mode=skirmish&difficulty=easy&scenarioId=shard-valley')),
-      ['bunker-floor-easy-v91'],
-      'Easy uses the shared v91 comparison floor');
+      ['bunker-floor-easy-v92'],
+      'Easy uses the shared v92 comparison floor');
     for (const difficulty of ['normal', 'hard'])
       assert.deepEqual(await ids(`/api/leaderboard?mode=skirmish&difficulty=${difficulty}&scenarioId=shard-valley`),
-        [`bunker-floor-${difficulty}-v91`], `${difficulty} uses the shared v91 comparison floor`);
+        [`bunker-floor-${difficulty}-v92`], `${difficulty} uses the shared v92 comparison floor`);
     assert.ok(store.scores.includes(rows.find(row => row.id === 'bunker-floor-normal-v79')),
       'the retired v79 result remains stored');
     assert.ok((await ids('/api/records/history')).includes(history.id),
       'the retired v79 skirmish victory remains in private history');
     assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season,
-      WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION,
-      'service routing advances ranked multiplayer');
+      SIEGE_ANCHOR_RULES_VERSION,
+      'Siege Anchor advances ranked multiplayer');
   } finally {
     for (const row of rows) {
       const index = store.scores.indexOf(row);
@@ -1368,7 +1370,7 @@ test('Iron Reclaimed records a server-verified public-command victory on its own
 });
 
 test('Counterbattery tickets retain archived unlocks under the current campaign floor', async () => {
-  assert.equal(SOLO_REPLAY_VERSION, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION);
+  assert.equal(SOLO_REPLAY_VERSION, SIEGE_ANCHOR_RULES_VERSION);
   assert.equal(DEAD_SIGNAL_RULES_VERSION, 90);
   assert.ok(SOLO_REPLAY_VERSION >= COUNTERBATTERY_RULES_VERSION);
   const profile = await createProfile('Counterbattery Unlock');
@@ -1404,6 +1406,8 @@ test('Counterbattery tickets retain archived unlocks under the current campaign 
       faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 90, verified: true, result: 'victory', completedAt: 113 },
     { id: 'counterbattery-board-v91', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
       faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 91, verified: true, result: 'victory', completedAt: 114 },
+    { id: 'counterbattery-board-v92', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'counterbattery', scoreVersion: 92, verified: true, result: 'victory', completedAt: 115 },
     { id: 'counterbattery-prior-board-v82', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
       faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 82, verified: true, result: 'victory', completedAt: 103 },
     { id: 'counterbattery-prior-board-v83', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
@@ -1422,6 +1426,8 @@ test('Counterbattery tickets retain archived unlocks under the current campaign 
       faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 90, verified: true, result: 'victory', completedAt: 113 },
     { id: 'counterbattery-prior-board-v91', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
       faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 91, verified: true, result: 'victory', completedAt: 114 },
+    { id: 'counterbattery-prior-board-v92', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'aegis', scenarioId: 'first-harvest', scoreVersion: 92, verified: true, result: 'victory', completedAt: 115 },
   ];
   store.scores.push(iron, ...boardRows);
   let runId;
@@ -1445,20 +1451,20 @@ test('Counterbattery tickets retain archived unlocks under the current campaign 
 
     const counterbatteryRows = (await (await api(
       '/api/leaderboard?mode=campaign&scenarioId=counterbattery', profile.token)).json()).entries;
-    assert.deepEqual(counterbatteryRows.map(entry => entry.id), ['counterbattery-board-v91']);
+    assert.deepEqual(counterbatteryRows.map(entry => entry.id), ['counterbattery-board-v92']);
     const priorRows = (await (await api(
       '/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token)).json()).entries;
-    assert.deepEqual(priorRows.map(entry => entry.id), ['counterbattery-prior-board-v91'],
-      'existing campaign boards use the current v91 floor');
+    assert.deepEqual(priorRows.map(entry => entry.id), ['counterbattery-prior-board-v92'],
+      'existing campaign boards use the current v92 floor');
   } finally {
     if (runId) store.runs = store.runs.filter(run => run.id !== runId);
     store.scores = store.scores.filter(score => score !== iron && !boardRows.includes(score));
   }
 });
 
-test('Dead Signal keeps its version-90 minimum and uses the current version-91 board floor', async () => {
+test('Dead Signal keeps its version-90 minimum and uses the current version-92 board floor', async () => {
   assert.equal(DEAD_SIGNAL_RULES_VERSION, 90);
-  assert.equal(SOLO_REPLAY_VERSION, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION);
+  assert.equal(SOLO_REPLAY_VERSION, SIEGE_ANCHOR_RULES_VERSION);
   const profile = await createProfile('Dead Signal Unlock');
   const start = (difficulty = 'normal', faction = 'vesper') => api('/api/scores/runs', profile.token, {
     method: 'POST', body: json({ mode: 'campaign', difficulty, faction, scenarioId: 'dead-signal' }),
@@ -1481,6 +1487,9 @@ test('Dead Signal keeps its version-90 minimum and uses the current version-91 b
     { id: 'dead-signal-board-v91', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
       faction: 'vesper', scenarioId: 'dead-signal', scoreVersion: 91, verified: true,
       result: 'victory', seconds: 90, completedAt: 204 },
+    { id: 'dead-signal-board-v92', profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
+      faction: 'vesper', scenarioId: 'dead-signal', scoreVersion: 92, verified: true,
+      result: 'victory', seconds: 90, completedAt: 205 },
   ];
   store.scores.push(archivedCounterbattery, ...boardRows);
   let runId;
@@ -1504,7 +1513,7 @@ test('Dead Signal keeps its version-90 minimum and uses the current version-91 b
 
     const entries = (await (await api(
       '/api/leaderboard?mode=campaign&scenarioId=dead-signal', profile.token)).json()).entries;
-    assert.deepEqual(entries.map(entry => entry.id), ['dead-signal-board-v91'],
+    assert.deepEqual(entries.map(entry => entry.id), ['dead-signal-board-v92'],
       'version-90 Dead Signal scores are excluded by the shared current board floor');
   } finally {
     if (runId) store.runs = store.runs.filter(run => run.id !== runId);
@@ -2111,6 +2120,22 @@ test('one websocket cohort ability request activates ready own tanks and reports
   assert.ok(moving.ghostRunUntil > game.time);
   assert.equal(idle.ghostRunUntil, 0);
   assert.equal(game.commandOwner, 'player', 'dispatch restores the default command owner');
+  const artillery = [game._createUnit('player', 'artillery', 12.5, 34.5),
+    game._createUnit('player', 'artillery', 15.5, 34.5)];
+  const foreignArtillery = game._createUnit('enemy', 'artillery', 50.5, 10.5);
+  const anchor = await issue(host, 'cohort-anchor', {
+    ids: [...artillery.map(unit => unit.id), foreignArtillery.id], abilityId: 'siegeAnchor' });
+  assert.equal(anchor.ok, true);
+  assert.deepEqual(anchor.activatedIds, artillery.map(unit => unit.id));
+  assert.equal(foreignArtillery.order.type, 'idle', 'opposing artillery cannot be anchored');
+  assert.ok(artillery.every(unit => unit.order.type === 'siegeAnchor'));
+  game.select(artillery[1].id);
+  assert.equal(game.issueStop().ok, true);
+  const release = await issue(host, 'cohort-anchor-release', {
+    ids: artillery.map(unit => unit.id), abilityId: 'siegeAnchor' });
+  assert.equal(release.ok, true);
+  assert.deepEqual(release.activatedIds, [artillery[0].id], 'mixed groups release anchored members only');
+  assert.ok(artillery.every(unit => unit.order.type !== 'siegeAnchor'));
 });
 
 test('authenticated websocket queueUnit routes to the selected production site and preserves default routing', async () => {
@@ -4249,6 +4274,33 @@ test('multiplayer projection hides unseen Breach zones and orients visible casts
   assert.equal(projectedState({ game }, host).breachZones[0].owner, 'enemy');
   const guest = { side: 'enemy', explored, selection: [] };
   assert.equal(projectedState({ game }, guest).breachZones[0].owner, 'player');
+});
+
+test('multiplayer Siege Anchor projection exposes only visible facing and setup time', () => {
+  const game = new Game({ mode: 'multiplayer', seed: 109 });
+  const own = game.units.find(unit => unit.owner === 'player' && unit.defId === 'rifle');
+  const hostile = game._createUnit('enemy', 'artillery', own.x + 2, own.y);
+  game.commandOwner = 'enemy';
+  assert.equal(game.useUnitAbility(hostile.id, 'siegeAnchor').ok, true);
+  game.commandOwner = 'player';
+  game.fog[Math.floor(hostile.y)][Math.floor(hostile.x)] = 2;
+  const member = { side: 'player', selection: [],
+    explored: Array.from({ length: game.height }, () => Array(game.width).fill(0)) };
+  const view = projectedState({ game }, member);
+  const projected = view.units.find(unit => unit.id === hostile.id);
+  assert.ok(projected);
+  assert.equal('order' in projected, false);
+  assert.deepEqual(projected.siegeAnchor, { facing: hostile.order.facing, readyAt: hostile.order.readyAt });
+  assert.equal('x' in projected.siegeAnchor, false, 'the projection omits private anchor coordinates');
+  assert.deepEqual(Game.deserialize(view).getEntity(hostile.id).siegeAnchor, projected.siegeAnchor);
+  game.fog[Math.floor(hostile.y)][Math.floor(hostile.x)] = 0;
+  assert.ok(!projectedState({ game }, member).units.some(unit => unit.id === hostile.id));
+  game.fog[Math.floor(hostile.y)][Math.floor(hostile.x)] = 2;
+  hostile.order = { type: 'idle' };
+  assert.equal('siegeAnchor' in projectedState({ game }, member).units.find(unit => unit.id === hostile.id), false);
+  game.replayVersion = SIEGE_ANCHOR_RULES_VERSION - 1;
+  hostile.order = { type: 'siegeAnchor', x: hostile.x, y: hostile.y, facing: 0, readyAt: game.time };
+  assert.equal('siegeAnchor' in projectedState({ game }, member).units.find(unit => unit.id === hostile.id), false);
 });
 
 test('multiplayer Dig In projection exposes only the visible emplacement contract', () => {

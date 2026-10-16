@@ -2481,6 +2481,20 @@ button:focus-visible { outline: 2px solid #e0ff9c; outline-offset: 3px; }
 .manual-panel .manual-columns section { border-color: rgba(102,233,219,.2); background: linear-gradient(145deg, rgba(18,39,32,.72), rgba(6,18,16,.64)); }
 .manual-panel .manual-columns h3 { color: #dff89f; }
 .manual-panel .manual-columns p { color: #c7d7cb; }
+.command-panel .selection-info .siege-anchor-range,
+.command-panel .selection-info .siege-anchor-hint {
+  display: block;
+  max-width: 100%;
+  margin-top: 2px;
+  overflow: hidden;
+  color: #c3d5c6;
+  font: 700 8px/1.15 "Barlow Condensed", sans-serif;
+  letter-spacing: .07em;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.command-panel .selection-info .siege-anchor-range { color: #dff39c; }
+.command-panel .selection-info .siege-anchor-hint { color: #9bb5a3; }
 @media (max-width: 670px) {
   .production-item { min-height: 72px; }
   .minimap-wrap::before { background-size: 30px 30px, 30px 30px, 100% 100%; }
@@ -4257,7 +4271,22 @@ body:has(#end-modal:not(.hidden)),
 .workshop-patient-health i { display: block; height: 100%; background: #c9ff66; }
 .workshop-patient-locate { color: #b6e6c5; font: 700 11px "Barlow Condensed",sans-serif; letter-spacing: .05em; }
 .workshop-roster-empty { padding: 15px; background: #203123; border: 1px dashed #668270; }
+.command-panel .selection-card.has-siege-anchor {
+  flex: 0 0 100px;
+  height: 100px;
+  min-height: 100px;
+  overflow-y: auto;
+  padding-block: 6px;
+}
 @media (max-width: 670px) {
+  .command-panel .selection-card.has-siege-anchor {
+    flex-basis: 80px;
+    height: 80px;
+    min-height: 80px;
+    padding-block: 3px;
+  }
+  .command-panel .selection-card.has-siege-anchor .siege-anchor-hint,
+  .command-panel .selection-card.has-siege-anchor .veterancy-track { display: none; }
   .selection-workshop-roster { display: none; }
   .command-panel .selection-card:has(.selection-workshop-roster) { flex-basis: 88px; height: 88px; min-height: 88px; }
   .workshop-roster-panel { padding: 24px 16px 16px; }
@@ -4268,4 +4297,18 @@ body:has(#end-modal:not(.hidden)),
   .workshop-roster-list button { grid-template-columns: 36px minmax(0,1fr); gap: 9px; padding: 10px; }
   .workshop-patient-icon .asset-icon { width: 36px; height: 36px; }
   .workshop-patient-locate { display: none; }
+}
+
+/* The short-phone command rail is fixed below the deck; reserve its full height. */
+@media (max-width: 670px) and (max-height: 719px) {
+  .game-shell:has(.selection-card.has-siege-anchor) .main-layout {
+    padding-bottom: calc(133px + env(safe-area-inset-bottom, 0px));
+  }
+  .command-panel:has(.selection-card.has-siege-anchor) .command-actions {
+    height: calc(133px + env(safe-area-inset-bottom, 0px));
+    min-height: calc(133px + env(safe-area-inset-bottom, 0px));
+    padding-bottom: env(safe-area-inset-bottom, 0px);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-rows: repeat(3, minmax(0, 1fr));
+  }
 }

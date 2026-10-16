@@ -98,6 +98,10 @@ export const COMBAT_ESCORT_RULES_VERSION = 89;
 export const AI_FIELD_SUPPORT_RESERVE = 1250;
 export const ENGINEER_FIELD_REPAIR_KITS = 2;
 export const WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION = 91;
+export const SIEGE_ANCHOR_RULES_VERSION = 92;
+export const SIEGE_ANCHOR_SETUP_SECONDS = 2.5;
+export const SIEGE_ANCHOR_RANGE_BONUS = 2;
+export const SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER = 0.5;
 export const WORKSHOP_SERVICE_REPAIR_RATE_HP_PER_SECOND = 11;
 export const WORKSHOP_SERVICE_REPAIR_CREDIT_COST_PER_HP = 0.5;
 export const ENGINEER_FIELD_REPAIR_AMOUNT = 120;
@@ -209,7 +213,7 @@ export const UNIT_DEFS = Object.freeze({
     description: 'Reliable assault tank. Its front armor resists fire; protect its exposed rear.' },
   artillery: { id: 'artillery', name: 'Siege Crawler', faction: 'all', role: 'siege', producer: 'factory', cost: 950, buildTime: 22,
     health: 260, armor: 'light', speed: 0.92, sight: 7, radius: 0.39, requires: ['radar'],
-    weapon: weapon(83, 8.3, 3.2, 6.4, 'explosive', 1.45), description: 'Long-range splash artillery. Face its armored front toward threats.' },
+    weapon: weapon(83, 8.3, 3.2, 6.4, 'explosive', 1.45), description: 'Long-range splash artillery. Face its armored front toward threats. Siege Anchor takes 2.5 seconds to set up, then adds 2 tiles of range and halves ion storm damage; a new order unpacks it.' },
   guardian: { id: 'guardian', name: 'Guardian Tank', faction: 'aegis', role: 'armor', producer: 'factory', cost: 1300, buildTime: 28,
     health: 790, armor: 'heavy', speed: 1.05, sight: 6, radius: 0.44, requires: ['tech'],
     weapon: weapon(86, 5.7, 1.9, 11, 'cannon', 0.6), description: 'Aegis heavy tank with a reinforced front and vulnerable rear. Brace anchors it for 7 seconds and reduces nearby allied vehicle direct-fire damage by 25%; splash bypasses the field.' },
@@ -435,6 +439,7 @@ export class Game {
     this.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     this.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
     this.workshopServiceReliabilityRulesVersion = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+    this.siegeAnchorRulesVersion = SIEGE_ANCHOR_RULES_VERSION;
     this.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     this.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     this.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
@@ -678,7 +683,17 @@ export class Game {
 
   _unitWeaponRange(unit, weaponDef) {
     return unitWeaponRange(unit, weaponDef, this.replayVersion) +
-      (this._unitOnVantage(unit) && weaponDef ? 0.5 : 0);
+      (this._unitOnVantage(unit) && weaponDef ? 0.5 : 0) +
+      (weaponDef && this._siegeAnchorReady(unit) ? SIEGE_ANCHOR_RANGE_BONUS : 0);
+  }
+
+  _siegeAnchorEnabled() {
+    return this.replayVersion == null || this.replayVersion >= SIEGE_ANCHOR_RULES_VERSION;
+  }
+
+  _siegeAnchorReady(unit) {
+    return this._siegeAnchorEnabled() && unit?.defId === 'artillery' &&
+      unit.order?.type === 'siegeAnchor' && this.time >= unit.order.readyAt;
   }
 
   _placeDeltaBridges() {
@@ -1171,7 +1186,7 @@ export class Game {
         if (this.relays.some(r => r.owner === u.owner && !r.contested &&
           (!this._relayProtocolsEnabled() || (r.protocol || 'shelter') === 'shelter') && dist(u.x, u.y, r.x, r.y) <= 2.3)) continue;
         const damage = UNIT_DEFS[u.defId].flying ? 12 : UNIT_DEFS[u.defId].armor === 'infantry' ? 6 : 4;
-        this._applyDamage(u, damage, 'ion', null, null);
+        this._applyDamage(u, damage, 'ion', null, null, null, false, false, 'storm');
       }
     }
   }
@@ -3200,10 +3215,16 @@ export class Game {
     if (this.status !== 'playing') return { ok: false, reason: 'The battle is over.' };
     if (this.replayVersion != null && this.replayVersion < UNIT_ABILITY_RULES_VERSION)
       return { ok: false, reason: 'Unit abilities are unavailable in this replay.' };
+    if (abilityId === 'siegeAnchor' && !this._siegeAnchorEnabled())
+      return { ok: false, reason: `Siege Anchor requires replay version ${SIEGE_ANCHOR_RULES_VERSION}.` };
     const unit = this.getEntity(unitId);
     if (!unit || !this.units.includes(unit) || unit.hp <= 0 || unit.embarkedIn)
       return { ok: false, reason: 'Choose an active ground unit.' };
     if (unit.owner !== owner) return { ok: false, reason: 'You can only command your own unit.' };
+    if (abilityId === 'siegeAnchor') {
+      if (unit.defId !== 'artillery') return { ok: false, reason: 'Siege Anchor requires a Siege Crawler.' };
+      return { ok: true };
+    }
     if (unit.abilityCooldown > 0) return { ok: false, reason: 'Unit ability is cooling down.' };
     if (abilityId === 'brace') {
       if (unit.defId !== 'guardian') return { ok: false, reason: 'Brace requires a Guardian Tank.' };
@@ -3230,6 +3251,22 @@ export class Game {
   }
 
   _activateUnitAbility(unit, abilityId, owner) {
+    if (abilityId === 'siegeAnchor') {
+      if (unit.order?.type === 'siegeAnchor') {
+        unit.order = { type: 'idle' };
+        unit.path = []; unit._pathGoal = null;
+        this._event('unitAbility', { owner, unitId: unit.id, abilityId, released: true,
+          x: unit.x, y: unit.y, message: `${owner === 'player' ? 'Your' : 'Enemy'} Siege Crawler unpacked.` });
+      } else {
+        unit.order = { type: 'siegeAnchor', x: unit.x, y: unit.y, facing: unit.facing,
+          readyAt: this.time + SIEGE_ANCHOR_SETUP_SECONDS };
+        unit.path = []; unit._pathGoal = null;
+        this._event('unitAbility', { owner, unitId: unit.id, abilityId,
+          x: unit.x, y: unit.y, facing: unit.facing, readyAt: unit.order.readyAt,
+          message: `${owner === 'player' ? 'Your' : 'Enemy'} Siege Crawler is anchoring.` });
+      }
+      return;
+    }
     unit.abilityCooldown = FACTION_TANK_ABILITY_COOLDOWN;
     if (abilityId === 'brace') unit.braceUntil = this.time + GUARDIAN_BRACE_SECONDS;
     else {
@@ -3515,8 +3552,13 @@ export class Game {
           this._distanceToEntity(order.x, order.y, e) > 5.5) continue;
       if (prioritize && observer.stance === 'defensive' && observer._stanceChase?.targetId === e.id &&
           this._distanceToEntity(observer._stanceChase.x, observer._stanceChase.y, e) > 5.5) continue;
+      if (acquisition?.requireVisible && !this.isVisible(e, observer.owner)) continue;
       if (this.mode !== 'multiplayer' && observer.owner === 'enemy' && !this.isVisible(e, 'enemy')) continue;
       if (prioritize && !this.isVisible(e, observer.owner)) continue;
+      if (acquisition?.requireLineOfSight) {
+        const center = this._entityCenter(e);
+        if (!this._hasLineOfSight(observer.x, observer.y, center.x, center.y)) continue;
+      }
       const s = distance + (e.defId === 'harvester' ? 0.7 : 0) + ('w' in e ? 0.6 : 0);
       if (s < score) { best = e; score = s; }
       if (prioritize) {
@@ -3695,7 +3737,7 @@ export class Game {
   }
 
   _applyDamage(target, damage, damageType, attackerOwner, sourceId = null, sourcePosition = null,
-    areaDamage = false, allowEmbarked = false) {
+    areaDamage = false, allowEmbarked = false, sourceKind = null) {
     if (!target || target.hp <= 0 || target.embarkedIn && !allowEmbarked) return;
     // Campaign-only authored defenses can make a structure invulnerable until
     // its mission phase changes. Return before XP, salvage, or destruction logic.
@@ -3722,6 +3764,8 @@ export class Game {
         ? wreckCover.effect : null;
     if (coverEffect) this.effects.push({ id: `fx${this._nextEffectId++}`, ...coverEffect });
     const multiplier = (ARMOR_MULTIPLIER[damageType]?.[armor] ?? 1) *
+      (sourceKind === 'storm' && this._siegeAnchorReady(target)
+        ? SIEGE_ANCHOR_ION_STORM_DAMAGE_MULTIPLIER : 1) *
       (BUILDING_DEFS[target.defId] && target.owner !== attackerOwner &&
         this.research?.[attackerOwner]?.doctrine === 'siege' ? 1.2 : 1) *
       (BUILDING_DEFS[target.defId] && target.owner !== attackerOwner && sourcePosition &&
@@ -5072,6 +5116,28 @@ export class Game {
       unitId: unit.id, reason, message });
   }
 
+  _updateSiegeAnchorOrder(unit, unitDef, order) {
+    unit.x = order.x;
+    unit.y = order.y;
+    unit.facing = order.facing;
+    unit.path = [];
+    unit._pathGoal = null;
+    if (unitDef?.id !== 'artillery' || !Number.isFinite(order.readyAt)) {
+      unit.order = { type: 'idle' };
+      return;
+    }
+    if (this.time < order.readyAt || unit.stance === 'holdFire' || !unitDef.weapon) return;
+    const weaponRange = this._unitWeaponRange(unit, unitDef.weapon);
+    const target = this._findEnemyNear(unit, weaponRange + 0.25, unitDef.weapon.target,
+      { weaponRange, order, requireVisible: true, requireLineOfSight: true });
+    if (!target || !this._weaponCanTarget(unitDef.weapon, target)) return;
+    const center = this._entityCenter(target);
+    if (this._distanceToEntity(unit.x, unit.y, target) > weaponRange ||
+        !this._hasLineOfSight(unit.x, unit.y, center.x, center.y)) return;
+    if (unit.cooldown <= 0 && unit.suppressedUntil <= this.time) this._fire(unit, target, unitDef.weapon);
+    unit.facing = order.facing;
+  }
+
   _updateDigInOrder(unit, weaponRange, order) {
     unit.x = order.x;
     unit.y = order.y;
@@ -5165,6 +5231,10 @@ export class Game {
     if ((this.replayVersion == null || this.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION) &&
         order.type === 'digIn') {
       this._updateDigInOrder(u, weaponRange, order);
+      return;
+    }
+    if (this._siegeAnchorEnabled() && order.type === 'siegeAnchor') {
+      this._updateSiegeAnchorOrder(u, d, order);
       return;
     }
     const ghostRunActive = (this.replayVersion == null || this.replayVersion >= UNIT_ABILITY_RULES_VERSION) &&
@@ -8411,10 +8481,56 @@ export class Game {
       if (!this._queueUnit('enemy', choice).ok && choice !== 'rifle') this._queueUnit('enemy', 'rifle');
     }
     this._aiFieldSupportTick();
+    this._aiSiegeAnchorTick(combatUnits);
     for (const b of enemyBuildings) {
       if (!b.captureOnly && b.hp < b.maxHp * 0.55 && this.credits.enemy > 300) b.repairing = true;
     }
     if (!this.buildings.some(b => b.owner === 'player' && b.hp > 0)) this._launchAiWave();
+  }
+
+  _aiSiegeAnchorTick(combatUnits) {
+    if (!this._siegeAnchorEnabled() || this.mode !== 'skirmish' ||
+        !['normal', 'hard'].includes(this.difficulty)) return;
+    const artillery = combatUnits.filter(unit => unit.defId === 'artillery' && unit.hp > 0 && !unit.embarkedIn);
+    for (const unit of artillery) {
+      const weapon = UNIT_DEFS.artillery.weapon;
+      const closeThreat = this.units.filter(candidate => candidate.owner === 'player' && candidate.hp > 0 &&
+        !candidate.embarkedIn && !UNIT_DEFS[candidate.defId]?.flying && UNIT_DEFS[candidate.defId]?.weapon &&
+        this.isVisible(candidate, 'enemy') && this._distanceToEntity(unit.x, unit.y, candidate) <= 4.5)
+        .sort((a, b) => this._distanceToEntity(unit.x, unit.y, a) - this._distanceToEntity(unit.x, unit.y, b) ||
+          a.id.localeCompare(b.id))[0];
+      const ordinaryRange = unitWeaponRange(unit, weapon, this.replayVersion) +
+        (this._unitOnVantage(unit) ? 0.5 : 0);
+      const candidates = this.buildings.filter(building => building.owner === 'player' && building.hp > 0 &&
+        building.progress >= 1 && this.isVisible(building, 'enemy') && this._weaponCanTarget(weapon, building))
+        .map(target => ({ target, distance: this._distanceToEntity(unit.x, unit.y, target),
+          center: this._entityCenter(target) }))
+        .filter(item => item.distance > ordinaryRange && item.distance <= ordinaryRange + SIEGE_ANCHOR_RANGE_BONUS &&
+          this._hasLineOfSight(unit.x, unit.y, item.center.x, item.center.y) &&
+          ![...this.units, ...this.buildings].some(ally => ally.owner === 'enemy' && ally.hp > 0 &&
+            ally.id !== unit.id && this._distanceToEntity(item.center.x, item.center.y, ally) <= weapon.splash))
+        .sort((a, b) => (a.target.id === unit.order?.targetId ? -1 : 0) -
+          (b.target.id === unit.order?.targetId ? -1 : 0) || a.distance - b.distance ||
+          a.target.id.localeCompare(b.target.id));
+      const useful = candidates[0]?.target || null;
+      if (unit.order?.type === 'siegeAnchor') {
+        if (closeThreat || !useful) {
+          unit.order = closeThreat ? { type: 'attack', targetId: closeThreat.id, aiSiegeAnchorThreat: true }
+            : { type: 'idle' };
+          unit.path = []; unit._pathGoal = null;
+        }
+        continue;
+      }
+      // Retain any explicit movement, relay, or recovery assignment. Anchor
+      // only when the siege gun already has an observed structure objective.
+      if (!useful || closeThreat || unit.order?.type !== 'attack' || unit.order.targetId !== useful.id) continue;
+      unit.order = { type: 'siegeAnchor', x: unit.x, y: unit.y, facing: unit.facing,
+        readyAt: this.time + SIEGE_ANCHOR_SETUP_SECONDS };
+      unit.path = []; unit._pathGoal = null;
+      this._event('unitAbility', { owner: 'enemy', unitId: unit.id, abilityId: 'siegeAnchor',
+        x: unit.x, y: unit.y, facing: unit.facing, readyAt: unit.order.readyAt,
+        message: 'Enemy Siege Crawler is anchoring.' });
+    }
   }
 
   _aiDoctrineForSituation(enemyBuildings) {
@@ -8722,6 +8838,7 @@ export class Game {
       building.progress >= 1 && defenseIds.includes(building.defId) && this.isVisible(building, 'enemy'));
     if (!targets.length) return false;
     const artillery = combatUnits.filter(unit => unit.defId === 'artillery' && !unit.embarkedIn &&
+      unit.order?.type !== 'siegeAnchor' &&
       !unit._aiDefenseTarget && !unit._aiRaidTarget && !unit._aiRecovering &&
       (unit.order?.type !== 'attack' || unit._aiSiegeTarget))
       .sort((a, b) => a.id.localeCompare(b.id));
@@ -9540,6 +9657,10 @@ export class Game {
     if (game.replayVersion == null &&
         data.workshopServiceReliabilityRulesVersion !== WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION)
       game.replayVersion = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION - 1;
+    // Markerless v91 saves predate Siege Anchor. Pin them to v91 so their
+    // artillery keeps the original range and ion-storm damage behavior.
+    if (game.replayVersion == null && data.siegeAnchorRulesVersion !== SIEGE_ANCHOR_RULES_VERSION)
+      game.replayVersion = SIEGE_ANCHOR_RULES_VERSION - 1;
     game.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     game.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     game.garrisonRulesVersion = GARRISON_RULES_VERSION;
@@ -9592,6 +9713,7 @@ export class Game {
     game.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     game.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
     game.workshopServiceReliabilityRulesVersion = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+    game.siegeAnchorRulesVersion = SIEGE_ANCHOR_RULES_VERSION;
     game.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     game.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     game.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
@@ -9793,6 +9915,18 @@ export class Game {
           unit.order = { type: 'idle' };
           unit.path = []; unit._pathGoal = null;
           delete unit._aiEngineerRaid;
+        }
+      }
+      if (unit.order?.type === 'siegeAnchor') {
+        const anchor = unit.order;
+        if (!game._siegeAnchorEnabled() || unit.defId !== 'artillery' ||
+            !game._validatePoint(anchor.x, anchor.y) || !Number.isFinite(anchor.facing) ||
+            !Number.isFinite(anchor.readyAt) || anchor.readyAt < 0 || anchor.readyAt > game.time + SIEGE_ANCHOR_SETUP_SECONDS) {
+          unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+        } else {
+          unit.order = { type: 'siegeAnchor', x: anchor.x, y: anchor.y,
+            facing: Math.atan2(Math.sin(anchor.facing), Math.cos(anchor.facing)), readyAt: anchor.readyAt };
+          unit.x = anchor.x; unit.y = anchor.y; unit.path = []; unit._pathGoal = null;
         }
       }
       unit.stance = ['aggressive', 'defensive', 'holdFire'].includes(unit.stance) ? unit.stance : 'aggressive';

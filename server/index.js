@@ -8,7 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   INFANTRY_DIG_IN_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
-  WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION,
+  SIEGE_ANCHOR_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
@@ -35,7 +35,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+const RANKED_SEASON = SIEGE_ANCHOR_RULES_VERSION;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -98,9 +98,12 @@ const RANKED_SEASON = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
 // multiplayer advance, while archived runs remain in history. Version 91
 // improves Workshop service routing in all modes and advances every solo
 // comparison floor and ranked season without deleting archived runs.
-const CAMPAIGN_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+// Version 92 adds optional Siege Anchor across modes, including grounded
+// storm resistance and Normal/Hard artillery use. Fresh comparable boards and
+// ranked season leave historical results and progression intact.
+const CAMPAIGN_SCORE_FLOOR = SIEGE_ANCHOR_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = SIEGE_ANCHOR_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = SIEGE_ANCHOR_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) && !score.dailyChallengeId &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -935,11 +938,16 @@ function projectedState(lobby, member) {
     // A visible emplacement's facing and setup/expiry are observable combat
     // state. Keep this explicit subset separate from its private orders.
     delete entity.digIn;
+    delete entity.siegeAnchor;
     if (data.units.includes(entity) && ['rifle', 'rocket'].includes(entity.defId) &&
         (game.replayVersion == null || game.replayVersion >= INFANTRY_DIG_IN_RULES_VERSION) &&
         entity.order?.type === 'digIn' && entity.order.expiresAt > game.time)
       entity.digIn = { facing: entity.order.facing, readyAt: entity.order.readyAt,
         expiresAt: entity.order.expiresAt };
+    if (data.units.includes(entity) && entity.defId === 'artillery' &&
+        (game.replayVersion == null || game.replayVersion >= SIEGE_ANCHOR_RULES_VERSION) &&
+        entity.order?.type === 'siegeAnchor')
+      entity.siegeAnchor = { facing: entity.order.facing, readyAt: entity.order.readyAt };
     // Engine-private fields can encode destinations, relay assignments,
     // pursuit targets, cargo routes, or unload pairing. None are needed to
     // render or inspect an opponent entity, so scrub the whole private set.

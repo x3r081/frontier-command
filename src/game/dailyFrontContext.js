@@ -33,8 +33,11 @@ export function dailyFrontFromEnvelope(envelope, rulesVersion) {
 
 /** A recovered checkpoint is practice; a ranked run always starts at tick zero. */
 export function dailyFrontFromCheckpoint(data, game, rulesVersion) {
-  const challenge = canonicalDailyFront(data?.dailyFront, rulesVersion);
+  const savedVersion=data?.dailyFront?.rulesVersion;
+  if(!Number.isSafeInteger(savedVersion)||savedVersion<0||savedVersion>rulesVersion)return null;
+  const challenge = canonicalDailyFront(data.dailyFront, savedVersion);
   if (!challenge || game?.mode !== 'skirmish') return null;
+  if(Number.isInteger(game.replayVersion)&&game.replayVersion!==savedVersion)return null;
   const setup = challenge.setup;
   return game.seed === setup.seed && game.mapId === setup.scenarioId &&
     game.faction === setup.faction && game.difficulty === setup.difficulty &&
