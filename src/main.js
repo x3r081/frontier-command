@@ -19,6 +19,8 @@ import { relayIntel } from './game/relayIntel.js';
 import { chooseRelayLocator } from './game/relayLocator.js';
 import { SelectionRoster } from './game/selectionRoster.js';
 import { drawStrategicMapPreview } from './ui/strategicMapPreview.js';
+import { renderDailyFront, updateDailyFrontCountdown } from './ui/dailyFrontView.js';
+import { canonicalDailyFront, dailyFrontTicketMatches, dailyFrontFromEnvelope, dailyFrontFromCheckpoint } from './game/dailyFrontContext.js';
 import { campaignArtworkForMission } from './ui/campaignArtwork.js';
 import { AudioSystem } from './audio.js';
 import { NetworkClient } from './network/client.js';
@@ -47,7 +49,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='artillery-vesper'?'?rev=89':id==='rocket-vesper'?'?rev=98':id==='medic'?'?rev=86':['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='artillery-vesper'?'?rev=89':id==='rifle-vesper'?'?rev=99':id==='rocket-vesper'?'?rev=98':id==='medic'?'?rev=86':['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'mcv' ? 'mcv-vesper'
     : id === 'bunker' ? 'bunker-vesper'
@@ -56,6 +58,7 @@ const portraitVariant = (faction, id) => faction === 'vesper'
       : id === 'buggy' ? 'buggy-vesper'
         : id === 'lightTank' ? 'lightTank-vesper'
         : id === 'artillery' ? 'artillery-vesper'
+        : id === 'rifle' ? 'rifle-vesper'
         : id === 'rocket' ? 'rocket-vesper'
         : ['command','power','refinery','barracks','factory','radar','tech'].includes(id) ? `${id}-vesper` : id
   : id;
@@ -178,6 +181,11 @@ const pendingBunkerCommands = new Map();
 let activeRunId = null;
 let activeRunRecorder = null;
 let activeReplayEnvelope = null;
+let activeDailyFront = null;
+let dailyFrontData = null;
+let dailyFrontRequestVersion = 0;
+let dailyFrontCountdownTimer = null;
+let dailyFrontStarting = false;
 let activePlayback = null;
 let replayMode = false;
 let battleMoments = [];
@@ -221,10 +229,11 @@ let rankedRatingLoaded = false;
 let rankedUnavailableReason = 'Ranked season support has not been confirmed.';
 let rankedDataRequestVersion = 0;
 let pendingJoinCode = new URLSearchParams(location.search).get('join');
-const trackedDialogIds = ['#multiplayer-modal', '#leaderboard-modal', '#setup', '#manual', '#armory', '#promotion-modal', '#power-grid-modal', '#workshop-roster-modal'];
+const trackedDialogIds = ['#multiplayer-modal', '#leaderboard-modal', '#daily-front-modal', '#setup', '#manual', '#armory', '#promotion-modal', '#power-grid-modal', '#workshop-roster-modal'];
 const modalBackgroundIds = new Set([...trackedDialogIds, '#campaign-select', '#save-slots-modal', '#pause-modal', '#end-modal']);
 const trackedDialogOpeners = {
   '#multiplayer-modal': '#multiplayer-menu', '#leaderboard-modal': '#leaderboard-menu',
+  '#daily-front-modal': '#daily-front-menu',
   '#setup': '#configure-game', '#manual': '#how-to-menu', '#armory': '#armory-menu',
   '#promotion-modal': '#selection-card', '#power-grid-modal': '#power-grid-trigger',
   '#workshop-roster-modal': '#menu-toggle',
@@ -672,8 +681,13 @@ function openTrackedDialog(id) {
 function closeTrackedDialog(id, restoreFocus = true) {
   const layer = $(id);
   if (layer.classList.contains('hidden')) return;
+  if (id === '#daily-front-modal' && dailyFrontStarting) return;
   if(id==='#multiplayer-modal')leaveCasualSearch('Search cancelled because you left multiplayer.');
   hide(id);
+  if(id==='#daily-front-modal'){
+    dailyFrontRequestVersion++;
+    clearInterval(dailyFrontCountdownTimer);dailyFrontCountdownTimer=null;
+  }
   if(id==='#armory')clearArmoryModel();
   if (id === '#armory' && armoryAutoPaused) {
     armoryAutoPaused = false;
@@ -790,7 +804,9 @@ function lastReplay() {
 }
 function replayArchive() { return loadSoloReplayArchive(); }
 function replayLabel(entry) {
-  const envelope=entry.replay.envelope, mode=envelope.mode==='campaign'?'CAMPAIGN':'SKIRMISH';
+  const envelope=entry.replay.envelope;
+  const daily=dailyFrontFromEnvelope(envelope,entry.replay.version);
+  const mode=daily?`DAILY FRONT ${daily.date}`:envelope.mode==='campaign'?'CAMPAIGN':'SKIRMISH';
   const scenario=envelope.mode==='campaign'
     ?CAMPAIGN_MISSIONS.find(mission=>mission.id===envelope.scenarioId)?.title?.replace(/^Mission \d+: /,'')||envelope.scenarioId
     :SKIRMISH_MAPS.find(map=>map.id===envelope.scenarioId)?.name||envelope.scenarioId;
@@ -898,6 +914,8 @@ async function watchReplayRecord(record, metadata = null) {
     replaySeekTarget = null;
     $('#replay-seek-status').textContent = '';
     game = playback.game;
+    const dailyChallenge=dailyFrontFromEnvelope(record.envelope,record.version);
+    activeDailyFront=dailyChallenge?{challenge:dailyChallenge,practice:true}:null;
     currentMode = record.envelope.mode;
     difficulty = record.envelope.difficulty;
     faction = record.envelope.faction;
@@ -909,7 +927,7 @@ async function watchReplayRecord(record, metadata = null) {
       campaignSupplyId=record.envelope.supplyId||'none';
       campaignRoutePayoffId=record.envelope.routePayoffId||'none';
     }
-    if (currentMode === 'skirmish') { setSkirmishMap(game.mapId); setSkirmishOpening(game.skirmishOpening); setSkirmishVictoryMode(record.envelope.victoryMode||game.victoryMode||'dominion'); }
+    if (currentMode === 'skirmish'&&!activeDailyFront) { setSkirmishMap(game.mapId); setSkirmishOpening(game.skirmishOpening); setSkirmishVictoryMode(record.envelope.victoryMode||game.victoryMode||'dominion'); }
     gameSeconds = 0;
     musicCombat = 0;
     groups = {};
@@ -933,6 +951,7 @@ async function watchReplayRecord(record, metadata = null) {
     $('#multiplayer-status').classList.add('hidden');
     $('#save-game').classList.add('hidden'); $('#load-game').classList.add('hidden'); $('#restart-game').classList.add('hidden');
     $('.operation-name strong').textContent = `REPLAY · ${game.mission?.title?.toUpperCase() || SKIRMISH_MAPS.find(m => m.id === game.mapId)?.name?.toUpperCase() || 'CRYSTAL FRONT'}${currentMode==='campaign'?` · ${CAMPAIGN_DOCTRINES.find(item=>item.id===campaignDoctrineId)?.name?.toUpperCase()||'STANDARD'}`:''}${record.version<SOLO_REPLAY_VERSION?' · LEGACY RULES':''}`;
+    if(activeDailyFront)$('.operation-name strong').textContent=`REPLAY · DAILY FRONT · ${activeDailyFront.challenge.date}`;
     $('#objective-text').textContent = objectiveLabel();
     resetCommandDeckForOperation();
     resizeCanvases(); centerOnBase(); updateUI(true); updateReplayControls();
@@ -2458,8 +2477,72 @@ function resetCommandDeckForOperation() {
   document.querySelectorAll('.tab').forEach(el => el.classList.toggle('active', el.dataset.tab === tab));
   lastProductionSignature = '';
 }
+async function openDailyFront() {
+  if(dailyFrontStarting)return;
+  openTrackedDialog('#daily-front-modal');
+  const requestVersion=++dailyFrontRequestVersion;
+  renderDailyFront($('#daily-front-content'),dailyFrontData,{loading:true});
+  clearInterval(dailyFrontCountdownTimer);
+  dailyFrontCountdownTimer=setInterval(()=>{
+    if(!$('#daily-front-modal').classList.contains('hidden'))
+      updateDailyFrontCountdown($('#daily-front-content'),Date.now());
+  },1000);
+  try {
+    await networkProfileWithin(6000);
+    const data=await network.dailyFront();
+    if(requestVersion!==dailyFrontRequestVersion)return;
+    const challenge=canonicalDailyFront(data.challenge,SOLO_REPLAY_VERSION);
+    if(!challenge)throw new Error('The Daily Front setup differs from this game. Update the game and records server, then refresh.');
+    dailyFrontData={...data,challenge};
+    renderDailyFront($('#daily-front-content'),dailyFrontData);
+  } catch(error) {
+    if(requestVersion!==dailyFrontRequestVersion)return;
+    renderDailyFront($('#daily-front-content'),dailyFrontData,{error:error.message||'Daily Front is unavailable. Refresh to retry.'});
+  }
+}
+async function beginDailyFront(challenge,practice=false) {
+  if(gameStarting)return;
+  const canonical=canonicalDailyFront(challenge,SOLO_REPLAY_VERSION);
+  if(!canonical){renderDailyFront($('#daily-front-content'),dailyFrontData,{error:'Refresh to load a valid Daily Front setup.'});return;}
+  if(!practice&&Date.now()>=canonical.expiresAt){
+    await openDailyFront();
+    return;
+  }
+  await beginGame({dailyFront:{challenge:canonical,practice}});
+}
+function dailyFrontStartFailed(challenge,error) {
+  dailyFrontStarting=false;$('#daily-front-close').disabled=false;
+  hide('#launch-status');gameStarting=false;returnToMenu();
+  renderDailyFront($('#daily-front-content'),dailyFrontData||{challenge},{error:`Daily Front could not start: ${error?.message||'battlefield unavailable'}`});
+  openTrackedDialog('#daily-front-modal');
+}
+function restartSoloGame() {
+  if(activeDailyFront){
+    const {challenge,practice}=activeDailyFront;
+    if(!practice&&Date.now()>=challenge.expiresAt){returnToMenu();void openDailyFront();return;}
+    void beginDailyFront(challenge,practice);return;
+  }
+  void beginGame({mode:currentMode,missionIndex,difficulty,mapId:game?.mapId,
+    skirmishOpening:game?.skirmishOpening,victoryMode:game?.victoryMode||skirmishVictoryMode,
+    fieldOrderId:game?.campaignFieldOrderId||'none',carryoverId:game?.campaignCarryoverId||'none',
+    supplyId:game?.campaignSupplyId||'none',routePayoffId:game?.campaignRoutePayoffId||'none',
+    campaignVeteran:game?.campaignVeteran||null});
+}
 async function beginGame(options = {}) {
   if(gameStarting)return;
+  const dailySession=options.dailyFront;
+  if(dailySession){
+    const challenge=canonicalDailyFront(dailySession.challenge,SOLO_REPLAY_VERSION);
+    if(!challenge)return;
+    options={...options,...challenge.setup,mapId:challenge.setup.scenarioId};
+    dailyFrontStarting=true;$('#daily-front-close').disabled=true;
+    dailyFrontRequestVersion++;clearInterval(dailyFrontCountdownTimer);dailyFrontCountdownTimer=null;
+    renderDailyFront($('#daily-front-content'),dailyFrontData||{challenge},{loading:true});
+    $('#daily-front-close').disabled=true;
+    for(const button of $('#daily-front-content').querySelectorAll('#daily-front-play-ranked,#daily-front-practice,#daily-front-refresh'))button.disabled=true;
+    $('#daily-front-status').textContent='PREPARING DAILY FRONT DEPLOYMENT…';
+    $('#daily-front-status').dataset.kind='launching';
+  }
   clearPendingFieldAbility();
   selectionRoster.reset();
   relayScoutIndex=0;
@@ -2470,7 +2553,7 @@ async function beginGame(options = {}) {
   resetAiProfileDisclosure();
   finishDeploymentIntro();
   gameStarting=true;
-  $('#launch-status').lastChild.textContent=' CONNECTING TO COMMAND RECORDS…';
+  $('#launch-status').lastChild.textContent=dailySession?.practice?' PREPARING DAILY PRACTICE…':' CONNECTING TO COMMAND RECORDS…';
   show('#launch-status');
   abandonActiveRun();
   placementToken++; placementPending = false;
@@ -2480,7 +2563,7 @@ async function beginGame(options = {}) {
   $('#game-shell').classList.remove('replay-mode');hide('#replay-controls');
   currentMode=options.mode||'skirmish';missionIndex=options.missionIndex??0;
   difficulty=options.difficulty||difficulty;
-  let seed=Math.floor(Math.random()*1e9);
+  let seed=dailySession?.challenge.setup.seed??Math.floor(Math.random()*1e9);
   let rankedScenarioId=null;
   let rankedStartError=null;
   const requestedOpening=currentMode==='skirmish'
@@ -2508,7 +2591,7 @@ async function beginGame(options = {}) {
   if (!CAMPAIGN_ROUTE_PAYOFFS.some(payoff => payoff.id === lockedRoutePayoffId) || !campaignUsesRoutePayoff(missionIndex))
     lockedRoutePayoffId = 'none';
   const runFaction=currentMode==='campaign'?CAMPAIGN_MISSIONS[missionIndex]?.faction:options.faction||faction;
-  try {
+  if(!dailySession?.practice) try {
     // A WebSocket reconnect does not make the HTTP leaderboard unavailable.
     // Obtain the profile and ticket before creating a seed-locked simulation.
     await networkProfileWithin(6000);
@@ -2521,8 +2604,14 @@ async function beginGame(options = {}) {
       if(!submitted) throw new Error('A previous solo result is still waiting to submit. This sortie will be saved locally.');
     }
   const scenarioId=currentMode==='campaign'?CAMPAIGN_MISSIONS[missionIndex]?.id:options.mapId||skirmishMap;
-    const run=await network.startRun({mode:currentMode,difficulty,faction:runFaction,scenarioId,
-      ...(currentMode==='campaign'?{doctrineId:lockedDoctrineId,fieldOrderId:lockedFieldOrderId,carryoverId:lockedCarryoverId,supplyId:lockedSupplyId}:{skirmishOpening:requestedOpening,victoryMode:requestedVictoryMode})});
+    const run=dailySession
+      ? await network.startDailyFrontRun(dailySession.challenge)
+      : await network.startRun({mode:currentMode,difficulty,faction:runFaction,scenarioId,
+        ...(currentMode==='campaign'?{doctrineId:lockedDoctrineId,fieldOrderId:lockedFieldOrderId,carryoverId:lockedCarryoverId,supplyId:lockedSupplyId}:{skirmishOpening:requestedOpening,victoryMode:requestedVictoryMode})});
+    if(dailySession&&!dailyFrontTicketMatches(dailySession.challenge,run)){
+      network.finishRun(run.runId,{abandon:true}).catch(()=>{});
+      throw new Error('The ranked ticket differs from this Daily Front briefing. Refresh before deploying.');
+    }
     if(run.rulesVersion!==SOLO_REPLAY_VERSION){
       network.finishRun(run.runId,{abandon:true}).catch(()=>{});
       const error=new Error(`Records server rules differ from this game (version ${SOLO_REPLAY_VERSION}). Restart or update the server before submitting ranked results.`);
@@ -2552,13 +2641,22 @@ async function beginGame(options = {}) {
     if(currentMode==='campaign')lockedCampaignVeteran=validateCampaignVeteran(run.campaignVeteran)
       ? run.campaignVeteran : null;
   } catch(error) {rankedStartError=error;console.warn('Leaderboard run could not start.',error);}
+  if(dailySession&&rankedStartError){
+    dailyFrontStartFailed(dailySession.challenge,rankedStartError);
+    return;
+  }
   const mapId = rankedScenarioId || (options.mapId === 'random' ? SKIRMISH_MAPS[seed % SKIRMISH_MAPS.length].id : options.mapId || skirmishMap);
   resetProductionRepeatControls();
   try { game = currentMode==='campaign'
     ? createCampaignGame(missionIndex, options.difficulty||difficulty, activeRunId ? seed : undefined, lockedDoctrineId, lockedFieldOrderId, lockedCarryoverId, lockedSupplyId, lockedRoutePayoffId, lockedCampaignVeteran)
     : new Game({ seed, difficulty: options.difficulty || difficulty, faction: options.faction || faction, mode: 'skirmish', mapId, skirmishOpening:lockedOpening, victoryMode:lockedVictoryMode }); }
-  catch (err) { console.error(err); alert(`Unable to start game: ${err.message}`); hide('#launch-status');gameStarting=false;return; }
+  catch (err) {
+    console.error(err);
+    if(dailySession){dailyFrontStartFailed(dailySession.challenge,err);return;}
+    alert(`Unable to start game: ${err.message}`); hide('#launch-status');gameStarting=false;return;
+  }
   clearSoloRecovery();
+  activeDailyFront=dailySession?{challenge:dailySession.challenge,practice:Boolean(dailySession.practice)}:null;
   updateSoloRecoveryButton();
   if(currentMode==='campaign'){
     campaignDoctrineId=game.campaignDoctrineId||lockedDoctrineId;
@@ -2572,9 +2670,14 @@ async function beginGame(options = {}) {
     if(rig)game.select([rig.id]);
   }
   $('#launch-status').lastChild.textContent=' PREPARING BATTLEFIELD…';
-  await ensureRenderer();
+  try { await ensureRenderer(); }
+  catch(err) {
+    if(!dailySession)throw err;
+    console.error('Daily Front renderer could not start.',err);
+    dailyFrontStartFailed(dailySession.challenge,err);return;
+  }
   faction=game.faction;
-  if (currentMode === 'skirmish') { setSkirmishMap(game.mapId); setSkirmishOpening(game.skirmishOpening); setSkirmishVictoryMode(game.victoryMode||lockedVictoryMode); }
+  if (currentMode === 'skirmish'&&!activeDailyFront) { setSkirmishMap(game.mapId); setSkirmishOpening(game.skirmishOpening); setSkirmishVictoryMode(game.victoryMode||lockedVictoryMode); }
   gameEnded = false;
   lastPublicSalvagePhase = null;
   lastPublicBloomUntil = null;
@@ -2587,6 +2690,7 @@ async function beginGame(options = {}) {
   soloRecoveryElapsed = 0;
   activeReplayEnvelope={mode:currentMode,difficulty:options.difficulty||difficulty,faction:game.faction,
     seed:game.seed,scenarioId:currentMode==='campaign'?CAMPAIGN_MISSIONS[missionIndex].id:game.mapId,
+    ...(activeDailyFront?{dailyChallengeId:activeDailyFront.challenge.id,dailyChallengeDate:activeDailyFront.challenge.date}:{}),
     ...(currentMode==='campaign'?{doctrineId:campaignDoctrineId,fieldOrderId:campaignFieldOrderId,carryoverId:campaignCarryoverId,supplyId:campaignSupplyId,routePayoffId:game.campaignRoutePayoffId||'none',campaignVeteran:game.campaignVeteran||null}:{skirmishOpening:game.skirmishOpening,victoryMode:game.victoryMode||lockedVictoryMode})};
   activeRunRecorder=createSoloRecorder(game,soloClock);
   musicCombat = 0;
@@ -2605,12 +2709,14 @@ async function beginGame(options = {}) {
   closeMissionBriefing();
   setMobileRadarOpen(false);
   setMobileDeckExpanded(true);
+  if(dailySession){dailyFrontStarting=false;$('#daily-front-close').disabled=false;}
   closeTrackedDialog('#setup', false);
+  closeTrackedDialog('#daily-front-modal', false);
   hide('#menu'); hide('#campaign-select'); hide('#pause-modal'); hide('#end-modal'); show('#game-shell');
   hide('#launch-status');
   $('#multiplayer-status').classList.add('hidden');
   $('#save-game').classList.remove('hidden');$('#load-game').classList.remove('hidden');$('#restart-game').classList.remove('hidden');
-  $('.operation-name strong').textContent = currentMode==='campaign' ? `${game.mission?.title?.toUpperCase()||'OPERATION'} · ${CAMPAIGN_DOCTRINES.find(item=>item.id===campaignDoctrineId)?.name?.toUpperCase()||'STANDARD'}` : 'CRYSTAL FRONT';
+  $('.operation-name strong').textContent = activeDailyFront?`DAILY FRONT · ${activeDailyFront.challenge.date} · ${activeDailyFront.practice?'PRACTICE':'RANKED'}`:currentMode==='campaign' ? `${game.mission?.title?.toUpperCase()||'OPERATION'} · ${CAMPAIGN_DOCTRINES.find(item=>item.id===campaignDoctrineId)?.name?.toUpperCase()||'STANDARD'}` : 'CRYSTAL FRONT';
   $('#objective-text').textContent = objectiveLabel();
   camera.zoom = 1;
   deploymentIntro = null;
@@ -2646,11 +2752,14 @@ function saveGame() {
 function slotMetadata(slot) {
   const data=slot?.data;
   if(!data)return null;
-  const mode=data.mode||data.game?.mode||'skirmish';
-  const gameData=data.game||data;
-  const scenario=mode==='campaign'
+  let gameData=data.game||data;
+  if(typeof gameData==='string')try{gameData=JSON.parse(gameData);}catch{gameData={};}
+  const mode=data.mode||gameData.mode||'skirmish';
+  const daily=dailyFrontFromCheckpoint(data,gameData,SOLO_REPLAY_VERSION);
+  const mapName=SKIRMISH_MAPS.find(map=>map.id===gameData.mapId)?.name||gameData.mapId||'SKIRMISH';
+  const scenario=daily?`DAILY FRONT ${daily.challenge.date} · ${mapName}`:mode==='campaign'
     ? CAMPAIGN_MISSIONS[data.missionIndex??0]?.title||gameData.mission?.title||'CAMPAIGN OPERATION'
-    : SKIRMISH_MAPS.find(map=>map.id===gameData.mapId)?.name||gameData.mapId||'SKIRMISH';
+    : mapName;
   const seconds=Number.isFinite(data.gameSeconds)?data.gameSeconds:gameData.time||0;
   const date=new Date(slot.savedAt);
   return { scenario, difficulty:(data.difficulty||'normal').toUpperCase(), time:`${String(Math.floor(seconds/60)).padStart(2,'0')}:${String(Math.floor(seconds%60)).padStart(2,'0')}`, date:Number.isNaN(date.getTime())?'Unknown date':date.toLocaleString() };
@@ -2707,7 +2816,7 @@ function activateSaveSlot(index,occupied) {
 }
 function persistSaveSlot(index) {
   try {
-    writeSaveSlot(index,{ game: game.serialize(), gameSeconds, simulationTick:soloClock.completedTicks, faction, difficulty, groups, mode:currentMode, missionIndex, doctrineId:game.campaignDoctrineId||campaignDoctrineId, fieldOrderId:game.campaignFieldOrderId||campaignFieldOrderId, carryoverId:game.campaignCarryoverId||campaignCarryoverId, supplyId:game.campaignSupplyId||campaignSupplyId, routePayoffId:game.campaignRoutePayoffId||'none' },{scenario:currentMode==='campaign'?CAMPAIGN_MISSIONS[missionIndex]?.title:SKIRMISH_MAPS.find(map=>map.id===game.mapId)?.name});
+    writeSaveSlot(index,{ game: game.serialize(), gameSeconds, simulationTick:soloClock.completedTicks, faction, difficulty, groups, mode:currentMode, missionIndex, ...(activeDailyFront?{dailyFront:activeDailyFront.challenge}:{}), doctrineId:game.campaignDoctrineId||campaignDoctrineId, fieldOrderId:game.campaignFieldOrderId||campaignFieldOrderId, carryoverId:game.campaignCarryoverId||campaignCarryoverId, supplyId:game.campaignSupplyId||campaignSupplyId, routePayoffId:game.campaignRoutePayoffId||'none' },{scenario:currentMode==='campaign'?CAMPAIGN_MISSIONS[missionIndex]?.title:SKIRMISH_MAPS.find(map=>map.id===game.mapId)?.name});
     closeSaveSlots();toast(`OPERATION SAVED TO SLOT ${index}`);
   } catch (err) { console.error(err);toast('SAVE FAILED',true); }
 }
@@ -2716,6 +2825,7 @@ function checkpointSoloRecovery() {
       game.status !== 'playing') return false;
   return saveSoloRecovery({ game: game.serialize(), gameSeconds, simulationTick: soloClock.completedTicks,
     faction, difficulty, groups, mode: currentMode, missionIndex,
+    ...(activeDailyFront?{dailyFront:activeDailyFront.challenge}:{}),
     doctrineId: game.campaignDoctrineId || campaignDoctrineId,
     fieldOrderId: game.campaignFieldOrderId || campaignFieldOrderId,
     carryoverId: game.campaignCarryoverId || campaignCarryoverId,
@@ -2728,9 +2838,12 @@ function updateSoloRecoveryButton() {
   const recovery = loadSoloRecovery();
   button.classList.toggle('hidden', !recovery);
   if (recovery) {
-    const title = recovery.data.mode === 'campaign'
+    let checkpointGame=recovery.data.game||recovery.data;
+    if(typeof checkpointGame==='string')try{checkpointGame=JSON.parse(checkpointGame);}catch{checkpointGame={};}
+    const daily=dailyFrontFromCheckpoint(recovery.data,checkpointGame,SOLO_REPLAY_VERSION);
+    const title = daily ? `DAILY FRONT ${daily.challenge.date}` : recovery.data.mode === 'campaign'
       ? CAMPAIGN_MISSIONS[recovery.data.missionIndex]?.title
-      : SKIRMISH_MAPS.find(map => map.id === (() => { try { return JSON.parse(recovery.data.game).mapId; } catch { return ''; } })())?.name;
+      : SKIRMISH_MAPS.find(map => map.id === checkpointGame.mapId)?.name;
     button.textContent = `RECOVER ${title || 'INTERRUPTED BATTLE'} · UNRANKED`;
   }
 }
@@ -2744,6 +2857,7 @@ async function loadSaved(data, fromRecovery = false) {
     activePlayback=null;replayMode=false;replayAccumulator=0;replaySeekTarget=null;
     $('#game-shell').classList.remove('replay-mode');hide('#replay-controls');
     game = Game.deserialize(data.game || data);
+    activeDailyFront=dailyFrontFromCheckpoint(data,game,SOLO_REPLAY_VERSION);
     if (game.mode === 'multiplayer' || game.status !== 'playing') throw new Error('Recovery is not an active solo battle.');
     await ensureRenderer();
     gameSeconds = Number.isFinite(data.gameSeconds) ? data.gameSeconds : game.time || 0;
@@ -2768,7 +2882,7 @@ async function loadSaved(data, fromRecovery = false) {
       if(validCarryoverId(missionIndex,campaignCarryoverId))localStorage.setItem(CARRYOVER_KEY,campaignCarryoverId);
       if(CAMPAIGN_SUPPLIES.some(supply=>supply.id===campaignSupplyId))localStorage.setItem(SUPPLY_KEY,campaignSupplyId);
     }
-    if (currentMode === 'skirmish') { setSkirmishMap(game.mapId); setSkirmishOpening(game.skirmishOpening); setSkirmishVictoryMode(game.victoryMode||data.victoryMode||'dominion'); }
+    if (currentMode === 'skirmish'&&!activeDailyFront) { setSkirmishMap(game.mapId); setSkirmishOpening(game.skirmishOpening); setSkirmishVictoryMode(game.victoryMode||data.victoryMode||'dominion'); }
     groups = data.groups || {};
     resetTacticalFeed();
     gameEnded = false; paused = false; playing = true; placeId = null; placementToken++; placementPending = false;
@@ -2786,6 +2900,7 @@ async function loadSaved(data, fromRecovery = false) {
     $('#multiplayer-status').classList.add('hidden');
     $('#save-game').classList.remove('hidden');$('#load-game').classList.remove('hidden');$('#restart-game').classList.remove('hidden');
     $('.operation-name strong').textContent = currentMode==='campaign' ? `${game.mission?.title?.toUpperCase()||'OPERATION'} · ${CAMPAIGN_DOCTRINES.find(item=>item.id===campaignDoctrineId)?.name?.toUpperCase()||'STANDARD'}` : 'CRYSTAL FRONT';
+    if(activeDailyFront)$('.operation-name strong').textContent=`DAILY FRONT · ${activeDailyFront.challenge.date} · PRACTICE`;
     $('#objective-text').textContent = objectiveLabel();
     clearSoloRecovery();updateSoloRecoveryButton();
     resizeCanvases(); centerOnBase();
@@ -2799,6 +2914,7 @@ function abandonActiveRun() {
   activeRunRecorder?.dispose();
   activeRunRecorder=null;
   activeReplayEnvelope=null;
+  activeDailyFront=null;
   if(!activeRunId)return;
   const runId=activeRunId;
   activeRunId=null;
@@ -6332,6 +6448,7 @@ function interruptMultiplayerMatch(replacedCode='') {
   $('#post-match-opponent').classList.add('hidden');
   $('#end-next').classList.add('hidden');
   $('#end-restart').classList.add('hidden');
+  $('#end-daily-front').classList.add('hidden');
   $('#end-replay').classList.add('hidden');
   show('#end-modal');$('#end-menu').focus();
 }
@@ -6678,7 +6795,10 @@ function finishGame(victory, terminalEvent=null) {
   }
   $('#end-replay').classList.toggle('hidden',!storedCurrentReplay);
   updateReplayAvailability();
-  if(recordStatus)recordStatus.textContent=currentMode==='multiplayer'?'LIVE MULTIPLAYER MATCH':`${activeRunId?'SUBMITTING VERIFIED SOLO RESULT…':'OFFLINE GAME · RESULT SAVED ON THIS DEVICE ONLY'}${currentMode==='campaign'?` · DOCTRINE: ${CAMPAIGN_DOCTRINES.find(item=>item.id===campaignDoctrineId)?.name||'Standard'}`:''}`;
+  const localResultLabel=activeDailyFront
+    ?storedCurrentReplay?'DAILY PRACTICE · REPLAY SAVED ON THIS DEVICE':'DAILY PRACTICE · UNRANKED RESULT'
+    :storedCurrentReplay?'OFFLINE GAME · REPLAY SAVED ON THIS DEVICE':'UNRANKED RESULT · NO COMPLETE REPLAY AVAILABLE';
+  if(recordStatus)recordStatus.textContent=currentMode==='multiplayer'?'LIVE MULTIPLAYER MATCH':`${activeRunId?'SUBMITTING VERIFIED SOLO RESULT…':localResultLabel}${currentMode==='campaign'?` · DOCTRINE: ${CAMPAIGN_DOCTRINES.find(item=>item.id===campaignDoctrineId)?.name||'Standard'}`:''}`;
   renderPendingSubmissionControls();
   if(activeRunId&&currentMode!=='multiplayer'){
     const finishingRunId=activeRunId;
@@ -6694,6 +6814,8 @@ function finishGame(victory, terminalEvent=null) {
   $('#end-next').innerHTML=nextMissionIds.length>1?'CHOOSE YOUR ROUTE <span>↗</span>':'NEXT OPERATION <span>↗</span>';
   $('#end-restart').innerHTML=currentMode==='campaign'?'REPLAY OPERATION <span>↗</span>':'PLAY AGAIN <span>↗</span>';
   $('#end-restart').classList.toggle('hidden',currentMode==='multiplayer');
+  $('#end-daily-front').classList.toggle('hidden',!activeDailyFront);
+  if(activeDailyFront)$('#end-restart').innerHTML=`${activeDailyFront.practice?'RETRY PRACTICE':'RETRY DAILY FRONT'} <span>↗</span>`;
   show('#end-modal');
   $('#end-modal').querySelector('button:not(:disabled):not(.hidden)')?.focus();
 }
@@ -6716,6 +6838,22 @@ async function showSoloBenchmark(envelope, rulesVersion=SOLO_REPLAY_VERSION) {
   if(!panel||!envelope)return;
   const requestVersion=++soloBenchmarkRequestVersion;
   panel.classList.remove('hidden');
+  if(envelope.dailyChallengeId){
+    panel.textContent='LOADING DAILY FRONT STANDINGS…';
+    try {
+      const data=await network.dailyFront();
+      if(requestVersion!==soloBenchmarkRequestVersion||$('#end-modal')?.classList.contains('hidden'))return;
+      if(data.challenge?.id!==envelope.dailyChallengeId){
+        panel.textContent=`DAILY FRONT ${envelope.dailyChallengeDate} · VERIFIED RESULT RECORDED. A NEW FRONT IS NOW OPEN.`;
+      }else if(data.ownBest){
+        panel.textContent=`DAILY FRONT ${envelope.dailyChallengeDate} · YOUR BEST: #${data.ownRank} · ${Math.round(data.ownBest.score).toLocaleString()} POINTS · ${clockText(data.ownBest.seconds)} · BEST VERIFIED VICTORY PER COMMANDER`;
+      }else panel.textContent='DAILY FRONT RESULT VERIFIED · WIN THIS BATTLE TO ENTER THE DAILY STANDINGS.';
+    }catch{
+      if(requestVersion===soloBenchmarkRequestVersion&&!$('#end-modal')?.classList.contains('hidden'))
+        panel.textContent='DAILY FRONT RESULT VERIFIED · DAILY STANDINGS TEMPORARILY UNAVAILABLE.';
+    }
+    return;
+  }
   panel.textContent='LOADING VERIFIED SCENARIO BENCHMARK…';
   const filters={mode:envelope.mode,scenarioId:envelope.scenarioId,difficulty:envelope.difficulty,faction:envelope.faction};
   if(envelope.mode==='campaign')Object.assign(filters,{doctrineId:envelope.doctrineId||'standard',fieldOrderId:envelope.fieldOrderId||'none',carryoverId:envelope.carryoverId||'none',veteran:envelope.campaignVeteran?(envelope.campaignVeteran.veterancy===2?'elite':'veteran'):'none',supplyId:envelope.supplyId||'none',...(campaignRouteBoard(envelope.scenarioId)?{routePayoffId:envelope.routePayoffId||'none'}:{})});
@@ -7039,7 +7177,7 @@ function renderBattleHistory(data){
     const outcome=createTextElement('b',`my-battle-result ${entry.result}`,entry.result.toUpperCase());
     heading.append(title,outcome);
     const details=document.createElement('div');details.className='my-battle-details';
-    const mode=entry.mode==='campaign'?'CAMPAIGN':entry.mode==='skirmish'?'SKIRMISH':String(entry.mode||'SOLO').toUpperCase();
+    const mode=entry.dailyChallengeId?`DAILY FRONT ${entry.dailyChallengeDate||''}`:entry.mode==='campaign'?'CAMPAIGN':entry.mode==='skirmish'?'SKIRMISH':String(entry.mode||'SOLO').toUpperCase();
     const difficultyName=String(entry.difficulty||'normal').toUpperCase();
     const factionName=entry.faction?String(entry.faction).toUpperCase():'';
     details.append(createTextElement('span','',`${mode} · ${difficultyName}${factionName?` · ${factionName}`:''}${entry.mode==='skirmish'?` · ${entry.victoryMode==='elimination'?'ELIMINATION':'RELAY DOMINION'}`:''}`));
@@ -7573,6 +7711,19 @@ $('#configure-game').addEventListener('click',openSetup);
 $('#campaign-menu').addEventListener('click',openCampaign);
 $('#multiplayer-menu').addEventListener('click',openMultiplayer);
 $('#leaderboard-menu').addEventListener('click',openLeaderboard);
+$('#daily-front-menu').addEventListener('click',openDailyFront);
+$('#records-daily-front').addEventListener('click',openDailyFront);
+$('#end-daily-front').addEventListener('click',openDailyFront);
+$('#daily-front-close').addEventListener('click',()=>closeTrackedDialog('#daily-front-modal'));
+$('#daily-front-modal').addEventListener('keydown',event=>{if(event.key==='Tab')containModalTab(event,$('#daily-front-modal'));});
+$('#daily-front-modal').addEventListener('click',event=>{
+  if(event.target===$('#daily-front-modal')){closeTrackedDialog('#daily-front-modal');return;}
+  if(event.target.closest('#daily-front-refresh')){void openDailyFront();return;}
+  const ranked=event.target.closest('#daily-front-play-ranked');
+  const practice=event.target.closest('#daily-front-practice');
+  if((ranked&&!ranked.disabled)||(practice&&!practice.disabled))
+    void beginDailyFront(dailyFrontData?.challenge,Boolean(practice));
+});
 $('#my-battles-refresh').addEventListener('click',loadBattleHistory);
 $('#my-1v1-matches-refresh').addEventListener('click',()=>loadMultiplayerHistory());
 $('#my-1v1-matches-more').addEventListener('click',()=>loadMultiplayerHistory({append:true}));
@@ -7850,7 +8001,7 @@ $('#save-slots-modal').addEventListener('keydown',event=>{
   else if(!event.shiftKey&&document.activeElement===last){event.preventDefault();first.focus();}
 });
 $('#load-game').addEventListener('click',()=>openSaveSlots('load'));
-$('#restart-game').addEventListener('click',()=>beginGame({mode:currentMode,missionIndex,difficulty,mapId:game?.mapId,skirmishOpening:game?.skirmishOpening,victoryMode:game?.victoryMode||skirmishVictoryMode,fieldOrderId:game?.campaignFieldOrderId||'none',carryoverId:game?.campaignCarryoverId||'none',supplyId:game?.campaignSupplyId||'none',routePayoffId:game?.campaignRoutePayoffId||'none',campaignVeteran:game?.campaignVeteran||null}));
+$('#restart-game').addEventListener('click',restartSoloGame);
 $('#help-game').addEventListener('click',()=>{openManual();});
 $('#quit-game').addEventListener('click',returnToMenu);
 $('#end-next').addEventListener('click',()=>{
@@ -7866,7 +8017,7 @@ $('#end-next').addEventListener('click',()=>{
   const nextIndex=campaignIndexById(choices[0]);
   if(nextIndex>=0)openMissionBriefing(nextIndex,$(`#campaign-list [data-mission="${nextIndex}"]`));
 });
-$('#end-restart').addEventListener('click',()=>{if(currentMode!=='multiplayer')beginGame({mode:currentMode,missionIndex,difficulty,mapId:game?.mapId,skirmishOpening:game?.skirmishOpening,victoryMode:game?.victoryMode||skirmishVictoryMode,fieldOrderId:game?.campaignFieldOrderId||'none',carryoverId:game?.campaignCarryoverId||'none',supplyId:game?.campaignSupplyId||'none',routePayoffId:game?.campaignRoutePayoffId||'none',campaignVeteran:game?.campaignVeteran||null});});
+$('#end-restart').addEventListener('click',()=>{if(currentMode!=='multiplayer')restartSoloGame();});
 $('#end-replay').addEventListener('click',watchLastReplay);
 $('#post-match-rematch-request').addEventListener('click',async()=>{
   if(!postMatchRematch||rematchRequestPending)return;

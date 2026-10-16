@@ -22,6 +22,7 @@ import { deriveCampaignVeteran } from '../src/game/campaignVeteran.js';
 import { createSoloPlayback, createSoloRecorder, validateSoloEnvelope, validateSoloReplay,
   SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
+import { currentDailyFront } from '../src/game/dailyFront.js';
 
 const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'frontier-server-test-'));
 process.env.NODE_ENV = 'test';
@@ -90,6 +91,95 @@ test('health reports the ranked replay rules version', async () => {
   const response = await api('/api/health');
   assert.equal(response.status, 200);
   assert.deepEqual(await response.json(), { ok: true, rulesVersion: SOLO_REPLAY_VERSION });
+});
+
+test('Daily Front is public and publishes one verified best win per profile', async () => {
+  const owner = await createProfile('Daily Front Owner');
+  const other = await createProfile('Daily Front Other');
+  const front = currentDailyFront(Date.now(), SOLO_REPLAY_VERSION);
+  const base = { mode: 'skirmish', scenarioId: front.setup.scenarioId, scenarioName: 'Daily map',
+    difficulty: 'normal', faction: front.setup.faction, scoreVersion: SOLO_REPLAY_VERSION,
+    dailyChallengeId: front.id, dailyChallengeDate: front.date, verified: true, result: 'victory',
+    aiCommanderProfileId: front.setup.aiCommanderProfileId, completedAt: Date.now(), kills: 3 };
+  const rows = [
+    { ...base, id: 'daily-owner-slower', profileId: owner.profile.id, seconds: 100 },
+    { ...base, id: 'daily-owner-best', profileId: owner.profile.id, seconds: 80 },
+    { ...base, id: 'daily-other', profileId: other.profile.id, seconds: 90 },
+    { ...base, id: 'daily-unverified', profileId: 'missing-profile', seconds: 1, verified: false },
+    { ...base, id: 'daily-prior-day', profileId: 'missing-profile', seconds: 1,
+      dailyChallengeId: `daily-2020-01-01-v${SOLO_REPLAY_VERSION}` },
+  ];
+  store.scores.push(...rows);
+  try {
+    const anonymous = await (await api('/api/challenges/daily')).json();
+    assert.equal(anonymous.challenge.id, front.id);
+    assert.deepEqual(anonymous.entries.map(entry => entry.id), ['daily-owner-best', 'daily-other']);
+    assert.equal(anonymous.ownBest, null);
+    assert.equal(anonymous.ownRank, null);
+    const own = await (await api('/api/challenges/daily', owner.token)).json();
+    assert.equal(own.ownBest.id, 'daily-owner-best');
+    assert.equal(own.ownRank, 1);
+  } finally {
+    store.scores = store.scores.filter(score => !rows.includes(score));
+  }
+});
+
+test('Daily Front tickets lock setup, reject stale or contradictory requests, and leave ordinary starts random', async () => {
+  const profile = await createProfile('Daily Ticket');
+  const front = currentDailyFront(Date.now(), SOLO_REPLAY_VERSION);
+  const start = setup => api('/api/scores/runs', profile.token, { method: 'POST', body: json(setup) });
+  const accepted = await start({ dailyChallengeId: front.id });
+  assert.equal(accepted.status, 201);
+  const ticket = await accepted.json();
+  assert.deepEqual({ mode: ticket.mode, difficulty: ticket.difficulty, faction: ticket.faction,
+    seed: ticket.seed, scenarioId: ticket.scenarioId, skirmishOpening: ticket.skirmishOpening,
+    victoryMode: ticket.victoryMode, aiCommanderProfileId: ticket.aiCommanderProfileId }, front.setup);
+  assert.equal(ticket.dailyChallengeId, front.id);
+  assert.equal(ticket.dailyChallengeDate, front.date);
+  const saved = store.runs.find(run => run.id === ticket.runId);
+  assert.equal(saved.dailyChallengeId, front.id);
+  assert.equal(saved.dailyChallengeDate, front.date);
+
+  const stale = await start({ dailyChallengeId: `daily-2020-01-01-v${SOLO_REPLAY_VERSION}` });
+  assert.equal(stale.status, 409);
+  const changed = await start({ dailyChallengeId: front.id, scenarioId: 'not-the-daily-map' });
+  assert.equal(changed.status, 400);
+  const ordinary = await start({ mode: 'skirmish', difficulty: 'normal', faction: 'aegis', scenarioId: 'random' });
+  assert.equal(ordinary.status, 201);
+  const ordinaryTicket = await ordinary.json();
+  assert.equal(Object.hasOwn(ordinaryTicket, 'dailyChallengeId'), false);
+  assert.ok(Number.isInteger(ordinaryTicket.seed));
+  store.runs = store.runs.filter(run => run.id !== ticket.runId && run.id !== ordinaryTicket.runId);
+});
+
+test('Daily Front scores stay off ordinary boards while personal history retains challenge metadata', async () => {
+  const profile = await createProfile('Daily Archive');
+  const front = currentDailyFront(Date.now(), SOLO_REPLAY_VERSION);
+  const daily = { id: 'daily-board-score', profileId: profile.profile.id, mode: 'skirmish',
+    scenarioId: front.setup.scenarioId, scenarioName: 'Daily map', difficulty: 'normal',
+    faction: front.setup.faction, aiCommanderProfileId: front.setup.aiCommanderProfileId,
+    seconds: 30, kills: 2, completedAt: Date.now(), scoreVersion: SOLO_REPLAY_VERSION,
+    verified: true, result: 'victory', dailyChallengeId: front.id, dailyChallengeDate: front.date };
+  const ordinary = { ...daily, id: 'ordinary-board-score',
+    seconds: 40, dailyChallengeId: undefined, dailyChallengeDate: undefined };
+  const history = { id: 'daily-history', profileId: profile.profile.id, mode: 'skirmish',
+    scenarioId: daily.scenarioId, scenarioName: daily.scenarioName, difficulty: 'normal',
+    faction: daily.faction, skirmishOpening: 'established', victoryMode: 'dominion',
+    aiCommanderProfileId: daily.aiCommanderProfileId, seconds: 30, kills: 2, result: 'victory',
+    scoreId: daily.id, completedAt: Date.now(), dailyChallengeId: front.id, dailyChallengeDate: front.date };
+  store.scores.push(daily, ordinary);
+  store.history.push(history);
+  try {
+    const board = await (await api(`/api/leaderboard?mode=skirmish&scenarioId=${front.setup.scenarioId}&difficulty=normal`, profile.token)).json();
+    assert.deepEqual(board.entries.map(entry => entry.id), [ordinary.id]);
+    const records = await (await api('/api/records/history', profile.token)).json();
+    const entry = records.entries.find(record => record.id === history.id);
+    assert.equal(entry.dailyChallengeId, front.id);
+    assert.equal(entry.dailyChallengeDate, front.date);
+  } finally {
+    store.scores = store.scores.filter(score => score !== daily && score !== ordinary);
+    store.history = store.history.filter(record => record !== history);
+  }
 });
 
 test('campaign progress is authenticated, profile and difficulty scoped, and derived only from verified victories', async () => {

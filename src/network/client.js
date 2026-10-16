@@ -43,6 +43,12 @@ export class NetworkClient {
   }
 
   friends() { return this.request('/friends'); }
+  dailyFront() { return this.request('/challenges/daily'); }
+  startDailyFrontRun(challenge, timeoutMs = 8000) {
+    if (!challenge || typeof challenge.id !== 'string' || !challenge.setup ||
+        typeof challenge.setup !== 'object') throw new TypeError('A Daily Front challenge is required.');
+    return this.startRun({ ...challenge.setup, dailyChallengeId: challenge.id }, timeoutMs);
+  }
   requestFriend(code) { return this.request('/friends/requests', 'POST', { code }); }
   acceptFriend(id) { return this.request(`/friends/requests/${encodeURIComponent(id)}/accept`, 'POST', {}); }
   campaignProgress() { return this.request('/campaign/progress'); }

@@ -270,7 +270,7 @@ function compactStaticModel(root, preserve=()=>false) {
   }
 }
 
-const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rocket','rocketVesper','engineer','medic','flamer']);
+const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rifleVesper','rocket','rocketVesper','engineer','medic','flamer']);
 const ARTILLERY_MODEL_KEYS = new Set(['artillery','vesperArtillery']);
 function preserveMovingModelPart(key,object) {
   const name=object.name.replace(/_/g,' ').replace(/(\d{3})$/,'.$1');
@@ -1347,16 +1347,16 @@ export class Renderer3D {
       salvageDrop:'salvage-pod.glb',
       lightTank:'striker-tank.glb', vesperLightTank:'vesper-striker-tank.glb', apc:'apc.glb',
       harvester:'harvester.glb', vesperHarvester:'vesper-harvester.glb', crystal:'crystal-cluster.glb',
-      scout:'scout.glb', scoutVesper:'vesper-scout.glb', rifle:'rifle-infantry.glb', rocket:'rocket-infantry.glb', rocketVesper:'vesper-rocket-infantry.glb',
+      scout:'scout.glb', scoutVesper:'vesper-scout.glb', rifle:'rifle-infantry.glb', rifleVesper:'vesper-rifle-infantry.glb', rocket:'rocket-infantry.glb', rocketVesper:'vesper-rocket-infantry.glb',
       engineer:'engineer.glb', medic:'medic.glb', flamer:'flamer.glb',
       mcv:'mcv.glb', vesperMcv:'vesper-mcv.glb', stealthTank:'stealth-tank.glb', buggy:'recon-buggy.glb', vesperBuggy:'vesper-recon-buggy.glb',
       artillery:'siege-crawler.glb', vesperArtillery:'vesper-siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='vesperArtillery'?'?rev=89':key==='rocketVesper'?'?rev=98':key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=key==='vesperArtillery'?'?rev=89':key==='rifleVesper'?'?rev=99':key==='rocketVesper'?'?rev=98':key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
-        if(['rifle','rocket','rocketVesper'].includes(key)) gltf.scene.traverse(object=>{
+        if(['rifle','rifleVesper','rocket','rocketVesper'].includes(key)) gltf.scene.traverse(object=>{
           if(!object.isSkinnedMesh) return;
           object.geometry.computeBoundingSphere();
           // The bind-pose bounds omit a small amount of knee and weapon travel.
@@ -3994,6 +3994,7 @@ export class Renderer3D {
       radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
     const modelKey=o.defId==='guardian'&&o.faction!=='aegis'?'none':
       o.defId==='scout'&&o.faction==='vesper'?'scoutVesper':
+      o.defId==='rifle'&&o.faction==='vesper'?'rifleVesper':
       o.defId==='rocket'&&o.faction==='vesper'?'rocketVesper':
       o.defId==='buggy'&&o.faction==='vesper'?'vesperBuggy':
       o.defId==='lightTank'&&o.faction==='vesper'?'vesperLightTank':
@@ -4002,10 +4003,10 @@ export class Renderer3D {
       o.defId==='harvester'&&o.faction==='vesper'?'vesperHarvester':(vesperStructure||o.defId);
     const source=this.assetModels.get(modelKey);
     if(!source) return null;
-    const visual=['rifle','rocket','rocketVesper'].includes(modelKey)
+    const visual=['rifle','rifleVesper','rocket','rocketVesper'].includes(modelKey)
       ? SkeletonUtils.clone(source)
       : source.clone(true);
-    if(['rifle','rocket','rocketVesper'].includes(modelKey)) shareClonedSkeletons(visual);
+    if(['rifle','rifleVesper','rocket','rocketVesper'].includes(modelKey)) shareClonedSkeletons(visual);
     // Blender structures use a roughly three-tile foundation; fit each one to
     // its actual simulation footprint so small defenses do not mask neighbors.
     if('w' in o){
@@ -5731,7 +5732,7 @@ export class Renderer3D {
       const building='w' in o;
       live.add(o.id);
       let state=this.entities.get(o.id);
-      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',lightTank:'vesperLightTank',rocket:'rocketVesper',artillery:'vesperArtillery',mcv:'vesperMcv',
+      const assetKey=o.faction==='vesper'&&({command:'vesperCommand',power:'vesperPower',harvester:'vesperHarvester',buggy:'vesperBuggy',lightTank:'vesperLightTank',rifle:'rifleVesper',rocket:'rocketVesper',artillery:'vesperArtillery',mcv:'vesperMcv',
         refinery:'vesperRefinery',barracks:'vesperBarracks',bunker:'vesperBunker',factory:'vesperFactory',
         radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
       const assetVersion=this.assetVersions.get(assetKey||o.defId)||0;

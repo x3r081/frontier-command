@@ -49,11 +49,19 @@ Run `node scripts/engineer-field-repair-public-playtest.js` for the bounded Norm
 
 Run `node scripts/combat-escort-public-playtest.js` for a bounded Normal Iron Reclaimed escort contact and retreat, including exact replay comparison.
 
+## Daily Front
+
+Choose **DAILY FRONT** for one shared skirmish each UTC day. The map, faction, random seed, Normal opponent, Forward Base opening, and Relay Dominion victory rule are fixed for every commander. Maps and factions rotate. Hold any two relays for 90 seconds or defeat the opposing force. **Play ranked** starts a server-locked run; **Practice** starts the identical battlefield locally. You can retry freely. Each commander has one best verified victory on the daily board, ordered by points and then elapsed time. Daily results remain in My Battles and have their own standings rather than entering the ordinary skirmish board.
+
+A ranked attempt must start before the UTC rollover. An attempt already started can finish afterward under its original date. A stale or unavailable ranked setup returns to the briefing with an error. Recovery and loaded saves are practice. Replays retain their original Daily Front date. The [desktop briefing](docs/screenshots/daily-front-desktop-v100-2026-10-16.png) and [phone briefing](docs/screenshots/daily-front-phone-v100-2026-10-16.png) show the actual generated terrain and responsive controls. This feature uses replay rules 91 and does not reset the multiplayer season.
+
+Run `node scripts/daily-front-relay-dominion-playtest.js` for the bounded 2026-10-16 Normal route. It wins by Relay Dominion in 344.47 simulated seconds using ordinary paid production, a second refinery and power plant, and recorded public orders. Its parsed serialized replay matches after consuming presentation notifications as the UI does. This demonstrates one playable route, not broad balance across future daily seeds. A checkpoint from that route was also continued in the browser to check the [recovered practice debrief](docs/screenshots/daily-front-practice-debrief-v100-2026-10-16.png) and its Daily Front standings link.
+
 ## Play
 
 Use **OBJECTS → ADD TO SQUAD**, Shift+click, or Shift+Enter to assemble a squad from the object list. Powered radar shows selected units’ current destinations with dashed minimap connectors; hidden enemy targets are omitted. With at least two ground units selected, **MATCH PACE** makes new movement orders use the slowest selected ground member's speed. It supports Attack Move, Reverse, and queued routes. Aircraft keep their own speed; combat, obstacles, and temporary abilities can separate a group.
 
-The campaign selection screen groups its seventeen missions into four named chapters, including the route choice and postwar operations. An operations rail shows cleared missions and the current chapter while leaving optional routes replayable. Chapter dividers summarize the next stage of the valley conflict without changing mission unlocks.
+The campaign selection screen groups its eighteen missions into four named chapters, including the route choice and postwar operations. An operations rail shows cleared missions and the current chapter while leaving optional routes replayable. Chapter dividers summarize the next stage of the valley conflict without changing mission unlocks.
 
 Campaign unlocks, medals, branch choice, and completed Field Orders sync from the signed-in commander's verified victories at each difficulty. The selector also preserves local practice progress from this browser, labels its source, and makes ranked readiness clear before deployment. A Normal victory does not mark the same operation completed on Hard. The first read of an older local save copies its shared unlock counter into all three difficulty ledgers so previously available practice missions stay available. **Ashes in Transit**, **Ghost Channel**, and **After the Dawn** start with fixed forces; their in-battle command deck opens on Field Support and omits unusable construction, production, research, and base-only controls.
 
@@ -249,3 +257,7 @@ Vesper Rocket Troopers now have a distinct original Blender model and portrait, 
 Service groups choose distinct reachable Workshop approaches. If a vehicle stops making progress, it tries a bounded set of alternate points; repeating SERVICE retains its original return order. Repair prices remain 0.5 credits per HP at 11 HP/s per vehicle. Select a Workshop and choose **ROSTER** to see assigned vehicles, approaching/repairing counts, current repair cost, and power or credit pauses. Choosing a roster entry locates and selects that vehicle. [Active repairs](docs/screenshots/workshop-roster-active-v99-2026-10-16.jpg) · [phone roster](docs/screenshots/workshop-roster-phone-v99-2026-10-16.jpg).
 
 Ion surges now use branching lightning driven by simulation time, so pausing stops the discharge. Reduced motion removes the flashes and cloud drift; Eco keeps the danger boundary while omitting decorative bolts, clouds, and their point light. The [recorded surge frame](docs/screenshots/storm-branched-discharge-v99-2026-10-16.jpg) uses an actual Normal Dead Signal replay with its fog unchanged.
+
+### Vesper Rifle infantry
+
+Vesper Rifle squads now use their own articulated Blender model, with oxide plating, salvaged ivory field gear, violet optics, and a slung kit. The variant keeps the shared 14-bone animation rig, hand contact, and weapon socket. Its GLB is 169,952 bytes with 2,032 triangles and eight mesh primitives. The [live Armory preview](docs/screenshots/vesper-rifle-armory-v100-2026-10-16.png) shows the model; [asset notes](docs/VESPER_RIFLE_INFANTRY_ART.md) document its local Blender rebuild. This is a visual change with no combat-rule change.

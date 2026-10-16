@@ -13,6 +13,86 @@
 .is-critical .health-bar span{background:var(--red);box-shadow:0 0 8px #fd6f6270}
 .selection-recommission-mobile{display:none}
 @media(max-width:670px){.selection-recommission-iron-reclaimed .selection-recommission-desktop{display:none}.selection-recommission-iron-reclaimed .selection-recommission-mobile{display:inline}}
+
+/* Daily Front briefing */
+#daily-front-modal{z-index:36}
+.daily-front-opener{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.daily-front-opener span{color:var(--lime);font-size:11px;letter-spacing:.1em}
+.records-daily-front{margin:0 0 12px;min-height:40px}
+.end-panel #end-daily-front{margin-bottom:3px}
+.daily-front-dialog{position:relative;width:min(1010px,calc(100vw - 30px));max-height:min(94vh,940px);overflow:auto;padding:20px 26px 10px;border:1px solid #557565;background:radial-gradient(ellipse at 20% 0%,#1b322a,#0d1916 62%,#09110f);box-shadow:0 30px 100px #000c;color:#e8f3e9}
+.daily-front-dialog .modal-close{z-index:3;width:44px;height:44px;min-width:44px;min-height:44px}
+.daily-front-heading{padding-right:52px}
+.daily-front-heading h2{margin:2px 0;font:800 42px/.95 "Barlow Condensed",sans-serif;letter-spacing:.035em;color:#f0f7ed}
+.daily-front-heading>p{margin:5px 0 7px;color:#a9bcaf;font-size:13px;line-height:1.5}
+.daily-front-date-line{display:flex;align-items:center;justify-content:space-between;gap:12px;color:#94b2a0;font:700 11px "Barlow Condensed",sans-serif;letter-spacing:.13em}
+.daily-front-date-line strong{color:var(--lime);font-size:12px}
+.daily-front-refresh{flex:none;min-width:92px;min-height:44px;padding:0 12px;border:1px solid #496b57;background:#13261c;color:#cbe1ce;font:700 10px "Barlow Condensed",sans-serif;letter-spacing:.12em}
+.daily-front-refresh:hover:not(:disabled){border-color:var(--lime);background:#203829;color:#fff}
+.daily-front-refresh:disabled{opacity:.45;cursor:wait}
+.daily-front-layout{display:grid;grid-template-columns:minmax(300px,380px) minmax(0,1fr);gap:16px;margin-top:11px}
+.daily-front-map-column{width:100%;max-width:380px;min-width:0;margin:0 auto}
+.daily-front-map-frame{position:relative;overflow:hidden;border:1px solid #56766a;background:#091410;box-shadow:inset 0 0 30px #0008;aspect-ratio:4/3}
+.daily-front-map-frame canvas{display:block;width:100%;height:100%;image-rendering:pixelated}
+.daily-front-map-stamp{position:absolute;right:8px;top:8px;padding:4px 6px;border:1px solid #a9dbc055;background:#06120fcc;color:#c6ecd9;font:700 10px "Barlow Condensed",sans-serif;letter-spacing:.12em}
+.daily-front-map-legend{display:flex;flex-wrap:wrap;gap:12px;padding:6px 2px 0;color:#a9bdb0;font:700 10px "Barlow Condensed",sans-serif;letter-spacing:.1em}
+.daily-front-map-legend span{display:flex;align-items:center;gap:5px}
+.daily-front-map-legend span:before{content:"";width:8px;height:8px;border-radius:50%;background:#b7f4d7}
+.daily-front-map-legend .daily-front-legend-mint:before{background:#83f0bf}
+.daily-front-map-legend .daily-front-legend-coral:before{background:#ff977d}
+.daily-front-map-legend .daily-front-legend-relay:before{border-radius:1px;transform:rotate(45deg)}
+.daily-front-facts{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;align-content:start}
+.daily-front-fact{display:flex;min-width:0;min-height:64px;flex-direction:column;justify-content:center;gap:3px;padding:8px 10px;border:1px solid #314d40;background:#102019}
+.daily-front-fact-label{color:#7fa08c;font:700 10px "Barlow Condensed",sans-serif;letter-spacing:.13em}
+.daily-front-fact-value{overflow:hidden;color:#e5f3e8;font:700 17px/1.05 "Barlow Condensed",sans-serif;text-overflow:ellipsis}
+.daily-front-fact-detail{color:#9eb3a4;font-size:10px;line-height:1.35}
+.daily-front-records{grid-column:1/-1;display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px}
+.daily-front-records .daily-front-fact-value{color:var(--lime)}
+.daily-front-roster{margin-top:9px;border-top:1px solid #2d473a;padding-top:7px}
+.daily-front-roster-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:4px}
+.daily-front-roster-heading h3{margin:0;color:#b8d5c2;font:700 12px "Barlow Condensed",sans-serif;letter-spacing:.14em}
+.daily-front-roster-heading span{color:#769080;font:700 9px "Barlow Condensed",sans-serif;letter-spacing:.1em}
+.daily-front-roster-list{list-style:none;margin:0;padding:0;display:grid;gap:3px}
+.daily-front-roster-list li{display:grid;grid-template-columns:38px minmax(100px,1fr) 78px 82px;gap:8px;align-items:center;min-height:35px;padding:4px 8px;border:1px solid #243e32;background:#0f1d17}
+.daily-front-rank{color:var(--lime);font:800 17px "Barlow Condensed",sans-serif}
+.daily-front-player{display:flex;min-width:0;flex-direction:column;gap:1px}
+.daily-front-player strong{overflow:hidden;color:#e2eee5;font-size:11px;text-overflow:ellipsis;white-space:nowrap}
+.daily-front-player small{color:#809c89;font-size:9px}
+.daily-front-score,.daily-front-result{text-align:right;color:#c6dfcc;font:700 11px "Barlow Condensed",sans-serif;letter-spacing:.03em}
+.daily-front-result{color:#8da798;font-size:10px}
+.daily-front-empty{margin:0;padding:9px 10px;border:1px dashed #3a5547;color:#9fb3a4;font-size:11px;line-height:1.4}
+.daily-front-actions{position:sticky;z-index:3;bottom:-10px;display:flex;align-items:center;justify-content:space-between;gap:18px;margin-top:8px;padding:9px 0 8px;border-top:1px solid #2d473a;background:linear-gradient(180deg,#0c1815e8,#0c1815 24%)}
+.daily-front-action-copy{display:flex;max-width:420px;flex-direction:column;gap:4px}
+.daily-front-action-copy strong{color:#d9eadc;font:700 12px "Barlow Condensed",sans-serif;letter-spacing:.12em}
+.daily-front-action-copy small{color:#92a99a;font-size:10px;line-height:1.4}
+.daily-front-buttons{display:flex;flex:none;gap:8px}
+.daily-front-buttons button{min-width:140px;min-height:48px;padding:0 18px}
+.daily-front-buttons button:disabled{opacity:.45;cursor:not-allowed}
+.daily-front-status{margin:9px 0 0;color:#9cb5a5;font:700 10px "Barlow Condensed",sans-serif;letter-spacing:.1em}
+.daily-front-status[data-kind="error"]{color:#ffc08c}
+@media(max-width:760px){
+  .daily-front-dialog{padding:22px 18px 12px}
+  .daily-front-layout{grid-template-columns:1fr;gap:11px}
+  .daily-front-map-column{max-width:380px}
+  .daily-front-actions{align-items:stretch;flex-direction:column;gap:8px}
+  .daily-front-buttons button{flex:1;min-width:0}
+}
+@media(max-width:480px){
+  .daily-front-dialog{width:calc(100vw - 16px);max-height:96vh;padding:20px 12px 10px}
+  .daily-front-heading{padding-right:40px}
+  .daily-front-heading h2{font-size:37px}
+  .daily-front-date-line{align-items:flex-start;flex-direction:column;gap:5px}
+  .daily-front-refresh{width:100%}
+  .daily-front-facts{gap:6px}
+  .daily-front-fact{min-height:69px;padding:8px}
+  .daily-front-fact-value{font-size:16px}
+  .daily-front-fact-detail{font-size:9px}
+  .daily-front-roster-list li{grid-template-columns:30px minmax(80px,1fr) 62px 65px;gap:5px;padding:5px}
+  .daily-front-score{font-size:10px}
+  .daily-front-result{font-size:9px}
+  .daily-front-buttons{flex-direction:column}
+  .daily-front-buttons button{width:100%;min-height:48px}
+}
 .campaign-mission-bonus{grid-template-columns:74px 1fr 26px}
 .campaign-mission-bonus .campaign-index{font-size:22px;letter-spacing:.04em}
 @media(max-width:670px){.campaign-mission-bonus{grid-template-columns:52px 1fr 18px}.campaign-mission-bonus .campaign-index{font-size:16px}}

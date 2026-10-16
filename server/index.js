@@ -18,6 +18,7 @@ import { validateCampaignVeteran, campaignVeteranSourceIds } from '../src/game/c
 import { validateSoloEnvelope, validateSoloReplay, MAX_SOLO_TICKS, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
 import { activateSelectedUnitAbility } from '../src/game/fieldAbilities.js';
+import { currentDailyFront } from '../src/game/dailyFront.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
@@ -100,7 +101,7 @@ const RANKED_SEASON = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
 const CAMPAIGN_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
 const SKIRMISH_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
-const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
+const comparableRankedScore = score => Number.isInteger(score.scoreVersion) && !score.dailyChallengeId &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
       score.scoreVersion <= SCORE_VERSION &&
@@ -1673,6 +1674,32 @@ const server = http.createServer(async (req, res) => {
     if (!pathname.startsWith('/api/')) return staticFile(req, res, pathname);
     if (pathname === '/api/health' && req.method === 'GET')
       return send(res, 200, { ok: true, rulesVersion: SCORE_VERSION });
+    if (pathname === '/api/challenges/daily' && req.method === 'GET') {
+      const challenge = currentDailyFront(now(), SCORE_VERSION);
+      const bestByProfile = new Map();
+      for (const score of store.scores) {
+        if (score.dailyChallengeId !== challenge.id || score.verified !== true ||
+            score.result !== 'victory' || score.mode !== 'skirmish' ||
+            score.scoreVersion !== challenge.rulesVersion) continue;
+        const prior = bestByProfile.get(score.profileId);
+        if (!prior || scoreValue(score) > scoreValue(prior) ||
+            scoreValue(score) === scoreValue(prior) && (score.seconds < prior.seconds ||
+              score.seconds === prior.seconds && score.completedAt < prior.completedAt))
+          bestByProfile.set(score.profileId, score);
+      }
+      const ranked = [...bestByProfile.values()].filter(score =>
+        store.profiles.some(profile => profile.id === score.profileId))
+        .sort((a, b) => scoreValue(b) - scoreValue(a) || a.seconds - b.seconds ||
+          a.completedAt - b.completedAt || a.profileId.localeCompare(b.profileId))
+        .map((score, index) => ({ id: score.id, rank: index + 1,
+          player: publicProfile(store.profiles.find(profile => profile.id === score.profileId)),
+          faction: score.faction, seconds: score.seconds, kills: score.kills,
+          score: scoreValue(score), completedAt: score.completedAt }));
+      const profile = bearer(req);
+      const ownBest = profile ? ranked.find(entry => entry.player.id === profile.id) || null : null;
+      return send(res, 200, { challenge, entries: ranked.slice(0, 100),
+        ownBest, ownRank: ownBest?.rank ?? null });
+    }
     if (pathname === '/api/profile' && req.method === 'POST') {
       const body = await bodyOf(req);
       const supplied = body.token || /^Bearer (\S+)$/i.exec(req.headers.authorization || '')?.[1];
@@ -1732,6 +1759,8 @@ const server = http.createServer(async (req, res) => {
         .sort((a, b) => b.completedAt - a.completedAt || b.id.localeCompare(a.id)).slice(0, 30)
         .map(record => ({ id: record.id, mode: record.mode, scenarioId: record.scenarioId,
           scenarioName: record.scenarioName, difficulty: record.difficulty, faction: record.faction,
+        ...(record.dailyChallengeId ? { dailyChallengeId: record.dailyChallengeId,
+          dailyChallengeDate: record.dailyChallengeDate } : {}),
         ...(record.mode === 'campaign' ? { doctrineId: record.doctrineId,
             fieldOrderId: record.fieldOrderId, carryoverId: record.carryoverId,
             campaignVeteran: record.campaignVeteran ?? null,
@@ -1909,6 +1938,20 @@ const server = http.createServer(async (req, res) => {
     }
     if (pathname === '/api/scores/runs' && req.method === 'POST') {
       const body = await bodyOf(req);
+      let dailyChallenge = null;
+      if (Object.hasOwn(body, 'dailyChallengeId')) {
+        const current = currentDailyFront(now(), SCORE_VERSION);
+        if (typeof body.dailyChallengeId !== 'string' || body.dailyChallengeId !== current.id)
+          return fail(res, 409, 'Daily Front has changed. Fetch the current challenge before starting.');
+        for (const key of ['mode', 'difficulty', 'faction', 'seed', 'scenarioId',
+          'skirmishOpening', 'victoryMode', 'aiCommanderProfileId']) {
+          if (Object.hasOwn(body, key) && body[key] !== current.setup[key])
+            return fail(res, 400, `Daily Front setup cannot be changed (${key}).`);
+        }
+        dailyChallenge = current;
+        Object.assign(body, current.setup);
+        delete body.aiCommanderProfileId; // Always derive the AI identity from the locked seed below.
+      }
       if (Object.hasOwn(body, 'campaignVeteran'))
         return fail(res, 400, 'Campaign veterans are derived from verified campaign results.');
       if (Object.hasOwn(body, 'aiCommanderProfileId'))
@@ -1969,7 +2012,10 @@ const server = http.createServer(async (req, res) => {
       } else if (Object.hasOwn(body, 'supplyId')) {
         return fail(res, 400, 'Skirmish runs cannot have campaign supply.');
       }
-      const seed = randomInt(1, 0xffffffff);
+      const startedAt = now();
+      if (dailyChallenge && currentDailyFront(startedAt, SCORE_VERSION).id !== dailyChallenge.id)
+        return fail(res, 409, 'Daily Front has changed. Fetch the current challenge before starting.');
+      const seed = dailyChallenge?.setup.seed ?? randomInt(1, 0xffffffff);
       const aiCommanderProfileId = body.mode === 'skirmish' ? aiCommanderProfileForSeed(seed).id : null;
       if (!scenario && body.mode === 'skirmish') scenario = SKIRMISH_MAPS[seed % SKIRMISH_MAPS.length];
       const run = { id: id(), profileId: profile.id, rulesVersion: SCORE_VERSION,
@@ -1985,7 +2031,9 @@ const server = http.createServer(async (req, res) => {
             ? verifiedCampaignRoutePayoff(profile.id, body.difficulty) : 'none' } : {}),
         ...(scenario ? { scenarioId: scenario.id,
           scenarioName: body.mode === 'campaign' ? scenario.title : scenario.name } : {}),
-        startedAt: now(), finishedAt: null };
+        ...(dailyChallenge ? { dailyChallengeId: dailyChallenge.id,
+          dailyChallengeDate: dailyChallenge.date } : {}),
+        startedAt, finishedAt: null };
       validateSoloEnvelope(run);
       // Only the latest run can be finished. An old browser tab cannot submit
       // a victory after a newer run has started on the same profile.
@@ -2001,6 +2049,9 @@ const server = http.createServer(async (req, res) => {
           supplyId: run.supplyId, routePayoffId: run.routePayoffId ?? 'none' } : {}),
         ...(run.mode === 'skirmish' ? { skirmishOpening: run.skirmishOpening ?? 'established',
           victoryMode: run.victoryMode ?? 'dominion', aiCommanderProfileId: run.aiCommanderProfileId } : {}),
+        ...(run.dailyChallengeId ? { dailyChallengeId: run.dailyChallengeId,
+          dailyChallengeDate: run.dailyChallengeDate, mode: run.mode,
+          difficulty: run.difficulty, faction: run.faction } : {}),
         ...(scenario ? { scenarioId: run.scenarioId, scenarioName: run.scenarioName } : {}) });
     }
     const finish = /^\/api\/scores\/runs\/([a-f0-9]+)\/finish$/.exec(pathname);
@@ -2031,6 +2082,8 @@ const server = http.createServer(async (req, res) => {
       if (activeVerifications >= MAX_VERIFICATIONS) return fail(res, 503, 'Replay verification is busy.');
       const envelope = { mode: run.mode, difficulty: run.difficulty, faction: run.faction,
         seed: run.seed, scenarioId: run.scenarioId,
+        ...(run.dailyChallengeId ? { dailyChallengeId: run.dailyChallengeId,
+          dailyChallengeDate: run.dailyChallengeDate } : {}),
         ...(run.mode === 'skirmish' ? { skirmishOpening: run.skirmishOpening ?? 'established',
           victoryMode: run.victoryMode ?? 'dominion',
           aiCommanderProfileId: run.aiCommanderProfileId ?? aiCommanderProfileForSeed(run.seed, run.rulesVersion).id } : {}),
@@ -2060,6 +2113,8 @@ const server = http.createServer(async (req, res) => {
       run.finishedAt = now();
       const record = { id: id(), profileId: profile.id, mode: run.mode, scenarioId: run.scenarioId,
         scenarioName: run.scenarioName, difficulty: run.difficulty, faction: run.faction,
+        ...(run.dailyChallengeId ? { dailyChallengeId: run.dailyChallengeId,
+          dailyChallengeDate: run.dailyChallengeDate } : {}),
         ...(run.mode === 'campaign' ? { doctrineId: run.doctrineId ?? 'standard',
           fieldOrderId: run.fieldOrderId ?? 'none', carryoverId: run.carryoverId ?? 'none',
           campaignVeteran: replay.status === 'victory' && validateCampaignVeteran(replay.campaignVeteran)
@@ -2077,6 +2132,8 @@ const server = http.createServer(async (req, res) => {
       if (replay.status === 'victory') {
         entry = { id: id(), profileId: profile.id, mode: run.mode, difficulty: run.difficulty,
           faction: run.faction, scenarioId: run.scenarioId, scenarioName: run.scenarioName,
+          ...(run.dailyChallengeId ? { dailyChallengeId: run.dailyChallengeId,
+            dailyChallengeDate: run.dailyChallengeDate } : {}),
         ...(run.mode === 'skirmish' ? { skirmishOpening: run.skirmishOpening ?? 'established',
           victoryMode: run.victoryMode ?? 'dominion',
           aiCommanderProfileId: run.aiCommanderProfileId ?? aiCommanderProfileForSeed(run.seed, run.rulesVersion).id } : {}),
@@ -2090,7 +2147,7 @@ const server = http.createServer(async (req, res) => {
             carryoverId: run.carryoverId ?? 'none', supplyId: run.supplyId ?? 'none',
             routePayoffId: run.routePayoffId ?? 'none' } : {}),
           seconds: Math.max(1, Math.ceil(replay.seconds)), kills: replay.kills,
-          completedAt: run.finishedAt, scoreVersion: SCORE_VERSION, verified: true };
+          completedAt: run.finishedAt, scoreVersion: SCORE_VERSION, verified: true, result: 'victory' };
         store.scores.push(entry);
       }
       run.verifiedResult = replay.status;

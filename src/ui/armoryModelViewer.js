@@ -1,6 +1,6 @@
 const MODEL_CATALOG = Object.freeze({
   scout: { aegis: 'scout.glb', vesper: 'vesper-scout.glb' },
-  rifle: { all: 'rifle-infantry.glb?rev=76' },
+  rifle: { aegis: 'rifle-infantry.glb?rev=76', vesper: 'vesper-rifle-infantry.glb?rev=99' },
   rocket: { aegis: 'rocket-infantry.glb?rev=76', vesper: 'vesper-rocket-infantry.glb?rev=98' },
   engineer: { all: 'engineer.glb?rev=1' },
   harvester: { aegis: 'harvester.glb', vesper: 'vesper-harvester.glb' },
