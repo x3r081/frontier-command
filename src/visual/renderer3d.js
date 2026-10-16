@@ -270,6 +270,8 @@ function compactStaticModel(root, preserve=()=>false) {
 const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rocket','engineer','medic','flamer']);
 function preserveMovingModelPart(key,object) {
   const name=object.name.replace(/_/g,' ').replace(/(\d{3})$/,'.$1');
+  if(key==='medic') for(let part=object;part;part=part.parent)
+    if(/^Medic leg [LR]$/.test(part.name.replace(/_/g,' ')))return true;
   if(COMPACT_INFANTRY.has(key)) return /^Arm\.?[LR] (?:upper|forearm)$/.test(name);
   if(key==='mcv') return /^(?:Run-flat wheel|Wheel hub)(?:\.\d+)?$/.test(name);
   if(key==='artillery') {
@@ -1339,7 +1341,7 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         if(['rifle','rocket'].includes(key)) gltf.scene.traverse(object=>{
@@ -4047,6 +4049,10 @@ export class Renderer3D {
       }
       animation.infantry = /^(scout|rifle|rocket|engineer|medic|flamer)$/.test(o.defId);
       if (animation.infantry) {
+        if(authored&&o.defId==='medic')animation.medicLegs=['L','R'].flatMap((side,index)=>{
+          const part=authoredPart(visual,`Medic leg ${side}`);
+          return part?[{part,pose:part.rotation.clone(),side:index===0?1:-1}]:[];
+        });
         if (authored && /^(rifle|rocket)$/.test(o.defId)) {
           const boneNames=['FC_Root','FC_Pelvis','FC_Spine','FC_Thigh_L','FC_Shin_L','FC_Foot_L',
             'FC_Thigh_R','FC_Shin_R','FC_Foot_R','FC_UpperArm_L','FC_Forearm_L',
@@ -4393,6 +4399,9 @@ export class Renderer3D {
         // The weapon bone absorbs a small counter-motion so the muzzle stays
         // readable while the body and right arm recoil from a real projectile.
         applyBoneFlex(bones,pose,'FC_Weapon',gait*0.012+recoil*0.045);
+      }
+      for(const leg of a.medicLegs||[]){
+        leg.part.rotation.x=leg.pose.x+gait*leg.side*0.25;
       }
       for (const arm of a.arms || []) {
         const swing = gait * arm.side;

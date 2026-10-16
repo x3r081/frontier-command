@@ -7,6 +7,7 @@ import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   INFANTRY_DIG_IN_RULES_VERSION, GARRISON_RULES_VERSION, AI_FIELD_BUNKER_RULES_VERSION,
+  TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -905,6 +906,7 @@ function projectedState(lobby, member) {
     delete entity.repeatUnitDefId;
     delete entity.rallyTargetId;
     delete entity.garrisonIds;
+    delete entity.targetPriority;
     if ('path' in entity) entity.path = [];
     // Standby is private economy state. An opponent snapshot must not reveal
     // whether a hidden or visible building has been switched off.
@@ -1138,6 +1140,7 @@ function startMatch(lobby) {
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueGarrison', 'issueEvacuateGarrison', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally', 'setRallyTarget',
+  'issueSetTargetPriority',
   'toggleRepair', 'setBuildingPower', 'setProductionRepeat', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'useSelectedUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
   const game = lobby.game;
@@ -1177,6 +1180,10 @@ function command(lobby, member, message) {
         ? game.issueDigIn(message.x, message.y)
         : { ok: false, reason: 'Choose a valid facing point.' };
       case 'issueSetStance': return game.issueSetStance(message.stance);
+      case 'issueSetTargetPriority': return typeof message.priority === 'string' &&
+          TARGET_PRIORITY_OPTIONS.includes(message.priority)
+        ? game.issueSetTargetPriority(message.priority)
+        : { ok: false, reason: 'Choose a valid target priority.' };
       case 'issuePatrol': return game.issuePatrol(n(message.x), n(message.y));
       case 'issueFollow': return game.issueFollow(message.targetId);
       case 'issueBoard': return game.issueBoard(message.carrierId);

@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, PRODUCTION_REPEAT_RULES_VERSION, GARRISON_RULES_VERSION, MOBILE_RALLY_RULES_VERSION, TARGET_PRIORITY_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -46,7 +46,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='medic'?'?rev=86':['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'mcv' ? 'mcv-vesper'
     : id === 'bunker' ? 'bunker-vesper'
@@ -60,6 +60,8 @@ const oreCrystal = new Image();oreCrystal.src = `${ASSET_PATH}ore-crystal.svg`;
 const fallbackSymbols = { command:'⌂', power:'ϟ', refinery:'◈', barracks:'♟', factory:'▣', radar:'◎', turret:'✦', silo:'⬡', infantry:'♟', engineer:'✚', scout:'➤', tank:'▰', artillery:'✹', harvester:'◈', aircraft:'▲' };
 const STRUCTURE_PRIORITY = Object.freeze({refinery:0,power:1,barracks:2,bunker:3,factory:4,wall:5,silo:6,serviceBay:7,radar:8});
 const FIXED_FORCE_MISSION_IDS = new Set(['ashes-in-transit', 'after-the-dawn', 'ghost-channel', 'iron-reclaimed']);
+const TARGET_PRIORITY_UI = Object.freeze({auto:'AUTO', infantry:'INFANTRY', vehicles:'VEHICLES', aircraft:'AIRCRAFT', structures:'STRUCTURES', mixed:'MIXED'});
+let pendingTargetPriority = null;
 const STANCE_UI = Object.freeze({
   aggressive:{short:'AGGR',name:'AGGRESSIVE',icon:'✦'},
   defensive:{short:'DEFEND',name:'DEFENSIVE',icon:'◈'},
@@ -1411,6 +1413,45 @@ function cycleStance() {
   const current=stances.size===1?[...stances][0]:'mixed';
   const next=current==='aggressive'?'defensive':current==='defensive'?'holdFire':'aggressive';
   resultMessage(game.issueSetStance(next),`${STANCE_UI[next].name} STANCE`);
+}
+function targetPriorityUnits(units=selectedObjects()) {
+  return units.filter(unit=>!('w' in unit)&&unit.owner==='player'&&unit.hp>0&&!unit.embarkedIn&&
+    game?.unitDefs?.[unit.defId]?.weapon);
+}
+function targetPriorityAvailable() {
+  return !!game&&(game.replayVersion==null||game.replayVersion>=TARGET_PRIORITY_RULES_VERSION)&&
+    typeof game.issueSetTargetPriority==='function';
+}
+function updateTargetPriorityControl(units) {
+  const armed=targetPriorityUnits(units), control=$('#cmd-priority'), select=$('#target-priority-select');
+  const available=targetPriorityAvailable()&&armed.length>0;
+  control.classList.toggle('hidden',!available);
+  if(!available)return false;
+  const key=armed.map(unit=>unit.id).sort().join('|');
+  const pending=pendingTargetPriority?.game===game&&pendingTargetPriority.key===key;
+  const priorities=new Set(armed.map(unit=>unit.targetPriority||'auto'));
+  const priority=pending?pendingTargetPriority.priority:priorities.size===1?[...priorities][0]:'mixed';
+  select.disabled=paused||replayMode||!!pending;
+  if(document.activeElement!==select||pending)select.value=priority;
+  control.querySelector('span').textContent=pending?'WAIT…':'TARGETS ▾';
+  control.classList.toggle('is-prioritized',priority!=='auto'&&priority!=='mixed');
+  control.title=`Automatic targeting: ${TARGET_PRIORITY_UI[priority]||'AUTO'}. Favor this class when visible and engageable; other enemies remain valid. Direct Attack orders keep their target. Applies to ${armed.length} armed ${armed.length===1?'unit':'units'}.`;
+  return true;
+}
+function setTargetPriority(priority) {
+  if(!game||!playing||paused||replayMode||!targetPriorityAvailable()||!Object.hasOwn(TARGET_PRIORITY_UI,priority)||priority==='mixed')return;
+  const armed=targetPriorityUnits();
+  if(!armed.length)return;
+  const result=game.issueSetTargetPriority(priority);
+  if(result?.pending){
+    const intent={game,key:armed.map(unit=>unit.id).sort().join('|'),priority};
+    pendingTargetPriority=intent;
+    updateSelectionCard();
+    resultMessage(result,`TARGET PRIORITY · ${TARGET_PRIORITY_UI[priority]}`,'order',{onSettled:()=>{
+      if(pendingTargetPriority===intent)pendingTargetPriority=null;
+      updateSelectionCard();
+    }});
+  }else resultMessage(result,`TARGET PRIORITY · ${TARGET_PRIORITY_UI[priority]}`);
 }
 function cycleUnits() {
   if (!game) return;
@@ -4841,6 +4882,8 @@ function updateSelectionCard() {
   const canOrderEngineer=selected.some(o=>o.defId==='engineer'&&o.owner==='player');
   const canAssignHome=isHarvesterHomeSelection(selected);
   const homeCanAutoDock=canAssignHome&&selected.some(unit=>unit.homeRefineryId!=null);
+  const showTargetPriority=updateTargetPriorityControl(units);
+  $('#cmd-repair').classList.toggle('hidden',showTargetPriority&&!canRepairStructure&&!canOrderEngineer&&!canAssignHome);
   $('#cmd-repair').disabled=!canRepairStructure&&!canOrderEngineer&&!canAssignHome;
   $('#cmd-repair').lastChild.textContent=canAssignHome?'HOME':canOrderEngineer&&!canRepairStructure?'ENGINEER':'REPAIR';
   $('#cmd-repair').title=canAssignHome?'Choose a completed friendly Refinery as the selected Harvesters’ persistent home. Loaded cargo unloads there, then they keep mining. Press R.':canOrderEngineer&&!canRepairStructure?'Send engineer to a wreck, bridge, or structure (R)':'Repair selected structure (R)';
@@ -6904,7 +6947,7 @@ function sendMatchCommand(command,data={}){
 function installMultiplayerCommandAdapters(target){
   const commands={
     issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueFormationMove:(x,y,formationId,movement='move',queue=false,matchPace=false)=>({x,y,formationId,movement,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
-    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issueAssignRefinery:(refineryId=null)=>({refineryId}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueGarrison:buildingId=>({buildingId}),issueEvacuateGarrison:buildingId=>({buildingId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueDigIn:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
+    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issueAssignRefinery:(refineryId=null)=>({refineryId}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueGarrison:buildingId=>({buildingId}),issueEvacuateGarrison:buildingId=>({buildingId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueDigIn:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),issueSetTargetPriority:priority=>({priority}),
     issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueRecommissionWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:(defId,producerId)=>({defId,...(producerId!==undefined?{producerId}:{})}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
@@ -7778,6 +7821,7 @@ $('#battlefield-picker-list').addEventListener('keydown',event=>{
 $('#cmd-scatter').addEventListener('click',()=>resultMessage(game?.issueScatter?.(),'SQUAD SCATTERED'));
 $('#cmd-force').addEventListener('click',()=>startTargetOrder('force','FORCE FIRE'));
 $('#cmd-stance').addEventListener('click',cycleStance);
+$('#target-priority-select').addEventListener('change',event=>setTargetPriority(event.currentTarget.value));
 function activateFieldAbilityOrDeploy(){
   if(!game||!playing||paused||replayMode||gameEnded)return;
   const button=$('#cmd-deploy');

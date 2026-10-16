@@ -88,6 +88,8 @@ export const PRODUCTION_REPEAT_RULES_VERSION = 78;
 export const GARRISON_RULES_VERSION = 79;
 export const AI_FIELD_BUNKER_RULES_VERSION = 80;
 export const MOBILE_RALLY_RULES_VERSION = 81;
+export const TARGET_PRIORITY_RULES_VERSION = 82;
+export const TARGET_PRIORITY_OPTIONS = Object.freeze(['auto', 'infantry', 'vehicles', 'aircraft', 'structures']);
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
 export const DOCTRINE_REPLACEMENT_COST = 1350;
@@ -381,6 +383,7 @@ export class Game {
     this.garrisonRulesVersion = GARRISON_RULES_VERSION;
     this.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
     this.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
+    this.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
     this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
@@ -1173,6 +1176,7 @@ export class Game {
       order: { ...order }, stance: 'aggressive', path: [], selected: false, cooldown: this._rand() * 0.3,
       cargo: 0, veterancy: 0, xp: 0, kills: 0, promotion: null, revealedUntil: 0, _pathGoal: null, _repath: 0,
       _harvestTile: null, _healCooldown: 0, ammo: d.ammoMax ?? null, _resumeOrder: null,
+      targetPriority: 'auto',
       _stormglassCargo: 0,
       _unloadRefineryId: null, _unloadApproach: null, _unloadRemaining: 0, _unloadProgress: 0,
       homeRefineryId: null,
@@ -2304,6 +2308,21 @@ export class Game {
     return { ok: true };
   }
 
+  issueSetTargetPriority(priority) {
+    if (this.status !== 'playing') return { ok: false, reason: 'Target priorities are available while the battle is playing.' };
+    if (!this._targetPriorityEnabled())
+      return { ok: false, reason: `Target priorities require replay version ${TARGET_PRIORITY_RULES_VERSION}.` };
+    if (!TARGET_PRIORITY_OPTIONS.includes(priority))
+      return { ok: false, reason: `Choose ${TARGET_PRIORITY_OPTIONS.join(', ')} target priority.` };
+    const units = this._selectedCommandUnits().filter(unit => !unit.embarkedIn &&
+      Number.isFinite(UNIT_DEFS[unit.defId]?.speed) && UNIT_DEFS[unit.defId].speed > 0 &&
+      !!UNIT_DEFS[unit.defId]?.weapon);
+    if (!units.length) return { ok: false, reason: 'Select armed mobile units first.' };
+    for (const unit of units) unit.targetPriority = priority;
+    this._event('order', { order: 'setTargetPriority', ids: units.map(u => u.id), priority });
+    return { ok: true, priority };
+  }
+
   canDigIn(x, y) {
     if (this.status !== 'playing') return { ok: false, reason: 'The battle is over.' };
     if (this.replayVersion != null && this.replayVersion < INFANTRY_DIG_IN_RULES_VERSION)
@@ -2538,6 +2557,20 @@ export class Game {
 
   _mobileRallyEnabled() {
     return this.replayVersion == null || this.replayVersion >= MOBILE_RALLY_RULES_VERSION;
+  }
+
+  _targetPriorityEnabled() {
+    return this.replayVersion == null || this.replayVersion >= TARGET_PRIORITY_RULES_VERSION;
+  }
+
+  _targetPriorityMatches(priority, target) {
+    if (priority === 'structures') return 'w' in target;
+    if ('w' in target) return false;
+    const definition = UNIT_DEFS[target.defId];
+    if (priority === 'aircraft') return !!definition?.flying;
+    if (priority === 'infantry') return definition?.armor === 'infantry';
+    if (priority === 'vehicles') return !!definition && !definition.flying && definition.armor !== 'infantry';
+    return false;
   }
 
   _productionRepeatDefinition(building, unitDefId) {
@@ -3360,9 +3393,17 @@ export class Game {
     return weaponDef.target === 'both' || (weaponDef.target === 'air' ? isAir : !isAir);
   }
 
-  _findEnemyNear(observer, radius, targetMode = 'both') {
+  _findEnemyNear(observer, radius, targetMode = 'both', acquisition = null) {
     radius = this._stormSight(observer.x, observer.y, radius);
-    let best = null, score = Infinity;
+    const requestedPriority = this._targetPriorityEnabled() &&
+      TARGET_PRIORITY_OPTIONS.includes(observer.targetPriority) ? observer.targetPriority : 'auto';
+    const prioritize = requestedPriority !== 'auto';
+    let best = null, score = Infinity, bestShootable = null, shootableScore = Infinity;
+    let bestPreferredShootable = null, preferredShootableScore = Infinity;
+    let bestPreferredReachable = null, preferredReachableScore = Infinity;
+    const order = acquisition?.order;
+    const canPursue = order?.type === 'attack' || order?.type === 'guard' || order?.type === 'patrol' ||
+      order?.attackMove === true || observer.stance === 'defensive';
     for (const e of [...this.units, ...this.buildings]) {
       if (observer.owner === 'enemy' && this._aiEngineerRaidTargetReserved(e)) continue;
       if (e.owner === observer.owner || e.hp <= 0 || e.embarkedIn || e.progress < 1 || !this._canDetect(observer, e)) continue;
@@ -3370,11 +3411,28 @@ export class Game {
       if (targetMode === 'air' && !air || targetMode === 'ground' && air) continue;
       const distance = this._distanceToEntity(observer.x, observer.y, e);
       if (distance > radius) continue;
+      if (prioritize && order?.type === 'guard' &&
+          this._distanceToEntity(order.x, order.y, e) > 5.5) continue;
+      if (prioritize && observer.stance === 'defensive' && observer._stanceChase?.targetId === e.id &&
+          this._distanceToEntity(observer._stanceChase.x, observer._stanceChase.y, e) > 5.5) continue;
       if (this.mode !== 'multiplayer' && observer.owner === 'enemy' && !this.isVisible(e, 'enemy')) continue;
+      if (prioritize && !this.isVisible(e, observer.owner)) continue;
       const s = distance + (e.defId === 'harvester' ? 0.7 : 0) + ('w' in e ? 0.6 : 0);
       if (s < score) { best = e; score = s; }
+      if (prioritize) {
+        const center = this._entityCenter(e);
+        if (!this._hasLineOfSight(observer.x, observer.y, center.x, center.y)) continue;
+        const shootable = acquisition?.weaponRange == null || distance <= acquisition.weaponRange;
+        const preferred = this._targetPriorityMatches(requestedPriority, e);
+        if (shootable && s < shootableScore) { bestShootable = e; shootableScore = s; }
+        if (preferred && shootable && s < preferredShootableScore) {
+          bestPreferredShootable = e; preferredShootableScore = s;
+        } else if (preferred && canPursue && s < preferredReachableScore) {
+          bestPreferredReachable = e; preferredReachableScore = s;
+        }
+      }
     }
-    return best;
+    return prioritize ? bestPreferredShootable || bestShootable || bestPreferredReachable || best : best;
   }
 
   _aiEngineerRaidTargetReserved(entity) {
@@ -4781,7 +4839,7 @@ export class Game {
     if (!target && d.weapon && u.stance !== 'holdFire' && order.type !== 'scatter' && order.type !== 'forceMove') {
       const radius = u.stance === 'defensive' || (order.type === 'move' && order.attackMove) ||
         order.type === 'guard' || order.type === 'patrol' ? this._unitSight(u, d.sight) : weaponRange + 0.25;
-      target = this._findEnemyNear(u, radius, d.weapon.target);
+      target = this._findEnemyNear(u, radius, d.weapon.target, { weaponRange, order });
       if (target && order.type === 'guard' &&
         this._distanceToEntity(order.x, order.y, target) > 5.5) target = null;
       if (target && u.stance === 'defensive') {
@@ -8612,6 +8670,10 @@ export class Game {
     if (game.replayVersion == null && data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
         data.mobileRallyRulesVersion !== MOBILE_RALLY_RULES_VERSION)
       game.replayVersion = AI_FIELD_BUNKER_RULES_VERSION;
+    // Markerless v81 saves predate target-priority orders and retain automatic targeting.
+    if (game.replayVersion == null && data.mobileRallyRulesVersion === MOBILE_RALLY_RULES_VERSION &&
+        data.targetPriorityRulesVersion !== TARGET_PRIORITY_RULES_VERSION)
+      game.replayVersion = MOBILE_RALLY_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -8759,6 +8821,7 @@ export class Game {
     game.garrisonRulesVersion = GARRISON_RULES_VERSION;
     game.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
     game.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
+    game.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
     game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
       data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
         building.owner === 'enemy' && building.defId === 'bunker');
@@ -8920,6 +8983,9 @@ export class Game {
       enemy: Number.isFinite(salvageEarned.enemy) ? Math.max(0, salvageEarned.enemy) : 0,
     };
     const assignedRecommissionWrecks = new Set();
+    const targetPriorityDataEnabled = game._targetPriorityEnabled() &&
+      (data.targetPriorityRulesVersion === TARGET_PRIORITY_RULES_VERSION ||
+        game.replayVersion != null && game.replayVersion >= TARGET_PRIORITY_RULES_VERSION);
     for (const unit of game.units) {
       unit._recommissioned = game._wreckRecommissionEnabled() && unit._recommissioned === true;
       if (unit.order?.type === 'recommissionWreck') {
@@ -8971,6 +9037,8 @@ export class Game {
         }
       }
       unit.stance = ['aggressive', 'defensive', 'holdFire'].includes(unit.stance) ? unit.stance : 'aggressive';
+      unit.targetPriority = targetPriorityDataEnabled && TARGET_PRIORITY_OPTIONS.includes(unit.targetPriority)
+        ? unit.targetPriority : 'auto';
       const oldRank = Number.isFinite(unit.veterancy) ? Math.trunc(unit.veterancy) : 0;
       unit.veterancy = clamp(oldRank, 0, VETERANCY_RANKS.length - 1);
       unit.promotion = isUnitPromotionEligible(unit) && Object.hasOwn(UNIT_PROMOTION_DEFS, unit.promotion)

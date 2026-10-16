@@ -11,6 +11,7 @@ import WebSocket from 'ws';
 import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESERVE_RULES_VERSION,
   AI_ENGINEER_RAID_RULES_VERSION, AI_FIELD_BUNKER_RULES_VERSION, POWER_STANDBY_RULES_VERSION,
   WRECK_RECOMMISSION_RULES_VERSION, WRECK_COVER_RULES_VERSION, GARRISON_RULES_VERSION,
+  TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
 import { deriveCampaignVeteran } from '../src/game/campaignVeteran.js';
@@ -1122,7 +1123,7 @@ test('v79 bunker combat floor retires older campaign boards without deleting cam
 test('v80 Veteran and Elite bunker policy advances only those skirmish boards and retains v79 history', async () => {
   assert.equal(AI_FIELD_BUNKER_RULES_VERSION, 80);
   assert.equal(GARRISON_RULES_VERSION, 79);
-  assert.equal(SOLO_REPLAY_VERSION, 80);
+  assert.ok(SOLO_REPLAY_VERSION >= AI_FIELD_BUNKER_RULES_VERSION);
   const profile = await createProfile('Bunker AI Ranking');
   const common = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis', seconds: 100,
     kills: 4, completedAt: 100, verified: true, result: 'victory' };
@@ -2588,6 +2589,72 @@ test('authenticated mobile rally targets preserve ownership and explicit clearin
     assert.equal((await nextMessage(guest,message=>message.type==='command_result'&&message.requestId==='rally-mobile-guest')).ok,true);
     assert.equal(foreign.rallyTargetId,foreignLeader.id,'guest targets use authoritative ownership');
   }finally{sendSocket(host,{type:'leave_lobby'});host.close();guest.close();}
+});
+
+test('authenticated target priorities validate enum and selection, and stay private on hostile projections', async () => {
+  const hostProfile = await createProfile('Target Priority Host');
+  const guestProfile = await createProfile('Target Priority Guest');
+  const host = await openSocket(hostProfile.token), guest = await openSocket(guestProfile.token);
+  try {
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'hello')));
+    sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+    const lobbyMessage = await nextMessage(host, message => message.type === 'lobby');
+    sendSocket(guest, { type: 'join_lobby', code: lobbyMessage.code });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.length === 2);
+    await nextMessage(guest, message => message.type === 'lobby');
+    sendSocket(host, { type: 'set_ready', ready: true });
+    sendSocket(guest, { type: 'set_ready', ready: true });
+    await nextMessage(host, message => message.type === 'lobby' && message.players.every(player => player.ready));
+    sendSocket(host, { type: 'start_match' });
+    await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'match_start')));
+
+    const lobby = lobbies.get(lobbyMessage.code);
+    const game = lobby.game;
+    const own = game.units.find(unit => unit.owner === 'player' && unit.defId === 'rifle' &&
+      !unit.embarkedIn && unit.hp > 0);
+    assert.ok(own, 'ordinary match start provides an armed, unembarked player Rifle');
+    const issue = async (requestId, priority, extra = {}) => {
+      sendSocket(host, { type: 'command', requestId, command: 'issueSetTargetPriority',
+        ids: [own.id], priority, ...extra });
+      return nextMessage(host, message => message.type === 'command_result' && message.requestId === requestId);
+    };
+
+    for (const priority of TARGET_PRIORITY_OPTIONS) {
+      const accepted = await issue(`target-priority-${priority}`, priority);
+      assert.equal(accepted.ok, true, `${priority} is an allowed target preference`);
+      assert.equal(own.targetPriority, priority);
+    }
+    const current = own.targetPriority;
+    for (const [requestId, priority, extra] of [
+      ['target-priority-invalid', 'infantry+structures', {}],
+      ['target-priority-object', { infantry: true }, {}],
+      ['target-priority-missing', undefined, {}],
+      ['target-priority-queued', 'vehicles', { queue: true }],
+    ]) {
+      const rejected = await issue(requestId, priority, extra);
+      assert.equal(rejected.ok, false, `${requestId} is rejected`);
+      assert.equal(own.targetPriority, current, 'rejected orders preserve the prior choice');
+    }
+
+    const hostMember = lobby.members.find(member => member.side === 'player');
+    // Place a hostile unit in ordinary sight to exercise the opponent projection
+    // scrub without exposing any information from a hidden hostile unit.
+    const ownPosition = { x: own.x, y: own.y };
+    const visibleHostile = game._createUnit('enemy', 'rifle', ownPosition.x, ownPosition.y);
+    visibleHostile.targetPriority = 'structures';
+    for (const row of game.fog) row.fill(2);
+    assert.equal(game.isVisible(visibleHostile, 'player'), true);
+    const hostView = projectedState(lobby, hostMember);
+    assert.equal(hostView.units.find(unit => unit.id === own.id).targetPriority, current,
+      'friendly owner retains its own target preference');
+    const hostileView = hostView.units.find(unit => unit.id === visibleHostile.id);
+    assert.ok(hostileView, 'the fixture hostile is included while its tile is visible');
+    assert.equal('targetPriority' in hostileView, false,
+      'hostile unit priority stays private even while its unit is visible');
+  } finally {
+    sendSocket(host, { type: 'leave_lobby' });
+    host.close(); guest.close();
+  }
 });
 
 test('websocket movement dispatch enforces ownership, queues, and matched pace options', async () => {
