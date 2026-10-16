@@ -6,6 +6,7 @@ import { createGroundContactBatch } from './groundContact.js';
 import { createEnvironmentTarget, environmentIntensityForQuality } from './environmentLighting.js';
 import { buildStormLightningBuffers, stormFlashStrength } from './stormLightning.js';
 import { getCampaignFieldOrderView } from '../game/campaign.js';
+import { pathfinderReconView } from '../ui/pathfinderReconView.js';
 import {
   unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
   MOBILE_RALLY_RULES_VERSION,
@@ -272,6 +273,7 @@ function compactStaticModel(root, preserve=()=>false) {
 }
 
 const COMPACT_INFANTRY = new Set(['scout','scoutVesper','rifle','rifleVesper','rocket','rocketVesper','engineer','medic','flamer']);
+const RIGGED_INFANTRY_MODELS = new Set(['scout','scoutVesper','rifle','rifleVesper','rocket','rocketVesper']);
 const ARTILLERY_MODEL_KEYS = new Set(['artillery','vesperArtillery']);
 // One arm mesh and one pad mesh are instanced per anchored crawler. The
 // geometry is shared by every unit; only the faction-tinted materials vary.
@@ -1206,6 +1208,21 @@ export class Renderer3D {
     this.rangeIndicator.position.y=0.11;
     this.rangeIndicator.renderOrder=5;
     this.scene.add(this.rangeIndicator);
+    const sightSegments=[];
+    for(let i=0;i<96;i+=2) {
+      const a=i*Math.PI*2/96,b=(i+1)*Math.PI*2/96;
+      sightSegments.push(Math.cos(a),0,Math.sin(a),Math.cos(b),0,Math.sin(b));
+    }
+    const sightGeometry=new THREE.BufferGeometry();
+    sightGeometry.setAttribute('position',new THREE.Float32BufferAttribute(sightSegments,3));
+    this.scoutSightIndicator=new THREE.LineSegments(sightGeometry,new THREE.LineBasicMaterial({
+      color:0x83e4ee,transparent:true,opacity:0.64,depthWrite:false,depthTest:true,fog:false,toneMapped:false,
+    }));
+    followVisualSurface(this.scoutSightIndicator.material,this.visualHeightUniforms);
+    this.scoutSightIndicator.visible=false;
+    this.scoutSightIndicator.position.y=.13;
+    this.scoutSightIndicator.renderOrder=5;
+    this.scene.add(this.scoutSightIndicator);
     // A selected tank exposes the combat bearing rule in the world itself.
     // Both arcs share one tiny line draw, and old replay versions omit it.
     const armorArcPositions=[],armorArcColors=[];
@@ -1403,10 +1420,10 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', vesperArtillery:'vesper-siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='vesperArtillery'?'?rev=89':key==='rifleVesper'?'?rev=99':key==='rocketVesper'?'?rev=98':key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=['scout','scoutVesper'].includes(key)?'?rev=103':key==='vesperArtillery'?'?rev=89':key==='rifleVesper'?'?rev=99':key==='rocketVesper'?'?rev=98':key==='medic'?'?rev=86':['mcv','vesperMcv'].includes(key)?'?rev=85':['bunker','vesperBunker'].includes(key)?'?rev=1':['barracks','vesperBarracks'].includes(key)?'?rev=82':['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
-        if(['rifle','rifleVesper','rocket','rocketVesper'].includes(key)) gltf.scene.traverse(object=>{
+        if(RIGGED_INFANTRY_MODELS.has(key)) gltf.scene.traverse(object=>{
           if(!object.isSkinnedMesh) return;
           object.geometry.computeBoundingSphere();
           // The bind-pose bounds omit a small amount of knee and weapon travel.
@@ -4053,10 +4070,10 @@ export class Renderer3D {
       o.defId==='harvester'&&o.faction==='vesper'?'vesperHarvester':(vesperStructure||o.defId);
     const source=this.assetModels.get(modelKey);
     if(!source) return null;
-    const visual=['rifle','rifleVesper','rocket','rocketVesper'].includes(modelKey)
+    const visual=RIGGED_INFANTRY_MODELS.has(modelKey)
       ? SkeletonUtils.clone(source)
       : source.clone(true);
-    if(['rifle','rifleVesper','rocket','rocketVesper'].includes(modelKey)) shareClonedSkeletons(visual);
+    if(RIGGED_INFANTRY_MODELS.has(modelKey)) shareClonedSkeletons(visual);
     // Blender structures use a roughly three-tile foundation; fit each one to
     // its actual simulation footprint so small defenses do not mask neighbors.
     if('w' in o){
@@ -4144,7 +4161,7 @@ export class Renderer3D {
           const part=authoredPart(visual,`Medic leg ${side}`);
           return part?[{part,pose:part.rotation.clone(),side:index===0?1:-1}]:[];
         });
-        if (authored && /^(rifle|rocket)$/.test(o.defId)) {
+        if (authored && /^(scout|rifle|rocket)$/.test(o.defId)) {
           const boneNames=['FC_Root','FC_Pelvis','FC_Spine','FC_Thigh_L','FC_Shin_L','FC_Foot_L',
             'FC_Thigh_R','FC_Shin_R','FC_Foot_R','FC_UpperArm_L','FC_Forearm_L',
             'FC_UpperArm_R','FC_Forearm_R','FC_Weapon'];
@@ -4398,8 +4415,8 @@ export class Renderer3D {
     // (Blender Z-up is converted to Three Y-up by glTF). They are empty nodes,
     // so they do not add geometry or draw calls.
     const muzzleSocket = new THREE.Object3D();
-    if (/^(rifle|rocket)$/.test(o.defId)&&animation.rigged) {
-      const weaponLength=o.defId==='rifle'?0.775:0.9025;
+    if (/^(scout|rifle|rocket)$/.test(o.defId)&&animation.rigged) {
+      const weaponLength=o.defId==='scout'?(o.faction==='vesper'?0.695625:0.7425):o.defId==='rifle'?0.775:0.9025;
       muzzleSocket.position.set(0,weaponLength,0);
       animation.rigBones.FC_Weapon.add(muzzleSocket);
       animation.muzzleSocket=muzzleSocket;
@@ -6197,6 +6214,13 @@ export class Renderer3D {
   }
 
   _syncRangeIndicator(game,time) {
+    const recon=pathfinderReconView(game);
+    this.scoutSightIndicator.visible=!!recon;
+    if(recon) {
+      this.scoutSightIndicator.position.x=recon.unit.x;
+      this.scoutSightIndicator.position.z=recon.unit.y;
+      this.scoutSightIndicator.scale.set(recon.sight,1,recon.sight);
+    }
     const selected=[...(game.selection||[])];
     if(selected.length!==1) {this.rangeIndicator.visible=false;this.armorFacingIndicator.visible=false;return;}
     const id=selected[0];
@@ -7964,6 +7988,9 @@ export class Renderer3D {
     this.scene.remove(this.rangeIndicator);
     this.rangeIndicator.geometry.dispose();
     this.rangeIndicator.material.dispose();
+    this.scene.remove(this.scoutSightIndicator);
+    this.scoutSightIndicator.geometry.dispose();
+    this.scoutSightIndicator.material.dispose();
     this.scene.remove(this.armorFacingIndicator);
     this.armorFacingIndicator.geometry.dispose();
     this.armorFacingIndicator.material.dispose();

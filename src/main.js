@@ -16,6 +16,7 @@ import { loadSoloReplayArchive, addSoloReplayToArchive, deleteSoloReplayFromArch
 import { listSaveSlots, getSaveSlot, writeSaveSlot, deleteSaveSlot } from './game/saveSlots.js';
 import { clearSoloRecovery, loadSoloRecovery, saveSoloRecovery } from './game/soloRecovery.js';
 import { vehicleServiceView, workshopServiceView } from './ui/workshopServiceView.js';
+import { pathfinderReconView } from './ui/pathfinderReconView.js';
 import { relayIntel } from './game/relayIntel.js';
 import { chooseRelayLocator } from './game/relayLocator.js';
 import { SelectionRoster } from './game/selectionRoster.js';
@@ -50,7 +51,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='artillery-vesper'?'?rev=89':id==='rifle-vesper'?'?rev=99':id==='rocket-vesper'?'?rev=98':id==='medic'?'?rev=86':['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['scout','scout-vesper'].includes(id)?'?rev=103':id==='artillery-vesper'?'?rev=89':id==='rifle-vesper'?'?rev=99':id==='rocket-vesper'?'?rev=98':id==='medic'?'?rev=86':['mcv','mcv-vesper'].includes(id)?'?rev=85':['barracks','barracks-vesper'].includes(id)?'?rev=82':['rifle','rocket'].includes(id)?'?rev=76':['bunker','bunker-vesper'].includes(id)?'?rev=79':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'mcv' ? 'mcv-vesper'
     : id === 'bunker' ? 'bunker-vesper'
@@ -4208,7 +4209,17 @@ function render(t) {
   for(const wreck of game.wrecks||[])drawWreckFallback(wreck,t);
   const entities=[...game.buildings.map(o=>({o,k:0,y:o.y+o.h})),...game.units.filter(o=>!o.embarkedIn).map(o=>({o,k:1,y:o.y}))].sort((a,b)=>a.y-b.y);
   for(const e of entities){if(e.k===0)drawBuilding(e.o,t);else drawUnit(e.o,t);}
-  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);drawDeadSignalMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();drawTacticalFocusOverlay(t);
+  drawEffects(t);drawFog();drawStormLureFallback(t);drawSalvageDropFallback(t);if(!digInMode){drawAshesUplinkMarkers(t);drawIronReclaimedMarkers(t);drawCounterbatteryMarkers(t);drawDeadSignalMarkers(t);}drawQueuedRoute();drawSelectionBox();drawPlacement();drawFormationPreview();drawAttackMarker(t);drawCommandAbilityMarker(t);drawDigInMarker();drawFieldRepairChannels();drawCombatEscortGuide();drawTacticalFocusOverlay(t);drawPathfinderReconFallback();
+}
+function drawPathfinderReconFallback() {
+  const recon=pathfinderReconView(game);
+  if(!recon)return;
+  const p=toScreen(recon.unit.x,recon.unit.y);
+  octx.save();octx.lineWidth=1.4;octx.setLineDash([5,6]);
+  for(const [radius,color] of [[recon.sight,'#83e4ee'],[recon.reach,'#c9f88c']]) {
+    octx.strokeStyle=color;octx.beginPath();octx.arc(p.x,p.y,radius*scale(),0,Math.PI*2);octx.stroke();
+  }
+  octx.restore();
 }
 function drawTacticalFocusOverlay(time) {
   if(!tacticalFocus || replayMode) return;
@@ -4647,6 +4658,7 @@ function drawSalvageDropMinimapMarker(cw,ch){
 function hasPrerequisites(def) { const req=def.prerequisites||def.requires||[]; const list=Array.isArray(req)?req:[req]; return list.every(id=>game.buildings.some(b=>b.owner==='player'&&b.defId===id)); }
 function availableForFaction(def) { if(!def.faction&&!def.factions)return true; const f=def.faction||def.factions; return Array.isArray(f)?f.includes(faction):f===faction||f==='all'; }
 function factionDescription(viewFaction,id,def) {
+  if(id==='scout')return 'Fast, fragile spotter. MOVE (M) scouts without stopping to fire; HOLD stance keeps it quiet after arrival. Cyan dashes show maximum sight, green shows weapon reach. High ground improves both; ion haze reduces sight. Cliffs and rocks block vision.';
   if(id==='bunker')return viewFaction==='vesper'
     ?'A reinforced Vesper firing post. Garrison up to three armed infantry for protection and +1 weapon range. Flame penetrates the bunker and damages its crew.'
     :'An Aegis Field Bunker protects up to three armed infantry and adds +1 weapon range. Flame penetrates the bunker and damages its crew.';
@@ -5127,6 +5139,8 @@ function issueDigInAt(x,y){
   }
 }
 function updateSelectionCard() {
+  const recon=pathfinderReconView(game);
+  $('#selection-card').classList.toggle('has-pathfinder-recon',!!recon);
   const rosterState=selectionRoster.sync({selection:game?.selection||[],units:game?.units||[],buildings:game?.buildings||[],unitDefs:game?.unitDefs||{}});
   updateSelectionRoster(rosterState);
   const selected=selectedObjects();
@@ -5585,6 +5599,7 @@ function updateSelectionCard() {
   const artilleryRange= !isBuilding&&selected.length===1&&first.owner==='player'&&first.defId==='artillery'&&unitDef?.weapon
     ?Number(game._unitWeaponRange?.(first,unitDef.weapon)??unitDef.weapon.range):null;
   const artilleryRangeMeta=artilleryRange==null?'':`RANGE ${artilleryRange.toFixed(1)}${anchorOrder&&anchorSetupRemaining<=0?' · STORM ×0.5':''}`;
+  const reconMeta=recon?`<small class="pathfinder-recon-stats" title="Maximum sight ${recon.sight.toFixed(1)} tiles; cliffs and rocks block line of sight. Weapon reach ${recon.reach.toFixed(1)} tiles. Cyan dashes show maximum sight; green dashes show weapon reach."><span>◌ SIGHT ${recon.sight.toFixed(1)}</span> · <span>REACH ${recon.reach.toFixed(1)}</span>${recon.stormReduced?' · ION HAZE':''}</small>`:'';
   const artilleryRangeTitle=anchorOrder&&anchorSetupRemaining<=0
     ?`Effective weapon range ${artilleryRange?.toFixed(1)} tiles. Ion-storm damage is reduced by 50%.`
     :`Effective weapon range ${artilleryRange?.toFixed(1)} tiles. Anchoring adds ${SIEGE_ANCHOR_RANGE_BONUS} range after setup.`;
@@ -5606,7 +5621,7 @@ function updateSelectionCard() {
   $('#selection-card').classList.toggle('has-bunker-roster',!!fieldBunker);
   const workshopControl=rosterWorkshop?'<button class="selection-workshop-roster" type="button" data-workshop-roster>VIEW SERVICE ROSTER</button>':'';
   const restoreRosterFocus=document.activeElement?.matches('[data-workshop-roster]');
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${artilleryRangeMeta?`<small class="siege-anchor-range" title="${artilleryRangeTitle}">${artilleryRangeMeta}</small>`:''}${artilleryHint}${bunkerRoster}${powerControl}${workshopControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${reconMeta}${artilleryRangeMeta?`<small class="siege-anchor-range" title="${artilleryRangeTitle}">${artilleryRangeMeta}</small>`:''}${artilleryHint}${bunkerRoster}${powerControl}${workshopControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
   if(restoreRosterFocus)$('#selection-content [data-workshop-roster]')?.focus({preventScroll:true});
 }
 function placeSquadControlBar() {
@@ -6240,8 +6255,8 @@ function updateQuickStartGuidance(powerState) {
     tip={key:'power',title:'Restore power to the base',copy:'Build and place a Power Plant from Structures. Low power slows production and disables advanced systems.'};
   }else if(quickStartStage===0){
     tip={key:'select',title:'Select your combat squad',copy:touchGuide
-      ?'Tap a soldier, scout, or tank. Hold and drag to select several. Keep the Harvester gathering crystal.'
-      :'Click a soldier, scout, or tank; drag to select several. Pan with WASD or arrows. Keep the Harvester gathering crystal.'};
+      ?'Tap your Pathfinder to scout ahead, or hold and drag to select a combat squad. Keep the Harvester gathering crystal.'
+      :'Click your Pathfinder to scout ahead, or drag to select a combat squad. Pan with WASD or arrows. Keep the Harvester gathering crystal.'};
   }else if(game.victoryMode==='elimination'&&quickStartStage<=1){
     tip={key:'elimination-scout',title:'Locate the enemy Command Yard',copy:touchGuide
       ?'Move your squad across the map. Destroy the enemy Command Yard, combat forces, and active industry.'
@@ -6250,8 +6265,8 @@ function updateQuickStartGuidance(powerState) {
     tip={key:'elimination-push',title:'Finish the enemy force',copy:'Protect your Command Yard while you eliminate enemy combat forces and active industry.'};
   }else if(quickStartStage===1){
     tip={key:'scout',title:'Scout beyond your base',copy:touchGuide
-      ?'Tap ATTACK, then tap open ground. Your squad will engage threats while revealing Resonance Relays.'
-      :'Right-click open ground with your selected squad. Reveal the frontier to locate its Resonance Relays.'};
+      ?'Select a Pathfinder or fast unit, tap MOVE, then open ground to scout without stopping to fire. HOLD stance keeps it quiet after arrival.'
+      :'Select a Pathfinder or fast unit. Press M, then click open ground to scout without stopping to fire. HOLD stance keeps it quiet after arrival.'};
   }else if(quickStartStage===2||heldRelays.length===0){
     const visibleNeutral=game.relays.some(relay=>fogAt(relay.x,relay.y)===2&&relay.owner===null);
     const visibleEnemy=game.relays.some(relay=>fogAt(relay.x,relay.y)===2&&relay.owner==='enemy');

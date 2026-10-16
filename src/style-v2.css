@@ -4342,7 +4342,17 @@ body:has(#end-modal:not(.hidden)),
   overflow-y: auto;
   padding-block: 6px;
 }
+.command-panel .selection-card.has-pathfinder-recon {
+  flex: 0 0 100px; height: 100px; min-height: 100px; padding-block: 6px;
+}
+.selection-info .pathfinder-recon-stats {
+  display: block; margin-top: 3px; font-size: 9px; line-height: 1.25; letter-spacing: .04em; color: #c6e3da;
+}
+.pathfinder-recon-stats > span:first-child { color: #83e4ee; }
+.pathfinder-recon-stats > span:nth-child(2) { color: #c9f88c; }
 @media (max-width: 670px) {
+  .command-panel .selection-card.has-pathfinder-recon { flex-basis: 80px; height: 80px; min-height: 80px; padding-block: 3px; }
+  .selection-card.has-pathfinder-recon .veterancy-track { display: none; }
   .command-panel .selection-card.has-siege-anchor {
     flex-basis: 80px;
     height: 80px;
