@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -3153,6 +3153,9 @@ function selectedOrderMinimapCues(selectedIds,cw,ch){
         target={x:entity.x+(entity.w||0)/2,y:entity.y+(entity.h||0)/2};
     }else if(order.type==='harvest'&&Number.isFinite(order.x)&&Number.isFinite(order.y)){
       target={x:order.x+.5,y:order.y+.5};
+    }else if(order.type==='rearm'){
+      const pad=game._nearestHelipad?.('player',unit.x,unit.y);
+      if(pad)target={x:pad.x+pad.w/2,y:pad.y+pad.h/2};
     }
     if(!target||target.x<0||target.y<0||target.x>game.width||target.y>game.height)continue;
     cues.push({fromX:unit.x*cw,fromY:unit.y*ch,toX:target.x*cw,toY:target.y*ch,color});
@@ -3648,12 +3651,27 @@ function updateSelectionCard() {
     ['guardian','stealthTank'].includes(units[0].defId)?units[0]:null;
   const fieldAbility=fieldUnit?.defId==='guardian'?'brace':fieldUnit?'ghostRun':null;
   const loadedHarvesters=units.filter(unit=>unit.owner==='player'&&unit.defId==='harvester'&&unit.cargo>0);
-  const showReturn=loadedHarvesters.length>0;
-  $('#cmd-return').classList.toggle('hidden',!showReturn);
+  const gunships=units.filter(unit=>unit.owner==='player'&&game.unitDefs?.[unit.defId]?.flying&&
+    Number.isFinite(game.unitDefs?.[unit.defId]?.ammoMax));
+  const rearmMode=loadedHarvesters.length===0&&gunships.length>0;
+  const airServiceAvailable=game.replayVersion==null||game.replayVersion>=AIR_SERVICE_RULES_VERSION;
+  const showReturn=loadedHarvesters.length>0||rearmMode;
+  const returnButton=$('#cmd-return');
+  returnButton.classList.toggle('hidden',!showReturn);
   $('#cmd-deploy').classList.toggle('hidden',showReturn);
   const hasRefinery=game.buildings.some(building=>building.owner==='player'&&building.defId==='refinery'&&building.hp>0&&building.progress>=1);
-  $('#cmd-return').disabled=!showReturn||!hasRefinery;
-  $('#cmd-return').title=hasRefinery?'Return partial cargo to a refinery (J)':'Build a refinery to unload cargo';
+  const hasHelipad=game.buildings.some(building=>building.owner==='player'&&building.defId==='helipad'&&building.hp>0&&building.progress>=1&&building.powered);
+  const missingAmmo=gunships.some(unit=>unit.ammo<game.unitDefs[unit.defId].ammoMax-.001);
+  returnButton.disabled=rearmMode?!airServiceAvailable||!hasHelipad||!missingAmmo:!showReturn||!hasRefinery;
+  returnButton.lastChild.textContent=rearmMode?'REARM':'RETURN';
+  returnButton.title=rearmMode?!airServiceAvailable?'Early rearm is available in new operations':
+    !hasHelipad?'Build and power a Helipad to rearm gunships':!missingAmmo?'Gunship ammunition is full':
+      'Return selected gunships to a powered Helipad, refill ammunition, then hold (J)':
+    hasRefinery?'Return partial cargo to a refinery (J)':'Build a refinery to unload cargo';
+  returnButton.setAttribute('aria-label',returnButton.title);
+  const rearming=rearmMode&&gunships.every(unit=>unit.order?.type==='rearm');
+  returnButton.classList.toggle('active',rearming);
+  returnButton.setAttribute('aria-pressed',String(rearming));
   const fieldButton=$('#cmd-deploy');
   if(fieldUnit){
     const activeUntil=fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil;
@@ -3757,12 +3775,18 @@ function updateSelectionCard() {
     ?`${fieldAbility==='brace'?'BRACED ARMOR':'GHOST RUN'} · ${Math.ceil((fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)-game.time)}S`:null;
   const fieldHint=fieldAbility==='ghostRun'&&!(fieldUnit.abilityCooldown>0)&&
     !['move','forceMove'].includes(first.order?.type)?'GHOST RUN · MOVE TO ARM':null;
-  const tacticalState=fieldActive|| (disrupted?`WEAPON DISRUPTED · ${Math.ceil(first.suppressedUntil-game.time)}S`:fieldHint||serviceOrderState||harvesterState|| (serviceSupported?`FIELD REPAIRS ACTIVE · ${unitOrder}`:refinerySupported?'NETWORK SUPPORTED · +20% EXTRACTION':first.defId==='stealthTank'&&first.revealedUntil<=(game?.time||0)?'CLOAKED · AMBUSH READY':isTroopCarrier(first)?`PASSENGERS ${first.passengerIds?.length||0}/${unitDef.capacity} · ${unitOrder}`:unitOrder));
+  const rearmingAircraft=unitDef?.flying&&Number.isFinite(unitDef.ammoMax)&&first.order?.type==='rearm';
+  const rearmPad=rearmingAircraft?game._nearestHelipad?.(first.owner,first.x,first.y):null;
+  const aircraftState=rearmingAircraft?!rearmPad?'REARM WAITING · NEED POWERED HELIPAD':
+    Math.hypot(first.x-rearmPad.x-rearmPad.w/2,first.y-rearmPad.y-rearmPad.h/2)>.5?'RETURNING TO HELIPAD':
+      `REARMING · ${Math.ceil((unitDef.ammoMax-first.ammo)/unitDef.rearmRate)}S`:
+    unitDef?.flying&&Number.isFinite(unitDef.ammoMax)&&first.ammo<1?`NO AMMUNITION · ${unitOrder}`:null;
+  const tacticalState=fieldActive|| (disrupted?`WEAPON DISRUPTED · ${Math.ceil(first.suppressedUntil-game.time)}S`:fieldHint||serviceOrderState||harvesterState||aircraftState|| (serviceSupported?`FIELD REPAIRS ACTIVE · ${unitOrder}`:refinerySupported?'NETWORK SUPPORTED · +20% EXTRACTION':first.defId==='stealthTank'&&first.revealedUntil<=(game?.time||0)?'CLOAKED · AMBUSH READY':isTroopCarrier(first)?`PASSENGERS ${first.passengerIds?.length||0}/${unitDef.capacity} · ${unitOrder}`:unitOrder));
   const workshopState=first.defId==='serviceBay'?(first.powered?'FIELD REPAIRS ONLINE':'FIELD REPAIRS OFFLINE'):null;
   const groupSummary=selected.length>1&&units.length?(()=>{
     const counts=new Map();
     for(const unit of units){
-      const armor=game.unitDefs?.[unit.defId]?.armor||'support';
+      const armor=game.unitDefs?.[unit.defId]?.flying?'air':game.unitDefs?.[unit.defId]?.armor||'support';
       const label=armor==='infantry'?'INF':armor==='light'?'LIGHT':armor==='heavy'?'HEAVY':armor==='air'?'AIR':armor.toUpperCase();
       counts.set(label,(counts.get(label)||0)+1);
     }
@@ -3791,9 +3815,15 @@ function updateSelectionCard() {
     ?` · CARGO ${Math.floor(first.cargo||0)}/${unitDef.capacity}${chargedCargo?` · CHARGED ${chargedCargo} (+35% ON DELIVERY)`:''}`:'';
   const bayMeta=isBuilding&&selected.length===1&&first.owner==='player'&&first.defId==='refinery'
     ?` · UNLOAD BAY ${first._unloadHarvesterId?'BUSY':'READY'}`:'';
-  const meta=(rank?`INTEGRITY ${pct}% · ${first.kills||0} KILLS · ${nextRank?`${Math.max(0,Math.ceil(nextRank.xp-(first.xp||0)))} XP TO ${nextRank.name.toUpperCase()}`:promotionName?promotionName:'MAX RANK'}`:`ARMOR INTEGRITY · ${pct}%${isBuilding&&first.queue?.length?` · ${first.queue.length} QUEUED`:''}`)+cargoMeta+bayMeta+(queuedOrders?` · ${queuedOrders} QUEUED`:'');
+  const selectedGunships=selected.length===units.length?gunships:[];
+  const ammoCapacity=selectedGunships.reduce((sum,unit)=>sum+game.unitDefs[unit.defId].ammoMax,0);
+  const readyShots=selectedGunships.reduce((sum,unit)=>sum+Math.floor(Math.max(0,unit.ammo||0)+.001),0);
+  const ammoMeta=selectedGunships.length===selected.length&&ammoCapacity>0?`AMMO ${readyShots}/${ammoCapacity} · INTEGRITY ${pct}%`:null;
+  const ammoProgress=ammoCapacity?Math.min(100,Math.max(0,selectedGunships.reduce((sum,unit)=>sum+(unit.ammo||0),0)/ammoCapacity*100)):0;
+  const ammoLine=ammoMeta?`<div class="ammunition-track" role="progressbar" aria-label="Gunship ammunition" aria-valuenow="${readyShots}" aria-valuemin="0" aria-valuemax="${ammoCapacity}" aria-valuetext="${readyShots} shots ready of ${ammoCapacity}"><span style="width:${ammoProgress}%"></span></div>`:'';
+  const meta=ammoMeta||((rank?`INTEGRITY ${pct}% · ${first.kills||0} KILLS · ${nextRank?`${Math.max(0,Math.ceil(nextRank.xp-(first.xp||0)))} XP TO ${nextRank.name.toUpperCase()}`:promotionName?promotionName:'MAX RANK'}`:`ARMOR INTEGRITY · ${pct}%${isBuilding&&first.queue?.length?` · ${first.queue.length} QUEUED`:''}`)+cargoMeta+bayMeta+(queuedOrders?` · ${queuedOrders} QUEUED`:''));
   const elevationBadge=elevatedAdvantage?`<small class="elevation-advantage" title="Elevated position improves sight by 1 and weapon reach by 0.5">HIGH GROUND · +1 SIGHT${unitDef?.weapon?' · +0.5 REACH':''}</small>`:'';
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${elevationBadge}${rankLine}</div></div>`;
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${elevationBadge}${ammoLine||rankLine}</div></div>`;
 }
 function placeSquadControlBar() {
   const bar=$('#mobile-squads');
@@ -5557,7 +5587,7 @@ function sendMatchCommand(command,data={}){
 function installMultiplayerCommandAdapters(target){
   const commands={
     issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
-    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
+    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
     issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:defId=>({defId}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
@@ -6269,7 +6299,14 @@ $('#cmd-harvest').addEventListener('click',()=>{
     resultMessage(game?.issueBloomExpedition?.(),'STORMGLASS EXPEDITION ORDERED');
   else resultMessage(game?.issueHarvest?.(),'HARVEST ORDERED');
 });
-$('#cmd-return').addEventListener('click',()=>resultMessage(game?.issueReturnCargo?.(),'HARVESTER RETURNING CARGO'));
+function returnSelection(){
+  if(!game)return;
+  const selected=selectedObjects();
+  const cargo=selected.some(unit=>unit.defId==='harvester'&&unit.cargo>0);
+  const air=selected.some(unit=>game.unitDefs?.[unit.defId]?.flying&&Number.isFinite(game.unitDefs?.[unit.defId]?.ammoMax));
+  resultMessage(!cargo&&air?game.issueRearm():game.issueReturnCargo(),!cargo&&air?'GUNSHIPS RETURNING TO REARM':'HARVESTER RETURNING CARGO');
+}
+$('#cmd-return').addEventListener('click',returnSelection);
 $('#cmd-repair').addEventListener('click',()=>{const b=selectedBuilding();if(b){const stopping=!!b.repairing;resultMessage(game.toggleRepair(b.id),stopping?'REPAIR STOPPED':'REPAIR ORDERED');updateUI(true);return;}if(selectedObjects().some(o=>o.defId==='engineer')){startTargetOrder('engineer','ENGINEER TASK','SELECT WRECK, BRIDGE, OR STRUCTURE');return;}toast('SELECT A STRUCTURE OR ENGINEER',true);});
 $('#battlefield-picker-toggle').addEventListener('click',()=>setBattlefieldPickerOpen(!battlefieldPickerIsOpen(),{focusFirst:!battlefieldPickerIsOpen()}));
 $('#battlefield-picker-add-squad').addEventListener('click',()=>setBattlefieldPickerAddSquadMode(!battlefieldPickerAddSquadMode));
@@ -6531,7 +6568,7 @@ window.addEventListener('keydown',e=>{
     if(e.shiftKey)resultMessage(game.issueBloomExpedition?.()||{ok:false,reason:'Stormglass expeditions are unavailable.'},'STORMGLASS EXPEDITION ORDERED');
     else resultMessage(game.issueHarvest(),'HARVEST ORDERED');
   }
-  if(e.code==='KeyJ')resultMessage(game.issueReturnCargo(),'HARVESTER RETURNING CARGO');
+  if(e.code==='KeyJ')returnSelection();
   if(e.code==='KeyX')resultMessage(game.issueScatter(),'SQUAD SCATTERED');
   if(e.code==='KeyT'&&!e.repeat){e.preventDefault();cycleStance();}
   if(e.code==='KeyE'&&!e.repeat&&($('#cmd-deploy').dataset.unitAbility||selectedObjects().some(o=>o.defId==='mcv')))

@@ -1089,7 +1089,7 @@ function startMatch(lobby) {
 
 const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
-  'toggleRepair', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
+  'toggleRepair', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
   const game = lobby.game;
   if (!game || game.status !== 'playing') return { ok: false, reason: 'No active match.' };
@@ -1137,6 +1137,7 @@ function command(lobby, member, message) {
       case 'issueRecoverWreck': return game.issueRecoverWreck(message.wreckId);
       case 'issueServiceAtWorkshop': return game.issueServiceAtWorkshop(message.workshopId);
       case 'issueReturnCargo': return game.issueReturnCargo();
+      case 'issueRearm': return game.issueRearm();
       case 'sellBuilding': return game.sellBuilding(message.buildingId);
       case 'chooseDoctrine': return game.chooseDoctrine(message.doctrineId);
       case 'chooseTacticalPackage': return game.chooseTacticalPackage(message.packageId);

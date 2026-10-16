@@ -5526,7 +5526,11 @@ export class Renderer3D {
 
   _orderEndpoint(game, unit) {
     const order=unit.order;
-    if(!order || order.type==='idle' || order.type==='rearm' || order.type==='harvest') return null;
+    if(!order || order.type==='idle' || order.type==='harvest') return null;
+    if(order.type==='rearm'){
+      const pad=unit.owner==='player'?game._nearestHelipad?.('player',unit.x,unit.y):null;
+      return pad?{x:pad.x+pad.w/2,y:pad.y+pad.h/2,type:'rearm'}:null;
+    }
     if(order.type==='attack' || order.type==='engineer' || order.type==='follow' || order.type==='board') {
       const targetId=order.type==='board'?order.carrierId:order.targetId;
       const target=game.getEntity?.(targetId) || [...(game.units||[]),...(game.buildings||[])].find(e=>e.id===targetId);

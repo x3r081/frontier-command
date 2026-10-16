@@ -1479,6 +1479,82 @@ test('live multiplayer Bloom Expedition dispatch filters selections to the authe
   host.close(); guest.close();
 });
 
+test('authenticated websocket aircraft rearm checks ownership, pad power, and ammunition', async () => {
+  const a = await createProfile('Rearm Order Host'); const b = await createProfile('Rearm Order Guest');
+  const host = await openSocket(a.token); const guest = await openSocket(b.token);
+  await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'hello')));
+  sendSocket(host, { type: 'create_lobby', faction: 'aegis' });
+  const room = await nextMessage(host, message => message.type === 'lobby');
+  sendSocket(guest, { type: 'join_lobby', code: room.code });
+  await Promise.all([
+    nextMessage(host, message => message.type === 'lobby' && message.players.length === 2),
+    nextMessage(guest, message => message.type === 'lobby' && message.players.length === 2),
+  ]);
+  sendSocket(host, { type: 'set_ready', ready: true }); sendSocket(guest, { type: 'set_ready', ready: true });
+  await nextMessage(host, message => message.type === 'lobby' && message.players.every(player => player.ready));
+  sendSocket(host, { type: 'start_match' });
+  await Promise.all([host, guest].map(ws => nextMessage(ws, message => message.type === 'match_start')));
+
+  const game = lobbies.get(room.code).game;
+  const commandYard = game.buildings.find(building => building.owner === 'player' && building.defId === 'command');
+  const candidates = [];
+  for (let y = 0; y < game.height; y++) for (let x = 0; x < game.width; x++)
+    candidates.push({ x, y, distance: Math.hypot(x + 1 - (commandYard.x + commandYard.w / 2),
+      y + 1 - (commandYard.y + commandYard.h / 2)) });
+  candidates.sort((left, right) => left.distance - right.distance);
+  const placement = candidates.find(({ x, y }) => game.canPlaceBuilding('helipad', x, y, 'player').ok);
+  assert.ok(placement, 'a legal Helipad site exists inside the authenticated player base perimeter');
+  const pad = game._createBuilding('player', 'helipad', placement.x, placement.y, 1);
+  game._refreshPower();
+  assert.equal(pad.powered, true, 'the player Helipad is powered for the accepted order');
+  const ownOrca = game._createUnit('player', 'orca', pad.x + 1, pad.y + 1);
+  ownOrca.ammo = 5;
+  ownOrca.order = { type: 'guard', x: ownOrca.x, y: ownOrca.y };
+  const foreignOrca = game._createUnit('enemy', 'orca', game.width - 3, game.height - 3);
+  foreignOrca.ammo = 3;
+  foreignOrca.order = { type: 'move', x: foreignOrca.x - 2, y: foreignOrca.y - 2 };
+  const foreignBefore = { ammo: foreignOrca.ammo, order: structuredClone(foreignOrca.order) };
+  const ownBefore = { ammo: ownOrca.ammo, order: structuredClone(ownOrca.order) };
+
+  sendSocket(host, { type: 'command', requestId: 'rearm-foreign', command: 'issueRearm', ids: [foreignOrca.id] });
+  const foreignResult = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'rearm-foreign');
+  assert.equal(foreignResult.ok, false, 'the host cannot issue rearm to the guest aircraft');
+  assert.match(foreignResult.reason, /Select a living armed aircraft that needs ammunition/);
+  assert.deepEqual({ ammo: foreignOrca.ammo, order: foreignOrca.order }, foreignBefore);
+  assert.deepEqual({ ammo: ownOrca.ammo, order: ownOrca.order }, ownBefore);
+
+  sendSocket(host, { type: 'command', requestId: 'rearm-own', command: 'issueRearm', ids: [ownOrca.id] });
+  const accepted = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'rearm-own');
+  assert.equal(accepted.ok, true, 'the authenticated host can rearm its selected, depleted aircraft');
+  assert.deepEqual(ownOrca.order, { type: 'rearm' });
+
+  ownOrca.order = { type: 'guard', x: ownOrca.x, y: ownOrca.y };
+  const beforeUnpowered = structuredClone(ownOrca.order);
+  pad.powered = false;
+  sendSocket(host, { type: 'command', requestId: 'rearm-unpowered', command: 'issueRearm', ids: [ownOrca.id] });
+  const unpowered = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'rearm-unpowered');
+  assert.equal(unpowered.ok, false);
+  assert.match(unpowered.reason, /completed, powered Helipad is required/);
+  assert.deepEqual(ownOrca.order, beforeUnpowered, 'an unpowered pad leaves the existing order unchanged');
+
+  pad.powered = true;
+  ownOrca.ammo = UNIT_DEFS.orca.ammoMax;
+  ownOrca.order = { type: 'guard', x: ownOrca.x, y: ownOrca.y };
+  const beforeFull = structuredClone(ownOrca.order);
+  sendSocket(host, { type: 'command', requestId: 'rearm-full', command: 'issueRearm', ids: [ownOrca.id] });
+  const full = await nextMessage(host, message => message.type === 'command_result' &&
+    message.requestId === 'rearm-full');
+  assert.equal(full.ok, false);
+  assert.match(full.reason, /living armed aircraft that needs ammunition/);
+  assert.deepEqual(ownOrca.order, beforeFull, 'a full gunship keeps its existing order');
+
+  sendSocket(host, { type: 'leave_lobby' });
+  host.close(); guest.close();
+});
+
 test('websocket multiplayer requires a bearer token and projects an oriented lobby snapshot', async () => {
   const bad = await new Promise(resolve => {
     const ws = new WebSocket(`ws://127.0.0.1:${server.address().port}/ws?token=bad`);

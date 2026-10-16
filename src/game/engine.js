@@ -54,6 +54,7 @@ export const AI_COUNTER_PLAN_RULES_VERSION = 59;
 export const AI_COMMAND_RECOVERY_RULES_VERSION = 62;
 export const AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION = 64;
 export const AI_ASSAULT_COORDINATION_RULES_VERSION = 65;
+export const AIR_SERVICE_RULES_VERSION = 66;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
@@ -366,6 +367,7 @@ export class Game {
     this.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
     this.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     this.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
+    this.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
     this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     this._aiCommandRecovery = null;
     this.salvageDrop = null;
@@ -1315,7 +1317,12 @@ export class Game {
       } else {
         const point = destinations.get(u.id) || { x, y };
         const paceOrder = pace && !UNIT_DEFS[u.defId]?.flying && !u.embarkedIn ? { pace } : {};
-        this._queueOrIssueUnitOrder(u, { type: 'move', ...point, attackMove: !!attackMove, ...paceOrder }, queue);
+        const unitDef = UNIT_DEFS[u.defId];
+        const emptyAircraftWithoutPad = !attackMove && (this.replayVersion == null ||
+          this.replayVersion >= AIR_SERVICE_RULES_VERSION) && unitDef?.flying &&
+          Number.isFinite(unitDef.ammoMax) && u.ammo < 1 && !this._nearestHelipad(u.owner, u.x, u.y);
+        this._queueOrIssueUnitOrder(u, { type: emptyAircraftWithoutPad ? 'forceMove' : 'move',
+          ...point, attackMove: !!attackMove, ...paceOrder }, queue);
       }
       if (!queue) { u.path = []; u._pathGoal = null; }
     }
@@ -1371,6 +1378,26 @@ export class Game {
     }
     this._event('order', { order: 'forceMove', queued: !!queue, ids: units.map(u => u.id), x, y,
       ...(matchPace ? { matchPace: true } : {}) });
+    return { ok: true };
+  }
+
+  issueRearm() {
+    if (this.replayVersion != null && this.replayVersion < AIR_SERVICE_RULES_VERSION)
+      return { ok: false, reason: `Aircraft rearm orders require replay version ${AIR_SERVICE_RULES_VERSION}.` };
+    const units = this._selectedCommandUnits().filter(unit => {
+      const def = UNIT_DEFS[unit.defId];
+      return !unit.embarkedIn && def?.flying && Number.isFinite(def.ammoMax) && unit.ammo < def.ammoMax;
+    });
+    if (!units.length) return { ok: false, reason: 'Select a living armed aircraft that needs ammunition.' };
+    if (!this._nearestHelipad(units[0].owner, units[0].x, units[0].y))
+      return { ok: false, reason: 'A completed, powered Helipad is required to rearm aircraft.' };
+    for (const unit of units) {
+      unit.order = { type: 'rearm' };
+      unit._resumeOrder = null;
+      unit.path = []; unit._pathGoal = null;
+      unit._jamWaypoint = null; unit._jamSeconds = 0;
+    }
+    this._event('order', { order: 'rearm', ids: units.map(unit => unit.id) });
     return { ok: true };
   }
 
@@ -6837,6 +6864,10 @@ export class Game {
     if (game.mode === 'skirmish' && game.replayVersion == null &&
         data.aiAssaultCoordinationRulesVersion !== AI_ASSAULT_COORDINATION_RULES_VERSION)
       game.replayVersion = AI_ASSAULT_COORDINATION_RULES_VERSION - 1;
+    // Aircraft controls apply in every mode. Older live saves retain their
+    // recorded control rules, while current saves preserve the null sentinel.
+    if (game.replayVersion == null && data.airServiceRulesVersion !== AIR_SERVICE_RULES_VERSION)
+      game.replayVersion = AIR_SERVICE_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6859,6 +6890,7 @@ export class Game {
     game.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
     game.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     game.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
+    game.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
     game.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     const savedRecovery = game._aiCommandRecovery;
     game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)

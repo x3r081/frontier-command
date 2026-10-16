@@ -646,6 +646,8 @@ button:focus-visible { outline: 2px solid #e0ff9c; outline-offset: 3px; }
 .veterancy-badge.rank-2 { color: #fff2c4; border-color: #efd275; background: #5b471e; box-shadow: 0 0 9px #e6bc4b45; }
 .veterancy-track { height: 3px; margin-top: 3px; background: #3c4539; }
 .veterancy-track span { display: block; height: 100%; background: linear-gradient(90deg, #d79e4b, #ffeaa4); box-shadow: 0 0 6px #ffc46e80; }
+.ammunition-track { height: 3px; margin-top: 3px; background: #233d42; }
+.ammunition-track span { display: block; height: 100%; background: linear-gradient(90deg,#54b9cc,#b6f0e8); }
 .command-actions button:disabled { color: #778a79; background: #132219; cursor: not-allowed; }
 .command-actions button:disabled span { color: #758b6e; }
 .empty-selection small { color: #9bad9f; }
