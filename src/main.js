@@ -44,7 +44,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${['rifle','rocket'].includes(id)?'?rev=76':id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
@@ -510,6 +510,15 @@ function activeAiCommanderProfile() {
   if (game?.mode !== 'skirmish' || game.replayVersion != null &&
       game.replayVersion < AI_COMMANDER_PROFILE_RULES_VERSION) return null;
   return AI_COMMANDER_PROFILES.find(profile => profile.id === game.aiCommanderProfileId) || null;
+}
+
+function resetAiProfileDisclosure() {
+  const badge=$('#ai-profile-badge');
+  const toggle=$('#ai-profile-toggle');
+  badge.classList.remove('is-expanded');
+  toggle.setAttribute('aria-expanded','false');
+  toggle.setAttribute('aria-label','Expand enemy commander intelligence');
+  toggle.lastElementChild.textContent='▾';
 }
 
 function startDeploymentIntro() {
@@ -1999,6 +2008,7 @@ async function beginGame(options = {}) {
   matchPaceMode=false;
   battlefieldPickerAddSquadMode=false;
   setBattlefieldPickerOpen(false);
+  resetAiProfileDisclosure();
   finishDeploymentIntro();
   gameStarting=true;
   $('#launch-status').lastChild.textContent=' CONNECTING TO COMMAND RECORDS…';
@@ -2333,6 +2343,7 @@ function abandonActiveRun() {
 function returnToMenu({preserveLobby=false}={}) {
   battlefieldPickerAddSquadMode=false;
   setBattlefieldPickerOpen(false);
+  resetAiProfileDisclosure();
   setRoutePlanMode(false);
   closeBlueprintDetails();
   finishDeploymentIntro();
@@ -4391,9 +4402,15 @@ function updateMobileSquads() {
   }
 }
 function updateUI(force=false) {
-  if(!game)return;
+  if(!game){
+    $('#ai-profile-badge').classList.add('hidden');
+    resetAiProfileDisclosure();
+    return;
+  }
   const aiProfile = activeAiCommanderProfile();
   const aiBadge = $('#ai-profile-badge');
+  const aiToggle = $('#ai-profile-toggle');
+  const aiChipLabel = $('#ai-profile-chip-label');
   const aiPlan = game.mode === 'skirmish' && game.aiCounterPlan?.id === 'anti-armor-screen'
     ? game.aiCounterPlan : null;
   const aiPlanNote = $('#ai-counterplan-note');
@@ -4401,8 +4418,15 @@ function updateUI(force=false) {
   aiBadge.classList.toggle('has-counter-plan', !!aiPlan);
   aiPlanNote.classList.toggle('hidden', !aiPlan);
   if (aiProfile) {
+    if(aiBadge.dataset.profile!==aiProfile.id){
+      resetAiProfileDisclosure();
+    }
     $('#ai-profile-name').textContent = aiProfile.name.toUpperCase();
+    $('#ai-profile-description').textContent=aiProfile.description;
     aiBadge.dataset.profile = aiProfile.id;
+    aiChipLabel.textContent = `${aiProfile.name.toUpperCase()} · INTEL`;
+    aiToggle.setAttribute('aria-label',`${aiToggle.getAttribute('aria-expanded')==='true'?'Collapse':'Expand'} ${aiProfile.name} commander intelligence`);
+    aiToggle.lastElementChild.textContent=aiToggle.getAttribute('aria-expanded')==='true'?'▴':'▾';
     const contact = aiPlan && Number.isFinite(aiPlan.target?.x) && Number.isFinite(aiPlan.target?.y)
       ? ` · LAST CONTACT ${String(Math.floor(aiPlan.target.x)).padStart(2, '0')}//${String(Math.floor(aiPlan.target.y)).padStart(2, '0')}` : '';
     if (aiPlan) aiPlanNote.textContent = `ANTI-ARMOR SCREEN${contact}`;
@@ -4410,6 +4434,7 @@ function updateUI(force=false) {
     aiBadge.title = aiProfile.description + planDescription;
     aiBadge.setAttribute('aria-label', `Enemy commander ${aiProfile.name}. ${aiProfile.description}${planDescription}`);
   } else {
+    resetAiProfileDisclosure();
     delete aiBadge.dataset.profile;
     aiBadge.removeAttribute('title');
     aiBadge.removeAttribute('aria-label');
@@ -6405,6 +6430,15 @@ $('#quick-start').addEventListener('click',()=>{
   beginGame({faction:'aegis',difficulty:'easy',mapId:firstDeployment?'shard-valley':'random',guided:true,victoryMode:'dominion'});
 });
 $('#deployment-intro-enter').addEventListener('click',()=>finishDeploymentIntro());
+$('#ai-profile-toggle').addEventListener('click',()=>{
+  const badge=$('#ai-profile-badge');
+  const toggle=$('#ai-profile-toggle');
+  const expanded=!badge.classList.contains('is-expanded');
+  badge.classList.toggle('is-expanded',expanded);
+  toggle.setAttribute('aria-expanded',String(expanded));
+  toggle.setAttribute('aria-label',`${expanded?'Collapse':'Expand'} ${$('#ai-profile-name').textContent.toLowerCase()} commander intelligence`);
+  toggle.lastElementChild.textContent=expanded?'▴':'▾';
+});
 $('#game-shell').addEventListener('pointerdown',event=>{
   if(deploymentIntro)finishDeploymentIntro(!event.target.closest('#deployment-intro-enter'));
 },true);
@@ -7230,6 +7264,11 @@ window.addEventListener('keydown',e=>{
       if(visible.length&&(e.shiftKey&&(active===first||!scope.contains(active)&&active!==$('#campaign-select .modal-close')))){e.preventDefault();last.focus();}
       else if(visible.length&&(!e.shiftKey&&(active===last||!scope.contains(active)&&active!==$('#campaign-select .modal-close')))){e.preventDefault();first.focus();}
     }
+    return;
+  }
+  if(e.key==='Escape'&&matchMedia('(max-width: 670px)').matches&&$('#ai-profile-badge').classList.contains('is-expanded')){
+    e.preventDefault();
+    resetAiProfileDisclosure();
     return;
   }
   if(e.key==='Escape'&&battlefieldPickerIsOpen()){

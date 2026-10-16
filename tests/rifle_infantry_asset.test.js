@@ -2,36 +2,46 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 
-const modelUrl=new URL('../public/assets/models/rifle-infantry.glb',import.meta.url);
-const portraitUrl=new URL('../public/assets/portraits/rifle.png',import.meta.url);
-
 function readGlbJson(buffer) {
-  assert.equal(buffer.toString('ascii',0,4),'glTF','asset should be a binary glTF');
-  assert.equal(buffer.readUInt32LE(4),2,'asset should use glTF 2.0');
+  assert.equal(buffer.toString('ascii',0,4),'glTF');
+  assert.equal(buffer.readUInt32LE(4),2);
   const jsonLength=buffer.readUInt32LE(12);
-  assert.equal(buffer.readUInt32LE(16),0x4e4f534a,'first GLB chunk should be JSON');
+  assert.equal(buffer.readUInt32LE(16),0x4e4f534a);
   return JSON.parse(buffer.toString('utf8',20,20+jsonLength));
 }
 
-test('rifle infantry keeps animated joints while adding a readable optic and comms silhouette',async()=>{
-  const bytes=await readFile(modelUrl);
-  const glb=readGlbJson(bytes);
-  const names=new Set(glb.nodes.map(node=>node.name));
-  for(const joint of ['Arm.L upper','Arm.R upper','Arm.L forearm','Arm.R forearm']) {
-    assert.ok(names.has(joint),`animated joint ${joint} must remain an independent node`);
-  }
-  for(const detail of ['Helmet comms pad','Rifle optic housing','Rifle optic lens','Rifle foregrip']) {
-    assert.ok(names.has(detail),`tactical detail ${detail} should be present in the exported GLB`);
-  }
-  assert.equal(glb.materials.length,6,'new details reuse the established six-material batch set');
-  assert.ok(glb.meshes.length<=40,'asset stays within its mesh budget before renderer batching');
-  assert.ok(bytes.byteLength<=225_000,'asset stays below its transfer-size budget');
-});
+for (const [id,file,materials,previousBytes,previousTriangles] of [
+  ['rifle','rifle-infantry',6,209240,3732],
+  ['rocket','rocket-infantry',7,194104,3384],
+]) {
+  test(`${id} uses a complete independently animated infantry skin within its previous asset budget`,async()=>{
+    const bytes=await readFile(new URL(`../public/assets/models/${file}.glb`,import.meta.url));
+    const glb=readGlbJson(bytes);
+    const boneNames=['FC_Root','FC_Pelvis','FC_Spine',...['L','R'].flatMap(side=>
+      [`FC_Thigh_${side}`,`FC_Shin_${side}`,`FC_Foot_${side}`,`FC_UpperArm_${side}`,`FC_Forearm_${side}`]),'FC_Weapon'];
+    assert.equal(glb.skins.length,1);
+    const joints=new Set(glb.skins[0].joints.map(index=>glb.nodes[index].name));
+    assert.deepEqual(joints,new Set(boneNames));
+    assert.equal(glb.nodes.filter(node=>node.mesh!=null).length,1);
+    assert.equal(glb.meshes.length,1);
+    assert.equal(glb.meshes[0].primitives.length,materials);
+    assert.equal(glb.materials.length,materials);
+    assert.ok(glb.materials.some(material=>material.name==='TeamAccent'));
+    let triangles=0;
+    for(const primitive of glb.meshes[0].primitives){
+      assert.ok(primitive.attributes.JOINTS_0!=null&&primitive.attributes.WEIGHTS_0!=null);
+      triangles+=glb.accessors[primitive.indices].count/3;
+    }
+    assert.ok(triangles<previousTriangles);
+    assert.ok(bytes.byteLength<previousBytes);
+    assert.equal(glb.images?.length||0,0,'the skin needs no external textures');
+  });
 
-test('rifle portrait is regenerated as a transparent 384px tactical icon',async()=>{
-  const png=await readFile(portraitUrl);
-  assert.equal(png.toString('hex',0,8),'89504e470d0a1a0a','portrait should be PNG');
-  assert.equal(png.readUInt32BE(16),384,'portrait width');
-  assert.equal(png.readUInt32BE(20),384,'portrait height');
-  assert.equal(png.readUInt8(25),6,'portrait should preserve RGBA transparency');
-});
+  test(`${id} portrait remains a transparent 384px tactical icon`,async()=>{
+    const png=await readFile(new URL(`../public/assets/portraits/${id}.png`,import.meta.url));
+    assert.equal(png.toString('hex',0,8),'89504e470d0a1a0a');
+    assert.equal(png.readUInt32BE(16),384);
+    assert.equal(png.readUInt32BE(20),384);
+    assert.equal(png.readUInt8(25),6);
+  });
+}

@@ -3,7 +3,7 @@
 
 Run from the repository root with Blender 5.x:
   /Applications/Blender.app/Contents/MacOS/Blender -b --python scripts/render_asset_portraits.py -- --all
-  ... -- ids lightTank engineer stealthTank factory
+  ... -- lightTank engineer stealthTank factory
 """
 
 import argparse
@@ -105,7 +105,18 @@ def add_area(name, location, power, size, color):
 
 
 def setup_render(meshes, faction, asset_id=None):
-    corners = [obj.matrix_world @ Vector(corner) for obj in meshes for corner in obj.bound_box]
+    bpy.context.view_layer.update()
+    if any(mod.type == "ARMATURE" for obj in meshes for mod in obj.modifiers):
+        # Imported skins can retain a pre-deformation bounding box. Frame the
+        # evaluated surface so a compact soldier fills its tactical portrait.
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        corners = []
+        for obj in meshes:
+            evaluated = obj.evaluated_get(depsgraph)
+            used = {index for polygon in evaluated.data.polygons for index in polygon.vertices}
+            corners.extend(evaluated.matrix_world @ evaluated.data.vertices[index].co for index in used)
+    else:
+        corners = [obj.matrix_world @ Vector(corner) for obj in meshes for corner in obj.bound_box]
     low = Vector((min(v.x for v in corners), min(v.y for v in corners), min(v.z for v in corners)))
     high = Vector((max(v.x for v in corners), max(v.y for v in corners), max(v.z for v in corners)))
     center = (low + high) * 0.5
@@ -163,7 +174,10 @@ def render_one(asset_id):
         return
     reset_scene()
     bpy.ops.import_scene.gltf(filepath=source)
-    meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+    # Blender may add a hidden Icosphere as the imported armature's display
+    # shape. It is not part of the rendered soldier or its portrait bounds.
+    meshes = [obj for obj in bpy.context.scene.objects if obj.type == "MESH" and not obj.hide_render
+              and any(not collection.hide_render for collection in obj.users_collection)]
     if not meshes:
         print(f"SKIP {asset_id}: no meshes in {source}")
         return

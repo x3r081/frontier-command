@@ -103,7 +103,6 @@ async function authoredAnimation(defId,file,building=false,faction='aegis',compa
 
 test('static model batching keeps animated arms and Command Rig wheels visible',async()=>{
   for(const [key,defId,file,movingCount] of [
-    ['rifle','rifle','rifle-infantry.glb',4],
     ['scoutVesper','scout','vesper-scout.glb',4],
     ['mcv','mcv','mcv.glb',8],
   ]) {
@@ -293,8 +292,6 @@ test('Brace and Ghost Run get transient battlefield cues from live ability clock
 
 test('authored infantry arm nodes resolve and make restrained gait and firing motions',async()=>{
   for (const [defId,file] of [
-    ['rifle','rifle-infantry.glb'],
-    ['rocket','rocket-infantry.glb'],
     ['engineer','engineer.glb'],
   ]) {
     const {renderer,group,entity,animation}=await authoredAnimation(defId,file);

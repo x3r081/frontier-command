@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
+import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { getCampaignFieldOrderView } from '../game/campaign.js';
 import {
   unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
@@ -229,7 +230,7 @@ function compactStaticModel(root, preserve=()=>false) {
   const inverseRoot=root.matrixWorld.clone().invert();
   const batches=new Map();
   root.traverse(object=>{
-    if(!object.isMesh||!object.visible||preserve(object)||Array.isArray(object.material)||object.geometry.groups.length) return;
+    if(!object.isMesh||object.isSkinnedMesh||!object.visible||preserve(object)||Array.isArray(object.material)||object.geometry.groups.length) return;
     const geometry=object.geometry.clone();
     geometry.applyMatrix4(new THREE.Matrix4().multiplyMatrices(inverseRoot,object.matrixWorld));
     const attributes=Object.keys(geometry.attributes).sort().map(name=>{
@@ -874,6 +875,35 @@ function authoredPart(root,name) {
   return root.getObjectByName(name)||root.getObjectByName(name.replace(/\s+/g,'_').replace(/\./g,''));
 }
 
+function applyBoneFlex(bones,pose,name,angle) {
+  const bone=bones[name];
+  bone.quaternion.copy(pose[name]);
+  bone.rotateX(angle);
+}
+
+function shareClonedSkeletons(root) {
+  const skeletons=[];
+  root.traverse(object=>{
+    if(!object.isSkinnedMesh||!object.skeleton) return;
+    let shared=null;
+    for(const candidate of skeletons) {
+      const a=candidate.skeleton,b=object.skeleton;
+      if(a.bones.length!==b.bones.length||a.boneInverses.length!==b.boneInverses.length) continue;
+      let matches=true;
+      for(let i=0;i<a.bones.length;i++) {
+        if(a.bones[i]!==b.bones[i]||!a.boneInverses[i].equals(b.boneInverses[i])) {matches=false;break;}
+      }
+      if(matches) {shared=candidate;break;}
+    }
+    if(!shared) skeletons.push(object);
+    else if(object.skeleton!==shared.skeleton) {
+      const duplicate=object.skeleton;
+      object.bind(shared.skeleton,object.bindMatrix);
+      duplicate.dispose();
+    }
+  });
+}
+
 // Authored GLBs contain separate, named meshes at the scene root. Reparenting
 // these cloned meshes gives a moving assembly a pivot without changing any
 // source geometry or the original asset used by other entities.
@@ -1300,9 +1330,18 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
+      const revision=['rifle','rocket'].includes(key)?'?rev=76':key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
+        if(['rifle','rocket'].includes(key)) gltf.scene.traverse(object=>{
+          if(!object.isSkinnedMesh) return;
+          object.geometry.computeBoundingSphere();
+          // The bind-pose bounds omit a small amount of knee and weapon travel.
+          // Keep culling enabled with a bounded radius around the rig mesh.
+          object.geometry.boundingSphere.radius=Math.max(object.geometry.boundingSphere.radius,1.3);
+          object.computeBoundingSphere();
+          object.boundingSphere.radius=Math.max(object.boundingSphere.radius,1.3);
+        });
         compactAuthoredModel(gltf.scene,key);
         this.assetModels.set(key,gltf.scene);
         this.assetVersions.set(key,(this.assetVersions.get(key)||0)+1);
@@ -3911,7 +3950,10 @@ export class Renderer3D {
       o.defId==='harvester'&&o.faction==='vesper'?'vesperHarvester':(vesperStructure||o.defId);
     const source=this.assetModels.get(modelKey);
     if(!source) return null;
-    const visual=source.clone(true);
+    const visual=['rifle','rocket'].includes(modelKey)
+      ? SkeletonUtils.clone(source)
+      : source.clone(true);
+    if(['rifle','rocket'].includes(modelKey)) shareClonedSkeletons(visual);
     // Blender structures use a roughly three-tile foundation; fit each one to
     // its actual simulation footprint so small defenses do not mask neighbors.
     if('w' in o){
@@ -3952,6 +3994,8 @@ export class Renderer3D {
     if (!('w' in o)) {
       animation.motion = 0;
       animation.travel = 0;
+      animation.lastInfantryMoveTime=NaN;
+      animation.lastInfantrySpeed=0;
       animation.baseY = visual.position.y;
       animation.wheels = [];
       animation.legs = visual.userData.motionLegs || [];
@@ -3992,6 +4036,19 @@ export class Renderer3D {
       }
       animation.infantry = /^(scout|rifle|rocket|engineer|medic|flamer)$/.test(o.defId);
       if (animation.infantry) {
+        if (authored && /^(rifle|rocket)$/.test(o.defId)) {
+          const boneNames=['FC_Root','FC_Pelvis','FC_Spine','FC_Thigh_L','FC_Shin_L','FC_Foot_L',
+            'FC_Thigh_R','FC_Shin_R','FC_Foot_R','FC_UpperArm_L','FC_Forearm_L',
+            'FC_UpperArm_R','FC_Forearm_R','FC_Weapon'];
+          const bones=boneNames.map(name=>authoredPart(visual,name));
+          if (bones.every(bone=>bone?.isBone)) {
+            animation.rigged=true;
+            animation.rigBones=Object.fromEntries(boneNames.map((name,index)=>[name,bones[index]]));
+            animation.rigPose=Object.fromEntries(boneNames.map((name,index)=>[name,bones[index].quaternion.clone()]));
+            animation.pelvisBaseY=animation.rigBones.FC_Pelvis.position.y;
+            animation.digInBlend=0;
+          }
+        }
         // The authored rifle/rocket/engineer GLBs expose separate arm shells
         // with shoulder/elbow origins. Keep their source pose so procedural
         // gait and recoil can stay subtle and return cleanly to idle.
@@ -4001,7 +4058,8 @@ export class Renderer3D {
             pose: part.rotation.clone() } : null;
         })).filter(Boolean);
         animation.lastInfantryShotId = null;
-        animation.infantryShotTime = -Infinity;
+        animation.infantryShotAge = Infinity;
+        animation.lastInfantryVisualTime = NaN;
       }
       animation.flying = /^(orca|apache|dropship)$/.test(o.defId);
     }
@@ -4187,7 +4245,12 @@ export class Renderer3D {
     // (Blender Z-up is converted to Three Y-up by glTF). They are empty nodes,
     // so they do not add geometry or draw calls.
     const muzzleSocket = new THREE.Object3D();
-    if (o.defId === 'lightTank' && animation.pivot) {
+    if (/^(rifle|rocket)$/.test(o.defId)&&animation.rigged) {
+      const weaponLength=o.defId==='rifle'?0.775:0.9025;
+      muzzleSocket.position.set(0,weaponLength,0);
+      animation.rigBones.FC_Weapon.add(muzzleSocket);
+      animation.muzzleSocket=muzzleSocket;
+    } else if (o.defId === 'lightTank' && animation.pivot) {
       muzzleSocket.position.set(0, 0.055, -0.754);
       animation.pivot.add(muzzleSocket);
       animation.muzzleSocket = muzzleSocket;
@@ -4259,19 +4322,54 @@ export class Renderer3D {
     const phase = time * 2.5 + a.phase;
     let lightLevel = 1;
     if(a.carrierParts?.length) this._animateCarrierLoading(state,o,game,time);
-    if (a.infantry && a.arms?.length) {
+    if (a.infantry && (a.arms?.length || a.rigged)) {
       let shot = null;
       for (let i = (game.effects?.length || 0) - 1; i >= 0; i--) {
         const effect = game.effects[i];
         if (effect.type === 'projectile' && effect.sourceId === o.id) { shot = effect; break; }
       }
-      if (shot && shot.id !== a.lastInfantryShotId) {
-        a.lastInfantryShotId = shot.id;
-        a.infantryShotTime = time;
+      const shotElapsed=Number.isFinite(a.lastInfantryVisualTime)?time-a.lastInfantryVisualTime:0;
+      if(shotElapsed<0||shotElapsed>0.5) {
+        a.lastInfantryShotId=null;
+        a.infantryShotAge=Infinity;
       }
-      const recoil = Math.exp(-Math.max(0, time - a.infantryShotTime) * 18);
+      if(shot) {
+        a.lastInfantryShotId=shot.id;
+        a.infantryShotAge=Number.isFinite(shot.maxTtl)&&Number.isFinite(shot.ttl)
+          ?Math.max(0,shot.maxTtl-shot.ttl):0;
+      } else if(Number.isFinite(a.infantryShotAge)&&shotElapsed>0&&shotElapsed<=0.5) {
+        a.infantryShotAge+=shotElapsed;
+      }
+      a.lastInfantryVisualTime=time;
+      const recoil = Math.exp(-a.infantryShotAge * 18);
       const gait = Math.sin(a.travel + a.phase) * a.motion;
-      for (const arm of a.arms) {
+      if (a.rigged) {
+        const bones=a.rigBones,pose=a.rigPose;
+        // Bone local X is the flex axis in the authored armature. The pelvis
+        // lowers the center of mass while knees flex; ankle counterrotation
+        // keeps the boot soles level through gait and the braced posture.
+        const dig=a.digInBlend||0;
+        const thighL=gait*0.28+dig*0.76;
+        const thighR=-gait*0.28+dig*0.76;
+        const shinL=-Math.max(0,gait)*0.32-dig*1.5;
+        const shinR=Math.max(0,-gait)*0.32-dig*1.5;
+        bones.FC_Pelvis.position.y=a.pelvisBaseY-dig*0.073;
+        applyBoneFlex(bones,pose,'FC_Spine',-gait*0.018+(a.digInBlend||0)*0.035);
+        applyBoneFlex(bones,pose,'FC_Thigh_L',thighL);
+        applyBoneFlex(bones,pose,'FC_Thigh_R',thighR);
+        applyBoneFlex(bones,pose,'FC_Shin_L',shinL);
+        applyBoneFlex(bones,pose,'FC_Shin_R',shinR);
+        applyBoneFlex(bones,pose,'FC_Foot_L',-(thighL+shinL));
+        applyBoneFlex(bones,pose,'FC_Foot_R',-(thighR+shinR));
+        applyBoneFlex(bones,pose,'FC_UpperArm_L',gait*0.045-recoil*0.045);
+        applyBoneFlex(bones,pose,'FC_Forearm_L',-recoil*0.025);
+        applyBoneFlex(bones,pose,'FC_UpperArm_R',-gait*0.045-recoil*0.085);
+        applyBoneFlex(bones,pose,'FC_Forearm_R',recoil*0.05);
+        // The weapon bone absorbs a small counter-motion so the muzzle stays
+        // readable while the body and right arm recoil from a real projectile.
+        applyBoneFlex(bones,pose,'FC_Weapon',gait*0.012+recoil*0.045);
+      }
+      for (const arm of a.arms || []) {
         const swing = gait * arm.side;
         const upperKick = arm.side > 0 ? -0.075 : -0.035;
         const forearmKick = arm.side > 0 ? 0.045 : 0.025;
@@ -4477,9 +4575,34 @@ export class Renderer3D {
     if (!a || a.motion === undefined) return;
     // Displacement is measured from successive render positions, so cap a
     // teleport or skipped frame before it can snap the suspension or gait.
-    const distance=Math.min(speed,0.12);
-    a.motion+=(clamp(distance*24,0,1)-a.motion)*0.22;
-    if (distance>0.001 && distance<0.12) a.travel=(a.travel+distance*17)%(Math.PI*2);
+    const elapsed=Number.isFinite(a.lastMotionTime)?time-a.lastMotionTime:0;
+    const visualDt=Number.isFinite(elapsed)&&elapsed>0&&elapsed<=0.5?elapsed:0;
+    a.lastMotionTime=time;
+    const distance=speed<=0.35?speed:0;
+    if(a.infantry) {
+      if(!Number.isFinite(elapsed)||elapsed>0.5||elapsed<0) {
+        a.motion=0;
+        a.lastInfantrySpeed=0;
+        a.lastInfantryMoveTime=time;
+        a.digInBlend=0;
+      } else if(visualDt>0) {
+        if(distance>0.001) {
+          const moveElapsed=Number.isFinite(a.lastInfantryMoveTime)
+            ?time-a.lastInfantryMoveTime:visualDt;
+          a.lastInfantrySpeed=moveElapsed>0&&moveElapsed<=0.5?distance/moveElapsed:0;
+          a.lastInfantryMoveTime=time;
+          a.travel=(a.travel+distance*17)%(Math.PI*2);
+        }
+        const sinceMove=Number.isFinite(a.lastInfantryMoveTime)?time-a.lastInfantryMoveTime:Infinity;
+        const targetMotion=sinceMove>=0&&sinceMove<=0.1?clamp(a.lastInfantrySpeed/1.8,0,1):0;
+        a.motion+=(targetMotion-a.motion)*(1-Math.exp(-visualDt*12));
+        if(!a.digInPosture) a.digInBlend=Math.max(0,(a.digInBlend||0)-visualDt/0.42);
+      }
+    } else {
+      const legacyDistance=Math.min(distance,0.12);
+      a.motion+=(clamp(legacyDistance*24,0,1)-a.motion)*0.22;
+      if(legacyDistance>0.001) a.travel=(a.travel+legacyDistance*17)%(Math.PI*2);
+    }
     const visual=state.group.userData.authoredVisual||state.group.userData.proceduralVisual;
     if (!visual) return;
     const gait=Math.sin(a.travel+a.phase);
@@ -4536,10 +4659,12 @@ export class Renderer3D {
       visual.rotation.x=a.flightBaseRotationX+a.flightPitch;
       visual.rotation.z=a.flightBaseRotationZ+a.flightBank;
     } else if (a.infantry) {
-      visual.position.y=a.baseY+(a.digInPosture?-0.065:0)+a.motion*(0.012+0.023*Math.abs(gait));
-      visual.rotation.z=a.motion*gait*0.043;
-      visual.rotation.x=a.motion*Math.cos(a.travel+a.phase)*0.025+(a.digInPosture?-0.055:0);
-      for(let i=0;i<a.legs.length;i++) a.legs[i].rotation.x=a.motion*gait*(i&1?-0.42:0.42);
+      if(!a.rigged) {
+        visual.position.y=a.baseY+a.motion*(0.012+0.023*Math.abs(gait));
+        visual.rotation.z=a.motion*gait*0.043;
+        visual.rotation.x=a.motion*Math.cos(a.travel+a.phase)*0.025;
+        for(let i=0;i<a.legs.length;i++) a.legs[i].rotation.x=a.motion*gait*(i&1?-0.42:0.42);
+      }
     } else if (!a.flying) {
       visual.position.y=a.baseY+a.motion*(0.008+0.012*Math.abs(gait));
       visual.rotation.x=a.motion*gait*0.013;
@@ -4567,7 +4692,13 @@ export class Renderer3D {
     state.group.visible=false;
     this.entityGroup.remove(state.group);
     if(state.dust) {this.effectGroup.remove(state.dust);state.dust.material.dispose();}
-    state.group.traverse(obj=>{if(obj.geometry&&!obj.userData.sharedAssetGeometry)obj.geometry.dispose();if(obj.material)(Array.isArray(obj.material)?obj.material:[obj.material]).forEach(m=>m.dispose());});
+    const skeletons=new Set();
+    state.group.traverse(obj=>{
+      if(obj.geometry&&!obj.userData.sharedAssetGeometry)obj.geometry.dispose();
+      if(obj.material)(Array.isArray(obj.material)?obj.material:[obj.material]).forEach(m=>m.dispose());
+      if(obj.isSkinnedMesh&&obj.skeleton)skeletons.add(obj.skeleton);
+    });
+    for(const skeleton of skeletons)skeleton.dispose();
     this.entities.delete(id);
   }
 
@@ -5381,10 +5512,15 @@ export class Renderer3D {
       const digInPosture=infantry&&activeDigOrder&&Number.isFinite(activeDigOrder.readyAt)&&
         Number.isFinite(activeDigOrder.expiresAt)&&game.time>=activeDigOrder.readyAt-DIG_IN_SETUP_SECONDS-1e-6&&
         game.time<activeDigOrder.expiresAt;
-      if(state.animation) state.animation.digInPosture=!!digInPosture;
+      if(state.animation) {
+        state.animation.digInPosture=!!digInPosture;
+        if(digInPosture) {
+          const setup=clamp((game.time-(activeDigOrder.readyAt-DIG_IN_SETUP_SECONDS))/DIG_IN_SETUP_SECONDS,0,1);
+          state.animation.digInBlend=smooth(setup);
+        }
+      }
       if(state.unitVisual&&state.unitVisualBaseScale) {
         state.unitVisual.scale.copy(state.unitVisualBaseScale).multiplyScalar(crowdViewScale*(infantry?1.16:1));
-        if(digInPosture) state.unitVisual.scale.y*=0.84;
       }
       if(!building) this._animateMotion(state,speed,dx,dz,time);
       this._animateEntity(state,o,game,time);

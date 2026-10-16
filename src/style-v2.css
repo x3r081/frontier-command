@@ -3448,6 +3448,8 @@ body:has(#end-modal:not(.hidden)),
   box-shadow: 0 7px 22px #0008; backdrop-filter: blur(7px);
   color: #f4e8d1; pointer-events: auto;
 }
+.ai-profile-toggle, .ai-profile-description { display: none; }
+.ai-profile-details { display: flex; flex-direction: column; justify-content: center; gap: 3px; }
 .ai-profile-badge small { color: #ddb584; font: 700 9px/1 "Barlow Condensed", sans-serif; letter-spacing: .12em; white-space: nowrap; }
 .ai-profile-badge strong { color: #fff0d3; font: 800 16px/1 "Barlow Condensed", sans-serif; letter-spacing: .075em; white-space: nowrap; }
 .ai-profile-badge[data-profile="relay-marshal"] { border-color: rgba(109, 220, 224, .55); border-left-color: #77dce0; background: rgba(12, 37, 39, .93); }
@@ -3464,13 +3466,24 @@ body:has(#end-modal:not(.hidden)),
 .battlefield-wrap:has(.ai-profile-badge:not(.hidden)) .salvage-locator { top: 106px; }
 .battlefield-wrap:has(.ai-profile-badge.has-counter-plan:not(.hidden)) .salvage-locator { top: 130px; }
 @media (max-width: 670px) {
-  .ai-profile-badge { top: 76px; left: 10px; max-width: calc(100% - 20px); min-height: 36px; padding: 4px 7px; gap: 2px; }
+  .ai-profile-badge { top: 40px; left: 10px; width: max-content; max-width: 126px; min-height: 28px; padding: 0; gap: 0; }
+  .ai-profile-toggle { display: inline-flex; align-items: center; justify-content: center; gap: 4px; min-width: 0; max-width: 126px; min-height: 26px; padding: 3px 6px; border: 0; background: transparent; color: #fff0d3; font: 800 10px/1 "Barlow Condensed", sans-serif; letter-spacing: .055em; white-space: nowrap; cursor: pointer; }
+  #ai-profile-chip-label { flex: 0 1 auto; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ai-profile-badge[data-profile="relay-marshal"] .ai-profile-toggle { color: #e2ffff; }
+  .ai-profile-toggle:focus-visible { outline: 2px solid var(--lime); outline-offset: 1px; }
+  .ai-profile-details { display: none; }
+  .ai-profile-badge.is-expanded { width: auto; max-width: calc(100% - 20px); min-height: 36px; padding: 5px 7px; gap: 2px; }
+  .ai-profile-badge.is-expanded .ai-profile-details { display: flex; }
+  .ai-profile-badge.is-expanded .ai-profile-description { display: block; max-width: 250px; color: #d5d3bd; font: 500 10px/1.4 Inter, sans-serif; }
+  .battlefield-wrap:has(.ai-profile-badge:not(.hidden)) .coordinate-label { visibility: hidden; }
+  .ai-profile-badge.is-expanded .ai-profile-toggle { align-self: flex-start; min-height: 22px; padding-inline: 0; }
   .ai-profile-badge small { font-size: 8px; }
   .ai-profile-badge strong { font-size: 13px; }
-  .battlefield-wrap:has(.ai-profile-badge:not(.hidden)) .salvage-locator { top: 122px; }
-  .ai-profile-badge.has-counter-plan { max-width: calc(100% - 20px); }
+  .battlefield-wrap:has(.ai-profile-badge:not(.hidden)) .salvage-locator { top: 76px; }
+  .battlefield-wrap:has(.ai-profile-badge.is-expanded:not(.hidden)) .salvage-locator { top: 150px; }
+  .ai-profile-badge.has-counter-plan:not(.is-expanded) { max-width: 126px; }
+  .ai-profile-badge.has-counter-plan.is-expanded { max-width: calc(100% - 20px); }
   .ai-counterplan-note { font-size: 9px; }
-  .battlefield-wrap:has(.ai-profile-badge.has-counter-plan:not(.hidden)) .salvage-locator { top: 145px; }
 }
 
 /* Bloom harvest is a distinct temporary order, with readable contrast in the

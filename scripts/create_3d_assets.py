@@ -1375,11 +1375,9 @@ def signal_obelisk():
     export("signal-obelisk")
 
 
-def infantry_body(m, variant="rifle"):
-    """Shared compact soldier anatomy; the kit remains inside the infantry ring."""
+def legacy_infantry_body(m):
+    """Keep established anatomy for scout, engineer, and flamer units."""
     cylinder("Boot platform", (0, 0, .045), .15, .09, m["dark"], 8)
-    # Split greaves and boots turn the original monolithic body into a readable
-    # standing figure from the game camera while preserving its .60 height.
     for x in [-.065, .065]:
         cube("Armored boot", (x, .015, .105), (.085, .15, .09), m["rubber"], .022)
         cube("Lower leg greave", (x, -.005, .19), (.082, .105, .16), m["steel"], .022)
@@ -1388,8 +1386,6 @@ def infantry_body(m, variant="rifle"):
     cube("Chest plate", (0, .105, .34), (.19, .045, .16), m["edge"], .022)
     for x in [-.145, .145]:
         cube("Shoulder pauldron", (x, .005, .405), (.105, .12, .105), m["steel"], .025)
-        # Keep the arm shells as separate named glTF nodes. Their origins sit
-        # at the shoulder/elbow joints so later walk/aim clips can rotate them.
         upper = cube("Arm.L upper" if x < 0 else "Arm.R upper",
                      (x, .045, .335), (.085, .09, .13), m["armor"], .018)
         bpy.context.scene.cursor.location = (x, .01, .405)
@@ -1402,8 +1398,6 @@ def infantry_body(m, variant="rifle"):
         bpy.ops.object.select_all(action="DESELECT"); forearm.select_set(True)
         bpy.context.view_layer.objects.active = forearm
         bpy.ops.object.origin_set(type="ORIGIN_CURSOR", center="MEDIAN")
-    # Readable rear pack and segmented side pouches add value from the portrait
-    # camera as well as in-game without changing the established unit envelope.
     cube("Field harness", (0, -.112, .34), (.17, .045, .16), m["dark"], .018)
     cube("Backpack", (0, -.16, .35), (.15, .09, .20), m["steel"], .025)
     for x in [-.13, .13]:
@@ -1411,16 +1405,181 @@ def infantry_body(m, variant="rifle"):
     cylinder("Helmet", (0, -.015, .52), .12, .16, m["dark"], 8)
     cube("Helmet crown plate", (0, -.01, .605), (.13, .115, .035), m["steel"], .014)
     cube("Visor", (0, .09, .53), (.15, .04, .055), m["accent"], .015)
+    for x in [-.132, .132]:
+        cube("Helmet comms pad", (x, .008, .525), (.052, .095, .075), m["steel"], .015)
+    cube("Comms status lamp", (-.14, .061, .527), (.024, .018, .028), m["accent"], .006)
+    cube("Faction chest insignia", (0, .133, .385), (.105, .018, .035), m["accent"], .009)
+    cube("Helmet faction stripe", (0, .052, .626), (.035, .025, .018), m["accent"], .005)
+
+
+def infantry_body(m, variant="rifle"):
+    """Use grip-ready armor on new rifle/rocket kits, legacy shapes elsewhere."""
+    if variant not in {"rifle", "rocket"}:
+        legacy_infantry_body(m)
+        return
+    # Split thighs, knees, greaves, and boots read as separate armor plates
+    # while keeping each boot sole at the ground plane.
+    for x in [-.065, .065]:
+        side = "L" if x < 0 else "R"
+        cube("Armored boot " + side, (x, .025, .045), (.092, .17, .09), m["rubber"], .022)
+        cube("Thigh armor " + side, (x, -.005, .275), (.092, .12, .145), m["armor"], .022)
+        cube("Knee armor " + side, (x, .055, .205), (.10, .045, .075), m["edge"], .014)
+        cube("Lower leg greave " + side, (x, -.005, .145), (.085, .12, .105), m["steel"], .018)
+    cube("Armored torso", (0, 0, .335), (.22, .20, .24), m["armor"], .045)
+    cube("Chest plate", (0, .105, .34), (.19, .045, .16), m["edge"], .022)
+    for x in [-.145, .145]:
+        cube("Shoulder pauldron L" if x < 0 else "Shoulder pauldron R",
+             (x, .005, .405), (.11, .125, .105), m["steel"], .025)
+        # Keep each armor shell named so the rig can give it a rigid joint weight.
+        if variant == "rocket":
+            arm_loc = ((-.15, .045, .43) if x < 0 else (.035, .045, .39))
+            forearm_loc = ((-.17, .15, .465) if x < 0 else (-.065, .12, .43))
+        else:
+            arm_loc = ((-.135, .055, .355) if x < 0 else (.15, .04, .385))
+            forearm_loc = ((.055, .225, .405) if x < 0 else (.155, .17, .43))
+        upper = cube("Arm.L upper" if x < 0 else "Arm.R upper",
+                     arm_loc,
+                     (.10, .115, .13), m["armor"], .018)
+        bpy.context.scene.cursor.location = (x, .01, .405)
+        bpy.ops.object.select_all(action="DESELECT"); upper.select_set(True)
+        bpy.context.view_layer.objects.active = upper
+        bpy.ops.object.origin_set(type="ORIGIN_CURSOR", center="MEDIAN")
+        forearm = cube("Arm.L forearm" if x < 0 else "Arm.R forearm",
+                       forearm_loc, (.09, .145, .085), m["armor"], .02)
+        elbow = ((-.17, .095, .475) if x < 0 else (.11, .075, .35)) if variant == "rocket" else ((-.015, .16, .385) if x < 0 else (.155, .08, .43))
+        bpy.context.scene.cursor.location = elbow
+        bpy.ops.object.select_all(action="DESELECT"); forearm.select_set(True)
+        bpy.context.view_layer.objects.active = forearm
+        bpy.ops.object.origin_set(type="ORIGIN_CURSOR", center="MEDIAN")
+    if variant == "rocket":
+        cube("Glove.L", (-.17, .20, .445), (.075, .075, .055), m["dark"], .012)
+        cube("Glove.R", (-.10, .18, .445), (.075, .07, .055), m["dark"], .012)
+    else:
+        cube("Glove.L", (.105, .285, .435), (.075, .075, .055), m["dark"], .012)
+        cube("Glove.R", (.155, .275, .445), (.075, .075, .055), m["dark"], .012)
+    # Readable rear pack and segmented side pouches add value from the portrait
+    # camera as well as in-game without changing the established unit envelope.
+    cube("Field harness", (0, -.112, .34), (.17, .045, .16), m["dark"], .018)
+    cube("Backpack", (0, -.16, .35), (.15, .09, .20), m["steel"], .025)
+    for x in [-.13, .13]:
+        cube("Utility pouch", (x, -.01, .30), (.055, .09, .09), m["dark"], .012)
+    cylinder("Helmet", (0, -.015, .51), .112, .145, m["dark"], 8)
+    cube("Helmet crown plate", (0, -.01, .585), (.13, .115, .035), m["steel"], .014)
+    cube("Visor", (0, .085, .515), (.15, .04, .05), m["accent"], .015)
     # Side comms pads break the smooth cylindrical helmet into a more
     # recognizable infantry silhouette, including at the small battlefield
     # scale. Keep them compact so the soldier remains inside the unit ring.
     for x in [-.132, .132]:
-        cube("Helmet comms pad", (x, .008, .525), (.052, .095, .075), m["steel"], .015)
-    cube("Comms status lamp", (-.14, .061, .527), (.024, .018, .028), m["accent"], .006)
+        cube("Helmet comms pad", (x, .008, .51), (.052, .095, .07), m["steel"], .015)
+    cube("Comms status lamp", (-.14, .061, .512), (.024, .018, .028), m["accent"], .006)
     # A bold Aegis chevron and helmet stripe establish team identity at RTS
     # camera distance, where the original narrow shoulder tab disappeared.
     cube("Faction chest insignia", (0, .133, .385), (.105, .018, .035), m["accent"], .009)
-    cube("Helmet faction stripe", (0, .052, .626), (.035, .025, .018), m["accent"], .005)
+    cube("Helmet faction stripe", (0, .052, .606), (.035, .025, .018), m["accent"], .005)
+
+
+def rig_infantry(variant="rifle", weapon_start=None, weapon_end=None):
+    """Join a soldier into one rigidly weighted mesh on the shared bone rig."""
+    if variant == "rocket":
+        weapon_start = weapon_start or (-.17, -.285, .52)
+        weapon_end = weapon_end or (-.17, .437, .52)
+    else:
+        weapon_start = weapon_start or (.155, -.08, .445)
+        weapon_end = weapon_end or (.155, .54, .445)
+
+    arm_data = bpy.data.armatures.new("Field infantry skeleton")
+    arm = bpy.data.objects.new("Field infantry rig", arm_data)
+    bpy.context.collection.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    arm.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bones = {}
+
+    def bone(name, head, tail, parent=None):
+        b = arm_data.edit_bones.new(name)
+        s = 1.25  # Match scale_infantry_for_game_readability() around the feet.
+        b.head = tuple(v * s for v in head)
+        b.tail = tuple(v * s for v in tail)
+        if parent:
+            b.parent = bones[parent]
+            b.use_connect = False
+        bones[name] = b
+
+    bone("FC_Root", (0, 0, 0), (0, 0, .10))
+    bone("FC_Pelvis", (0, 0, .10), (0, 0, .29), "FC_Root")
+    bone("FC_Spine", (0, 0, .29), (0, 0, .59), "FC_Pelvis")
+    bone("FC_Thigh_L", (-.065, 0, .29), (-.065, 0, .205), "FC_Pelvis")
+    bone("FC_Shin_L", (-.065, 0, .205), (-.065, 0, .07), "FC_Thigh_L")
+    bone("FC_Foot_L", (-.065, 0, .07), (-.065, .12, .07), "FC_Shin_L")
+    bone("FC_Thigh_R", (.065, 0, .29), (.065, 0, .205), "FC_Pelvis")
+    bone("FC_Shin_R", (.065, 0, .205), (.065, 0, .07), "FC_Thigh_R")
+    bone("FC_Foot_R", (.065, 0, .07), (.065, .12, .07), "FC_Shin_R")
+    if variant == "rocket":
+        bone("FC_UpperArm_L", (-.145, 0, .405), (-.17, .095, .475), "FC_Spine")
+        bone("FC_Forearm_L", (-.17, .095, .475), (-.17, .20, .445), "FC_UpperArm_L")
+        bone("FC_UpperArm_R", (.145, 0, .405), (-.04, .07, .42), "FC_Spine")
+        bone("FC_Forearm_R", (-.04, .07, .42), (-.10, .18, .445), "FC_UpperArm_R")
+    else:
+        bone("FC_UpperArm_L", (-.145, 0, .405), (-.015, .16, .385), "FC_Spine")
+        bone("FC_Forearm_L", (-.015, .16, .385), (.105, .285, .435), "FC_UpperArm_L")
+        bone("FC_UpperArm_R", (.145, 0, .405), (.155, .08, .43), "FC_Spine")
+        bone("FC_Forearm_R", (.155, .08, .43), (.155, .275, .445), "FC_UpperArm_R")
+    bone("FC_Weapon", weapon_start, weapon_end, "FC_Spine")
+    bpy.ops.object.mode_set(mode="OBJECT")
+
+    def group_for(obj):
+        name = obj.name.lower()
+        if any(t in name for t in ("rifle", "launcher", "rocket")):
+            return "FC_Weapon"
+        if "shoulder pauldron" in name:
+            return "FC_UpperArm_L" if name.endswith("l") else "FC_UpperArm_R"
+        if "arm.l" in name or ("team shoulder tab" in name):
+            return "FC_UpperArm_L" if "upper" in name or "shoulder" in name else "FC_Forearm_L"
+        if "arm.r" in name:
+            return "FC_UpperArm_R" if "upper" in name else "FC_Forearm_R"
+        if "glove.l" in name:
+            return "FC_Forearm_L"
+        if "glove.r" in name:
+            return "FC_Forearm_R"
+        if "armored boot" in name:
+            return "FC_Foot_L" if name.endswith("l") else "FC_Foot_R"
+        if "thigh" in name:
+            return "FC_Thigh_L" if name.endswith("l") else "FC_Thigh_R"
+        if "knee" in name or "lower leg" in name:
+            return "FC_Shin_L" if name.endswith("l") else "FC_Shin_R"
+        if "boot platform" in name:
+            return "FC_Root"
+        if "utility pouch" in name:
+            return "FC_Pelvis"
+        return "FC_Spine"
+
+    meshes = [o for o in bpy.context.scene.objects if o.type == "MESH"]
+    for obj in meshes:
+        bpy.ops.object.select_all(action="DESELECT")
+        obj.select_set(True)
+        bpy.context.view_layer.objects.active = obj
+        for modifier in list(obj.modifiers):
+            bpy.ops.object.modifier_apply(modifier=modifier.name)
+        vg = obj.vertex_groups.new(name=group_for(obj))
+        if obj.data.vertices:
+            vg.add([v.index for v in obj.data.vertices], 1.0, "REPLACE")
+
+    bpy.ops.object.select_all(action="DESELECT")
+    for obj in meshes:
+        obj.select_set(True)
+    bpy.context.view_layer.objects.active = meshes[0]
+    bpy.ops.object.join()
+    mesh = bpy.context.object
+    mesh.name = "Infantry skinned mesh"
+    mod = mesh.modifiers.new("Infantry armature", "ARMATURE")
+    mod.object = arm
+    mesh.parent = arm
+    # Keep a clean, predictable object transform for glTF skin joints.
+    mesh.matrix_parent_inverse = arm.matrix_world.inverted()
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True)
+    mesh.select_set(True)
+    bpy.context.view_layer.objects.active = arm
 
 
 def scale_infantry_for_game_readability(factor=1.25):
@@ -1432,6 +1591,9 @@ def scale_infantry_for_game_readability(factor=1.25):
 
 
 def rifle_infantry():
+    global LOW_POLY_BEVEL
+    previous_bevel = LOW_POLY_BEVEL
+    LOW_POLY_BEVEL = True
     clean(); m = palette()
     infantry_body(m)
     # Raised, shouldered rifle: its long, fine barrel reads differently from
@@ -1452,33 +1614,40 @@ def rifle_infantry():
     cube("Rifle magazine", (.155, .16, .386), (.048, .085, .095), m["dark"], .01)
     cube("Team shoulder tab", (-.145, .015, .405), (.045, .12, .055), m["accent"], .012)
     scale_infantry_for_game_readability()
+    rig_infantry("rifle")
     export("rifle-infantry")
+    LOW_POLY_BEVEL = previous_bevel
 
 
 def rocket_infantry():
+    global LOW_POLY_BEVEL
+    previous_bevel = LOW_POLY_BEVEL
+    LOW_POLY_BEVEL = True
     clean(); m = palette()
     infantry_body(m, "rocket")
     # Overslung, forward-facing anti-armor tube. Its wide octagonal barrel,
     # paired safety bands and tail fins stay legible at command zoom.
-    x, z = -.18, .535
+    x, z = -.17, .52
     forward_axis = (math.pi/2, 0, 0)
-    cube("Launcher yoke", (-.145, -.035, .435), (.15, .26, .18), m["dark"], .025)
-    cylinder("Rocket tube", (x, .025, z), .095, .62, m["steel"], 8, forward_axis)
-    cylinder("Rocket rear collar", (x, -.265, z), .104, .075, m["dark"], 8, forward_axis)
-    for y in [-.155, .215]:
-        cylinder("Rocket safety band", (x, y, z), .101, .045, m["warning"], 8, forward_axis)
-    cylinder("Rocket nose collar", (x, .34, z), .103, .055, m["dark"], 8, forward_axis)
-    cone("Launcher nose", (x, .425, z), .092, .018, .15, m["warning"], 8, forward_axis)
-    cylinder("Launcher exhaust", (x, -.34, z), .058, .035, m["recess"], 8, forward_axis)
+    cube("Launcher yoke", (-.145, -.035, .425), (.14, .24, .15), m["dark"], .025)
+    cylinder("Rocket tube", (x, .025, z), .078, .53, m["steel"], 8, forward_axis)
+    cylinder("Rocket rear collar", (x, -.225, z), .087, .065, m["dark"], 8, forward_axis)
+    for y in [-.12, .17]:
+        cylinder("Rocket safety band", (x, y, z), .083, .04, m["warning"], 8, forward_axis)
+    cylinder("Rocket nose collar", (x, .30, z), .086, .05, m["dark"], 8, forward_axis)
+    cone("Launcher nose", (x, .372, z), .075, .016, .13, m["warning"], 8, forward_axis)
+    cylinder("Launcher exhaust", (x, -.255, z), .05, .03, m["dark"], 8, forward_axis)
     # Four planar vanes give the aft end a recognizable missile profile.
-    cube("Rocket stabilizer left", (x - .115, -.265, z), (.13, .075, .025), m["warning"], .006)
-    cube("Rocket stabilizer right", (x + .115, -.265, z), (.13, .075, .025), m["warning"], .006)
-    cube("Rocket stabilizer upper", (x, -.265, z + .105), (.025, .075, .105), m["warning"], .006)
-    cube("Rocket stabilizer lower", (x, -.265, z - .105), (.025, .075, .105), m["warning"], .006)
-    cube("Launcher sight", (x, -.005, .648), (.115, .13, .055), m["glass"], .018)
+    cube("Rocket stabilizer left", (x - .095, -.225, z), (.105, .065, .022), m["warning"], .006)
+    cube("Rocket stabilizer right", (x + .095, -.225, z), (.105, .065, .022), m["warning"], .006)
+    cube("Rocket stabilizer upper", (x, -.225, z + .085), (.022, .065, .085), m["warning"], .006)
+    cube("Rocket stabilizer lower", (x, -.225, z - .085), (.022, .065, .085), m["warning"], .006)
+    cube("Launcher sight", (x, -.005, .63), (.10, .12, .05), m["steel"], .018)
     cube("Ammunition harness", (0, -.165, .36), (.24, .11, .23), m["dark"], .03)
     scale_infantry_for_game_readability()
+    rig_infantry("rocket")
     export("rocket-infantry")
+    LOW_POLY_BEVEL = previous_bevel
 
 
 def scout_infantry():
