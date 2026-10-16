@@ -39,6 +39,7 @@ Run `node scripts/relay-logistics-public-playtest.js` for a paired public-order 
 Run `node scripts/iron-current-public-order-probe.js` for the v54/v55 passive-versus-directed freight-relay comparison.
 Run `node scripts/dawn-free-public-playtest.js` for a public-command finale completion probe; pass `--difficulty=easy` or `--difficulty=hard` for those variants.
 Run `node scripts/reverse-move-playtest.js` for the paired retreat-and-fire comparison.
+Run `node scripts/observed-counterplan-playtest.js` for a public-order armor approach and retreat that records the rival's observed response.
 
 ## Play
 
