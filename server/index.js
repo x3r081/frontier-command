@@ -71,6 +71,8 @@ const RANKED_SEASON = 74;
 // All solo boards advance; multiplayer starts Season 74.
 // Version 76 adds optional formation destinations. Default simulation and
 // comparison floors remain v75; multiplayer retains Season 74.
+// Version 77 adds optional home-refinery assignments without changing automatic
+// routing or AI policy. Comparison floors and the multiplayer season remain.
 const CAMPAIGN_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
 const SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
 const EASY_SKIRMISH_SCORE_FLOOR = WRECK_COVER_RULES_VERSION;
@@ -890,6 +892,7 @@ function projectedState(lobby, member) {
     // render or inspect an opponent entity, so scrub the whole private set.
     for (const key of Object.keys(entity)) if (key.startsWith('_')) delete entity[key];
     if ('order' in entity) delete entity.order;
+    delete entity.homeRefineryId;
     if ('path' in entity) entity.path = [];
     // Standby is private economy state. An opponent snapshot must not reveal
     // whether a hidden or visible building has been switched off.
@@ -1121,7 +1124,7 @@ function startMatch(lobby) {
   return true;
 }
 
-const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
+const commandNames = new Set(['issueMove', 'issueForceMove', 'issueReverseMove', 'issueFormationMove', 'issueAttack', 'issueHarvest', 'issueAssignRefinery', 'issueBloomExpedition', 'issueStop', 'issueGuard', 'issueDigIn', 'issueSetStance', 'issuePatrol', 'issueFollow', 'issueBoard', 'issueUnload', 'issueForceFire', 'issueScatter', 'issueDeploy',
   'startConstruction', 'cancelConstruction', 'issueBuild', 'queueUnit', 'cancelQueuedUnit', 'setRally',
   'toggleRepair', 'setBuildingPower', 'useSuperweapon', 'useCommandAbility', 'useUnitAbility', 'issueEngineer', 'issueRecoverWreck', 'issueRecommissionWreck', 'issueServiceAtWorkshop', 'issueReturnCargo', 'issueRearm', 'sellBuilding', 'chooseDoctrine', 'chooseTacticalPackage', 'setRelayProtocol', 'issuePromoteUnit']);
 function command(lobby, member, message) {
@@ -1151,6 +1154,10 @@ function command(lobby, member, message) {
         : { ok: false, reason: 'Choose a valid formation and destination.' };
       case 'issueAttack': return game.issueAttack(message.targetId, message.queue === true);
       case 'issueHarvest': return game.issueHarvest();
+      case 'issueAssignRefinery': return message.refineryId === undefined || message.refineryId === null ||
+          typeof message.refineryId === 'string'
+        ? game.issueAssignRefinery(message.refineryId ?? null)
+        : { ok: false, reason: 'Choose a valid refinery or automatic routing.' };
       case 'issueBloomExpedition': return game.issueBloomExpedition();
       case 'issueStop': return game.issueStop();
       case 'issueGuard': return game.issueGuard();

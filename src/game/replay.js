@@ -1,13 +1,13 @@
 import { Game, MAP_WIDTH, MAP_HEIGHT, SKIRMISH_MAPS, UNIT_DEFS, BUILDING_DEFS, COMMAND_ABILITIES,
   DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, UNIT_PROMOTION_DEFS, UNIT_PROMOTION_RULES_VERSION,
   PRODUCTION_SITE_RULES_VERSION, POWER_STANDBY_RULES_VERSION, WRECK_RECOMMISSION_RULES_VERSION,
-  INFANTRY_DIG_IN_RULES_VERSION, TACTICAL_FORMATION_RULES_VERSION,
+  INFANTRY_DIG_IN_RULES_VERSION, TACTICAL_FORMATION_RULES_VERSION, HARVESTER_HOME_RULES_VERSION,
   aiCommanderProfileForSeed } from './engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, createCampaignGame, updateCampaign } from './campaign.js';
 import { validateCampaignVeteran } from './campaignVeteran.js';
 import { SOLO_STEP_SECONDS } from './soloClock.js';
 
-export const SOLO_REPLAY_VERSION = 76;
+export const SOLO_REPLAY_VERSION = 77;
 export const MAX_SOLO_COMMANDS = 10000;
 export const MAX_SOLO_TICKS = 30 * 60 * 60 * 3;
 const MAX_SELECTION = 128;
@@ -48,6 +48,8 @@ export const SOLO_COMMAND_METHODS = Object.freeze({
   issueUnload: xy,
   issueForceFire: xy,
   issueHarvest: noArgs,
+  issueAssignRefinery: args => noArgs(args) || args.length === 1 &&
+    (args[0] === null || entityId(args[0])),
   issueBloomExpedition: noArgs,
   issueReturnCargo: noArgs,
   issueRearm: noArgs,
@@ -260,6 +262,9 @@ export function createSoloPlayback(envelope, commands, completedTicks, replayVer
   if (replayVersion < TACTICAL_FORMATION_RULES_VERSION && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueFormationMove'))
     throw new TypeError(`Tactical formations require replay version ${TACTICAL_FORMATION_RULES_VERSION}.`);
+  if (replayVersion < HARVESTER_HOME_RULES_VERSION && Array.isArray(commands) &&
+      commands.some(command => command?.method === 'issueAssignRefinery'))
+    throw new TypeError(`Home refinery assignments require replay version ${HARVESTER_HOME_RULES_VERSION}.`);
   if (replayVersion < 21 && Array.isArray(commands) &&
       commands.some(command => command?.method === 'issueServiceAtWorkshop'))
     throw new TypeError('Workshop service orders require replay version 21.');

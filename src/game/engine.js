@@ -83,6 +83,7 @@ export const AI_ENGINEER_RAID_RULES_VERSION = 70;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
+export const HARVESTER_HOME_RULES_VERSION = 77;
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
 export const DOCTRINE_REPLACEMENT_COST = 1350;
@@ -368,6 +369,7 @@ export class Game {
     this.difficulty = ['easy', 'normal', 'hard'].includes(difficulty) ? difficulty : 'normal';
     this.mode = mode;
     this.replayVersion = replayVersion;
+    this.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     this.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
@@ -1157,6 +1159,7 @@ export class Game {
       _harvestTile: null, _healCooldown: 0, ammo: d.ammoMax ?? null, _resumeOrder: null,
       _stormglassCargo: 0,
       _unloadRefineryId: null, _unloadApproach: null, _unloadRemaining: 0, _unloadProgress: 0,
+      homeRefineryId: null,
       suppressedUntil: 0, embarkedIn: null, passengerIds: [], abilityCooldown: 0,
       braceUntil: 0, ghostRunUntil: 0 };
     this.units.push(u);
@@ -1835,6 +1838,37 @@ export class Game {
       u.path = []; u._pathGoal = null; u._harvestTile = null;
     }
     this._event('order', { order: 'harvest', ids: units.map(u => u.id) });
+    return { ok: true };
+  }
+
+  issueAssignRefinery(refineryId = null) {
+    if (this.replayVersion != null && this.replayVersion < HARVESTER_HOME_RULES_VERSION)
+      return { ok: false, reason: `Harvester home assignments require replay version ${HARVESTER_HOME_RULES_VERSION}.` };
+    if (refineryId !== null && typeof refineryId !== 'string')
+      return { ok: false, reason: 'Choose a completed refinery or automatic routing.' };
+    const owner = this.commandOwner || 'player';
+    const refinery = refineryId === null ? null : this.buildings.find(building => building.id === refineryId);
+    if (refineryId !== null && (!refinery || refinery.owner !== owner || refinery.defId !== 'refinery' ||
+      refinery.hp <= 0 || refinery.progress < 1))
+      return { ok: false, reason: 'Choose a completed owned refinery.' };
+    const harvesters = this._selectedCommandUnits().filter(unit => unit.defId === 'harvester' &&
+      unit.owner === owner && unit.hp > 0 && !unit.embarkedIn);
+    if (!harvesters.length) return { ok: false, reason: 'Select a living unembarked harvester.' };
+
+    for (const unit of harvesters) {
+      this._releaseHarvesterDock(unit);
+      unit.homeRefineryId = refineryId;
+      if (refineryId === null) delete unit._homeDockStatus;
+      if (unit.order?.type !== 'harvest') {
+        unit.order = { type: 'harvest' };
+        unit._harvestTile = null;
+        unit._harvestPhase = unit.cargo > 0 ? 'return' : 'field';
+      } else if (unit.cargo > 0) {
+        unit._harvestPhase = 'return';
+      }
+      unit.path = []; unit._pathGoal = null;
+    }
+    this._event('order', { order: 'assignRefinery', ids: harvesters.map(unit => unit.id), refineryId });
     return { ok: true };
   }
 
@@ -3465,46 +3499,65 @@ export class Game {
   _findHarvesterDock(unit) {
     const assignedRefinery = unit._unloadRefineryId && this.getEntity(unit._unloadRefineryId);
     const assignedApproach = unit._unloadApproach;
+    const home = unit.homeRefineryId && this.getEntity(unit.homeRefineryId);
+    const homeOperational = home?.owner === unit.owner && home.defId === 'refinery' && home.hp > 0 &&
+      home.progress >= 1 && home.powered !== false &&
+      (!this._powerStandbyEnabled() || home.powerStandby !== true);
+    const homeStatus = `${unit.homeRefineryId}:${homeOperational ? 'ready' : 'offline'}`;
+    if (unit.homeRefineryId && unit._homeDockStatus !== homeStatus) {
+      unit._homeDockStatus = homeStatus;
+      if (assignedRefinery && assignedRefinery.id !== unit.homeRefineryId) this._releaseHarvesterDock(unit);
+    }
     if (assignedRefinery?.hp > 0 && assignedRefinery.defId === 'refinery' && assignedRefinery.progress >= 1 &&
       (!this._powerStandbyEnabled() || assignedRefinery.owner === unit.owner) &&
       (!this._powerStandbyEnabled() || assignedRefinery.powerStandby !== true) &&
+      (assignedRefinery.id !== unit.homeRefineryId || assignedRefinery.powered !== false) &&
+      (!homeOperational || assignedRefinery.id === unit.homeRefineryId) &&
       assignedApproach && this._isPassable(Math.floor(assignedApproach.x), Math.floor(assignedApproach.y)) &&
       this._distanceToEntity(assignedApproach.x, assignedApproach.y, assignedRefinery) <= 0.95)
       return { refinery: assignedRefinery, approach: assignedApproach };
 
-    const candidates = [];
+    const findFor = refineries => {
+      const candidates = [];
+      for (const refinery of refineries) for (let y = refinery.y - 1; y <= refinery.y + refinery.h; y++)
+        for (let x = refinery.x - 1; x <= refinery.x + refinery.w; x++) {
+          if (x >= refinery.x && x < refinery.x + refinery.w && y >= refinery.y && y < refinery.y + refinery.h) continue;
+          const approach = { x: x + 0.5, y: y + 0.5 };
+          if (!this._isPassable(x, y) || this._distanceToEntity(approach.x, approach.y, refinery) > 0.95) continue;
+          const path = this._findPath(unit.x, unit.y, approach.x, approach.y);
+          if (!path.length) continue;
+          const reserved = this.units.some(other => other.id !== unit.id && other.owner === unit.owner &&
+            other.defId === 'harvester' && other._unloadRefineryId === refinery.id && other._unloadApproach &&
+            dist(other._unloadApproach.x, other._unloadApproach.y, approach.x, approach.y) < 0.7);
+          const side = approach.y < refinery.y ? 'north' : approach.y >= refinery.y + refinery.h ? 'south' :
+            approach.x < refinery.x ? 'west' : 'east';
+          const sideLoad = this.units.filter(other => other.id !== unit.id && other.owner === unit.owner &&
+            other.defId === 'harvester' && other._unloadRefineryId === refinery.id && other._unloadApproach)
+            .filter(other => {
+              const otherSide = other._unloadApproach.y < refinery.y ? 'north' :
+                other._unloadApproach.y >= refinery.y + refinery.h ? 'south' :
+                  other._unloadApproach.x < refinery.x ? 'west' : 'east';
+              return otherSide === side;
+            }).length;
+          let length = 0, px = unit.x, py = unit.y;
+          for (const point of path) { length += dist(px, py, point.x, point.y); px = point.x; py = point.y; }
+          const refineryDistance = this._distanceToEntity(unit.x, unit.y, refinery);
+          candidates.push({ refinery, approach,
+            score: length + refineryDistance * 0.05 + sideLoad * 14 + (reserved ? 40 : 0) });
+        }
+      candidates.sort((a, b) => a.score - b.score || a.refinery.id.localeCompare(b.refinery.id) ||
+        a.approach.y - b.approach.y || a.approach.x - b.approach.x);
+      return candidates[0] || null;
+    };
+    if (homeOperational) {
+      const preferred = findFor([home]);
+      if (preferred) return preferred;
+    }
     const refineries = this.buildings.filter(building => building.owner === unit.owner && building.defId === 'refinery' &&
       building.hp > 0 && building.progress >= 1 &&
-      (!this._powerStandbyEnabled() || building.powerStandby !== true));
-    for (const refinery of refineries) for (let y = refinery.y - 1; y <= refinery.y + refinery.h; y++)
-      for (let x = refinery.x - 1; x <= refinery.x + refinery.w; x++) {
-        if (x >= refinery.x && x < refinery.x + refinery.w && y >= refinery.y && y < refinery.y + refinery.h) continue;
-        const approach = { x: x + 0.5, y: y + 0.5 };
-        if (!this._isPassable(x, y) || this._distanceToEntity(approach.x, approach.y, refinery) > 0.95) continue;
-        const path = this._findPath(unit.x, unit.y, approach.x, approach.y);
-        if (!path.length) continue;
-        const reserved = this.units.some(other => other.id !== unit.id && other.owner === unit.owner &&
-          other.defId === 'harvester' && other._unloadRefineryId === refinery.id && other._unloadApproach &&
-          dist(other._unloadApproach.x, other._unloadApproach.y, approach.x, approach.y) < 0.7);
-        const side = approach.y < refinery.y ? 'north' : approach.y >= refinery.y + refinery.h ? 'south' :
-          approach.x < refinery.x ? 'west' : 'east';
-        const sideLoad = this.units.filter(other => other.id !== unit.id && other.owner === unit.owner &&
-          other.defId === 'harvester' && other._unloadRefineryId === refinery.id && other._unloadApproach)
-          .filter(other => {
-            const otherSide = other._unloadApproach.y < refinery.y ? 'north' :
-              other._unloadApproach.y >= refinery.y + refinery.h ? 'south' :
-                other._unloadApproach.x < refinery.x ? 'west' : 'east';
-            return otherSide === side;
-          }).length;
-        let length = 0, px = unit.x, py = unit.y;
-        for (const point of path) { length += dist(px, py, point.x, point.y); px = point.x; py = point.y; }
-        const refineryDistance = this._distanceToEntity(unit.x, unit.y, refinery);
-        candidates.push({ refinery, approach, pathLength: length,
-          score: length + refineryDistance * 0.05 + sideLoad * 14 + (reserved ? 40 : 0) });
-      }
-    candidates.sort((a, b) => a.score - b.score || a.refinery.id.localeCompare(b.refinery.id) ||
-      a.approach.y - b.approach.y || a.approach.x - b.approach.x);
-    return candidates[0] || null;
+      (!this._powerStandbyEnabled() || building.powerStandby !== true) &&
+      (!unit.homeRefineryId || homeOperational || building.id !== unit.homeRefineryId));
+    return findFor(refineries);
   }
 
   _releaseHarvesterDock(u) {
@@ -3519,19 +3572,39 @@ export class Game {
 
   _updateHarvester(u, dt) {
     const d = UNIT_DEFS.harvester;
+    if (u.homeRefineryId && (this.replayVersion == null || this.replayVersion >= HARVESTER_HOME_RULES_VERSION)) {
+      const home = this.getEntity(u.homeRefineryId);
+      if (!home || home.owner !== u.owner || home.defId !== 'refinery' || home.hp <= 0) {
+        u.homeRefineryId = null;
+        delete u._homeDockStatus;
+      }
+    }
     const improvedDocking = ['skirmish', 'multiplayer'].includes(this.mode) &&
       (this.replayVersion == null || this.replayVersion >= 8);
+    const homeDocking = !!u.homeRefineryId && (this.replayVersion == null ||
+      this.replayVersion >= HARVESTER_HOME_RULES_VERSION);
+    const useImprovedDocking = improvedDocking || homeDocking;
     if (u.order.type !== 'harvest') {
       this._releaseHarvesterDock(u);
       return false;
     }
     if (u.cargo >= d.capacity || u._harvestPhase === 'return') {
       let refinery, approach;
-      if (improvedDocking) {
+      if (useImprovedDocking) {
+        const home = u.homeRefineryId && this.getEntity(u.homeRefineryId);
+        const homeOperational = home?.owner === u.owner && home.defId === 'refinery' && home.hp > 0 &&
+          home.progress >= 1 && home.powered !== false &&
+          (!this._powerStandbyEnabled() || home.powerStandby !== true);
+        const homeStatus = `${u.homeRefineryId}:${homeOperational ? 'ready' : 'offline'}`;
+        if (u.homeRefineryId && u._homeDockStatus !== homeStatus) {
+          u._homeDockStatus = homeStatus;
+          if (u._unloadRefineryId && u._unloadRefineryId !== u.homeRefineryId) this._releaseHarvesterDock(u);
+        }
         refinery = u._unloadRefineryId && this.getEntity(u._unloadRefineryId);
         approach = u._unloadApproach;
         if (!refinery || refinery.hp <= 0 || refinery.defId !== 'refinery' || refinery.progress < 1 ||
           this._powerStandbyEnabled() && (refinery.owner !== u.owner || refinery.powerStandby === true) || !approach ||
+          refinery.id === u.homeRefineryId && refinery.powered === false ||
           !this._isPassable(Math.floor(approach.x), Math.floor(approach.y)) ||
           this._distanceToEntity(approach.x, approach.y, refinery) > 0.95) {
           this._releaseHarvesterDock(u);
@@ -3552,7 +3625,10 @@ export class Game {
         const standbyRefineryExists = this._powerStandbyEnabled() && this.buildings.some(building =>
           building.owner === u.owner && building.defId === 'refinery' && building.hp > 0 &&
           building.progress >= 1 && building.powerStandby === true);
-        if (!standbyRefineryExists) u.order = { type: 'idle' };
+        const rememberedHomeExists = u.homeRefineryId && this.buildings.some(building =>
+          building.id === u.homeRefineryId && building.owner === u.owner && building.defId === 'refinery' &&
+          building.hp > 0);
+        if (!standbyRefineryExists && !rememberedHomeExists) u.order = { type: 'idle' };
         else { u._harvestPhase = 'return'; u.path = []; u._pathGoal = null; }
         return true;
       }
@@ -3589,7 +3665,10 @@ export class Game {
             const bloomBonus = Math.min(Math.max(0, this.creditCapacity[u.owner] - this.credits[u.owner]),
               acceptedCharged * STORMGLASS_BLOOM_PREMIUM_RATE);
             this.credits[u.owner] += bloomBonus;
-            u.cargo = 0; u._stormglassCargo = 0; u._harvestPhase = 'field'; u._harvestTile = null; u.path = []; u._pathGoal = null;
+            u.cargo = 0; u._stormglassCargo = 0; u._harvestPhase = 'field';
+            if (!(u.homeRefineryId && (this.replayVersion == null ||
+              this.replayVersion >= HARVESTER_HOME_RULES_VERSION))) u._harvestTile = null;
+            u.path = []; u._pathGoal = null;
             u._unloadRefineryId = null; u._unloadApproach = null; u._unloadRemaining = 0; u._unloadProgress = 0;
             refinery._unloadHarvesterId = null;
             if (completedBloomExpedition) for (const escort of this.units)
@@ -3600,7 +3679,7 @@ export class Game {
           }
         }
       } else {
-        const lowerIdReturning = improvedDocking && this.units.some(other => other.id !== u.id &&
+        const lowerIdReturning = useImprovedDocking && this.units.some(other => other.id !== u.id &&
           other.owner === u.owner && other.defId === 'harvester' && other.order.type === 'harvest' &&
           other._harvestPhase === 'return' && other.cargo > 0 && other._unloadRefineryId === refinery.id &&
           Number(other.id.slice(1)) < Number(u.id.slice(1)));
@@ -8015,6 +8094,11 @@ export class Game {
     if (game.replayVersion == null && data.wreckCoverRulesVersion === WRECK_COVER_RULES_VERSION &&
         data.tacticalFormationRulesVersion !== TACTICAL_FORMATION_RULES_VERSION)
       game.replayVersion = TACTICAL_FORMATION_RULES_VERSION - 1;
+    // Version 76 saves predate optional persistent harvester homes. Keep
+    // markerless saves on their recorded routing behavior after prior guards.
+    if (game.replayVersion == null && data.harvesterHomeRulesVersion !== HARVESTER_HOME_RULES_VERSION)
+      game.replayVersion = HARVESTER_HOME_RULES_VERSION - 1;
+    game.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     game.powerStandbyRulesVersion = POWER_STANDBY_RULES_VERSION;
     game.wreckRecommissionRulesVersion = WRECK_RECOMMISSION_RULES_VERSION;
     game.infantryDigInRulesVersion = INFANTRY_DIG_IN_RULES_VERSION;
@@ -8312,6 +8396,12 @@ export class Game {
         Number.isFinite(unit._unloadApproach.y) ? { x: unit._unloadApproach.x, y: unit._unloadApproach.y } : null;
       unit._unloadRemaining = Number.isFinite(unit._unloadRemaining) ? Math.max(0, unit._unloadRemaining) : 0;
       unit._unloadProgress = Number.isFinite(unit._unloadProgress) ? clamp(unit._unloadProgress, 0, 1) : 0;
+      const home = typeof unit.homeRefineryId === 'string' ? game.buildings.find(building =>
+        building.id === unit.homeRefineryId) : null;
+      unit.homeRefineryId = unit.defId === 'harvester' &&
+        (game.replayVersion == null || game.replayVersion >= HARVESTER_HOME_RULES_VERSION) &&
+        home?.owner === unit.owner && home.defId === 'refinery' && home.hp > 0 && home.progress >= 1 ? home.id : null;
+      delete unit._homeDockStatus;
       unit._stormglassCargo = game._stormglassBloomEnabled() && unit.defId === 'harvester' &&
         Number.isFinite(unit._stormglassCargo) ? clamp(unit._stormglassCargo, 0, Math.max(0, unit.cargo || 0)) : 0;
     }

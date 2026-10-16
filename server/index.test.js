@@ -2409,6 +2409,26 @@ test('websocket movement dispatch enforces ownership, queues, and matched pace o
     ]) assert.equal((await formation(requestId, extra)).ok, false, requestId);
     assert.deepEqual(ownTank.order, ownOrder, 'rejected formation commands leave orders intact');
 
+    const ownHarvester=liveLobby.game.units.find(unit=>unit.owner==='player'&&unit.defId==='harvester');
+    const foreignHarvester=liveLobby.game.units.find(unit=>unit.owner==='enemy'&&unit.defId==='harvester');
+    const ownRefinery=liveLobby.game.buildings.find(building=>building.owner==='player'&&building.defId==='refinery');
+    const foreignRefinery=liveLobby.game.buildings.find(building=>building.owner==='enemy'&&building.defId==='refinery');
+    const home=async(requestId,refineryId,extra={})=>{
+      sendSocket(host,{type:'command',requestId,command:'issueAssignRefinery',
+        ids:[ownHarvester.id,foreignHarvester.id],refineryId,...extra});
+      return nextMessage(host,message=>message.type==='command_result'&&message.requestId===requestId);
+    };
+    assert.equal((await home('home-own',ownRefinery.id)).ok,true);
+    assert.equal(ownHarvester.homeRefineryId,ownRefinery.id);
+    assert.equal(foreignHarvester.homeRefineryId,null,'opponent harvesters cannot receive home orders');
+    for(const [requestId,target,extra] of [
+      ['home-foreign-refinery',foreignRefinery.id,{}],['home-not-refinery',ownTank.id,{}],
+      ['home-invalid-type',1,{}],['home-invalid-queue',ownRefinery.id,{queue:true}],
+    ])assert.equal((await home(requestId,target,extra)).ok,false,requestId);
+    assert.equal(ownHarvester.homeRefineryId,ownRefinery.id,'rejected changes preserve the home');
+    assert.equal((await home('home-auto',null)).ok,true);
+    assert.equal(ownHarvester.homeRefineryId,null);
+
     const hostEnded = nextMessage(host, message => message.type === 'match_end');
     const guestEnded = nextMessage(guest, message => message.type === 'match_end');
     sendSocket(host, { type: 'leave_lobby' });
@@ -3597,6 +3617,7 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
   hostile._stanceChase = { targetId: 'u999', x: game.width - 1, y: game.height - 1 };
   hostile._harvestPhase = 'return';
   hostile._unloadRefineryId = hostileBuilding.id;
+  hostile.homeRefineryId = hostileBuilding.id;
   hostileBuilding._unloadHarvesterId = hostile.id;
   hostileBuilding.powerStandby = true;
   friendlyBuilding.powerStandby = true;
@@ -3608,6 +3629,7 @@ test('multiplayer projection redacts visible hostile unit orders and paths', () 
   const projectedHostileBuilding = projection.buildings.find(building => building.id === hostileBuilding.id);
   assert.ok(projectedHostile, 'visible hostile remains available for tactical display');
   assert.equal('order' in projectedHostile, false);
+  assert.equal('homeRefineryId' in projectedHostile,false,'home refinery choice is private economy state');
   assert.deepEqual(projectedHostile.path, []);
   for (const field of ['_pathGoal', '_relayAssignment', '_stanceChase', '_harvestPhase', '_unloadRefineryId'])
     assert.equal(field in projectedHostile, false, `${field} is private opponent state`);

@@ -1,4 +1,4 @@
-import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
+import { Game, TILE_SIZE, COMMAND_ABILITIES, DOCTRINE_DEFS, TACTICAL_PACKAGE_DEFS, SKIRMISH_MAPS, VETERANCY_RANKS, UNIT_DEFS, BUILDING_DEFS, ION_STORM_PHASE_SECONDS, SALVAGE_DROP_CAPTURE_SECONDS, UNIT_PROMOTION_RULES_VERSION, DOCTRINE_REPLACEMENT_RULES_VERSION, DOCTRINE_REPLACEMENT_COST, DOCTRINE_REPLACEMENT_TIME, AI_COMMANDER_PROFILES, AI_COMMANDER_PROFILE_RULES_VERSION, AIR_SERVICE_RULES_VERSION, PRODUCTION_SITE_RULES_VERSION, INFANTRY_DIG_IN_RULES_VERSION, INFANTRY_DIG_IN_SETUP_SECONDS, INFANTRY_DIG_IN_DURATION_SECONDS, INFANTRY_DIG_IN_DAMAGE_MULTIPLIER, INFANTRY_DIG_IN_ARC_RADIANS, WRECK_COVER_RULES_VERSION, WRECK_COVER_RADIUS, WRECK_COVER_PROXIMITY, HARVESTER_HOME_RULES_VERSION, aiCommanderProfileForSeed, isUnitPromotionEligible } from './game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS, CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, QUIET_KNIFE_ESCAPE, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance, getCampaignFieldOrderView, getIronReclaimedView, createCampaignGame, updateCampaign } from './game/campaign.js';
 import { deriveCampaignVeteran, validateCampaignVeteran } from './game/campaignVeteran.js';
 import { campaignRecord, campaignProgressAtDifficulty, advanceCampaignLegacyCompletion, campaignFieldOrderCompleted,
@@ -1001,7 +1001,7 @@ function battlefieldPickerObjects(contacts = lastSeenHostileContacts()) {
     const friendly = building.owner === 'player';
     const name = game.buildingDefs?.[building.defId]?.name || keyName(building.defId);
     const health = `${Math.max(0, Math.round(building.hp / Math.max(1, building.maxHp) * 100))}% health`;
-    const sector = `${Math.floor(building.x + building.w / 2)},${Math.floor(building.y + building.h / 2)}`;
+    const sector = buildingSectorLabel(building);
     entries.push({ key: `building:${building.id}`, entity: building, friendly,
       label: `${friendly ? 'Friendly' : 'Enemy'} ${name} · ${health} · ${sector}`,
       ariaLabel: `${friendly ? 'Select friendly' : 'Center camera on visible enemy'} ${name} at sector ${sector}, ${health}` });
@@ -1103,6 +1103,11 @@ function activateBattlefieldObject(key, { additive = false } = {}) {
     renderBattlefieldPicker();
     return;
   }
+  if (attackMoveMode === 'assignRefinery') {
+    issueAssignRefineryTarget(entry.entity);
+    renderBattlefieldPicker();
+    return;
+  }
   if (entry.friendly) {
     const additiveUnit=additive||battlefieldPickerAddSquadMode;
     if(additiveUnit&&entry.entity&&!('w' in entry.entity)){
@@ -1135,6 +1140,94 @@ function activateBattlefieldObject(key, { additive = false } = {}) {
     $('#battlefield-picker-status').textContent = `${entry.label}. Centered in live view.`;
   }
   renderBattlefieldPicker();
+}
+function harvesterHomeRulesAvailable() {
+  return !!game && !replayMode &&
+    (game.replayVersion == null || game.replayVersion >= HARVESTER_HOME_RULES_VERSION) &&
+    typeof game.issueAssignRefinery === 'function';
+}
+function isHarvesterHomeSelection(objects = selectedObjects()) {
+  return objects.length > 0 && objects.every(object => !('w' in object) &&
+    object.owner === 'player' && object.hp > 0 && object.defId === 'harvester') &&
+    harvesterHomeRulesAvailable();
+}
+function isCompletedFriendlyRefinery(entity) {
+  return !!entity && 'w' in entity && entity.owner === 'player' && entity.defId === 'refinery' &&
+    entity.hp > 0 && entity.progress >= 1;
+}
+function buildingSectorLabel(building) {
+  return `${Math.floor(building.x + building.w / 2)},${Math.floor(building.y + building.h / 2)}`;
+}
+function issueAssignRefineryTarget(refinery) {
+  if (targetOrderPending) return false;
+  if (!isHarvesterHomeSelection()) {
+    toast('SELECT ONLY YOUR HARVESTERS', true);
+    return false;
+  }
+  if (!isCompletedFriendlyRefinery(refinery)) {
+    toast('CHOOSE A COMPLETED FRIENDLY REFINERY', true);
+    if (battlefieldPickerIsOpen()) $('#battlefield-picker-status').textContent = 'Choose a completed friendly Refinery.';
+    return false;
+  }
+  const token = targetOrderToken;
+  const result = game.issueAssignRefinery(refinery.id);
+  const finish = accepted => {
+    if (!accepted || targetOrderToken !== token || attackMoveMode && attackMoveMode !== 'assignRefinery') return;
+    if(attackMoveMode==='assignRefinery')attackMoveMode = false;
+    targetOrderPending = false;
+    hide('#attack-hint');
+    updateAttackMoveButton();
+    syncTargetingFocus();
+    updateSelectionCard();
+    if (battlefieldPickerIsOpen()) $('#battlefield-picker-status').textContent =
+      `Home Refinery set to sector ${buildingSectorLabel(refinery)}. Loaded cargo unloads there, then harvesting continues.`;
+  };
+  if (result?.pending) {
+    if(attackMoveMode!=='assignRefinery'){
+      attackMoveMode='assignRefinery';
+      updateAttackMoveButton();
+      syncTargetingFocus();
+    }
+    targetOrderPending = true;
+    $('#attack-hint').innerHTML = `HOME REFINERY · WAITING FOR SERVER CONFIRMATION${targetingCancelCopy()}`;
+    show('#attack-hint');
+    resultMessage(result, 'HOME REFINERY ASSIGNED', 'order', {
+      onAccepted: () => finish(true),
+      onSettled: ack => {
+        if (targetOrderToken !== token || attackMoveMode !== 'assignRefinery') return;
+        targetOrderPending = false;
+        if (ack?.transportFailure) {
+          attackMoveMode = false;
+          hide('#attack-hint');
+          updateAttackMoveButton();
+          syncTargetingFocus();
+        } else if (!ack?.ok) $('#attack-hint').innerHTML = `HOME REFINERY · ORDER REJECTED · SELECT REFINERY${targetingCancelCopy()}`;
+      }
+    });
+    return true;
+  }
+  finish(resultMessage(result, 'HOME REFINERY ASSIGNED · LOADED CARGO UNLOADS, THEN HARVESTING CONTINUES'));
+  return !!result?.ok;
+}
+function activateRepairCommand() {
+  const selected=selectedObjects();
+  if(isHarvesterHomeSelection(selected)){
+    startTargetOrder('assignRefinery','HOME REFINERY','SELECT COMPLETED FRIENDLY REFINERY');
+    return;
+  }
+  const b=selectedBuilding();
+  if(b){const stopping=!!b.repairing;resultMessage(game.toggleRepair(b.id),stopping?'REPAIR STOPPED':'REPAIR ORDERED');updateUI(true);return;}
+  if(selected.some(o=>o.defId==='engineer')){startTargetOrder('engineer','ENGINEER TASK','SELECT WRECK, BRIDGE, OR STRUCTURE');return;}
+  toast('SELECT A STRUCTURE OR ENGINEER',true);
+}
+function activateGuardCommand() {
+  const selected=selectedObjects();
+  if(isHarvesterHomeSelection(selected)&&selected.some(unit=>unit.homeRefineryId!=null)){
+    resultMessage(game.issueAssignRefinery(null),'AUTO DOCK RESTORED · HOME REFINERY CLEARED');
+    updateSelectionCard();
+    return;
+  }
+  resultMessage(game?.issueGuard?.(),'GUARD POSITION SET');
 }
 function selectedBuilding() { return selectedObjects().find(o => 'w' in o && o.owner === 'player'); }
 function selectedProductionBuilding() {
@@ -2612,6 +2705,10 @@ function issueContext(wx, wy, queue = false) {
   const hit = objectAt(wx, wy);
   const own = selectedObjects();
   if (!own.length) return;
+  if (!queue && isHarvesterHomeSelection(own) && isCompletedFriendlyRefinery(hit)) {
+    issueAssignRefineryTarget(hit);
+    return;
+  }
   if(queue){
     const result=hit?.owner==='enemy'?game.issueAttack(hit.id,true):issueMoveCommand(wx,wy,false,true);
     resultMessage(result,hit?.owner==='enemy'?'ATTACK QUEUED':'WAYPOINT QUEUED','order',{
@@ -2748,6 +2845,10 @@ function targetOrderHint(mode,label,prompt){
 function startTargetOrder(mode, label, prompt='SELECT DESTINATION'){
   if(!game)return;
   cancelDigInTargeting();
+  if(mode==='assignRefinery'&&!isHarvesterHomeSelection()){
+    toast('SELECT ONLY YOUR HARVESTERS TO SET A HOME REFINERY',true);
+    return;
+  }
   if(mode==='rally'&&!selectedProductionBuilding()){toast('SELECT A COMPLETED PRODUCTION BUILDING',true);return;}
   if(!['attack','forceMove','reverseMove'].includes(mode))setRoutePlanMode(false);
   if(placeId)cancelPlacement();
@@ -2828,6 +2929,11 @@ function issueTargetOrder(wx,wy,queue=false){
   if(mode==='recommissionWreck'){
     const target=objectAt(wx,wy);
     issueRecommissionWreckTarget(target&&game.wrecks?.includes(target)?target:null);
+    return;
+  }
+  if(mode==='assignRefinery'){
+    const target=objectAt(wx,wy);
+    issueAssignRefineryTarget(target);
     return;
   }
   if(mode==='super'){result=game.useSuperweapon(wx,wy);success='STRATEGIC STRIKE ORDERED';}
@@ -3624,15 +3730,17 @@ function drawMinimap() {
   const missionTargets=missionUplinkTargets();
   const lastSeenContacts=lastSeenHostileContacts();
   const selectedIds=new Set(game.selection||[]);
+  const selectedHomeHarvester=game.units.some(unit=>selectedIds.has(unit.id)&&unit.owner==='player'&&unit.defId==='harvester'&&unit.homeRefineryId!=null);
   const orderCues=game.radar?.player||missionTargets.length
     ?selectedOrderMinimapCues(selectedIds,cw,ch):[];
   const orderCueDescription=orderCues.length
     ?' Cyan or gold dashed lines connect selected units to their current order destinations; enemy targets appear only while visible.'
     :'';
+  const homeCueDescription=selectedHomeHarvester?' Gold tethers mark selected Harvesters’ preferred friendly Refinery.':'';
   updateBattlefieldPickerIntelBadge(lastSeenContacts);
   minimap.setAttribute('aria-label', lastSeenContacts.length
-    ? `Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unconfirmed last-seen hostile contacts are amber question marks.${orderCueDescription}`
-    : `Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unknown relays are circles.${orderCueDescription}`);
+    ? `Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unconfirmed last-seen hostile contacts are amber question marks.${orderCueDescription}${homeCueDescription}`
+    : `Minimap. Friendly forces are squares, visible enemies are diamonds, visible high ground has a muted gold tint, and unknown relays are circles.${orderCueDescription}${homeCueDescription}`);
   mctx.clearRect(0,0,w,h);
   if(!game.radar?.player&&!missionTargets.length){
     minimap.style.cursor='default';
@@ -3655,6 +3763,18 @@ function drawMinimap() {
     else mctx.fillRect(bridge.x*cw,bridge.y*ch,Math.max(2,bridge.w*cw),Math.max(2,bridge.h*ch));
   }
   for(const b of game.buildings){if(b.owner==='enemy'&&!game.isVisible(b))continue;mctx.fillStyle=teamColor(b.owner);mctx.fillRect(b.x*cw,b.y*ch,Math.max(2,b.w*cw),Math.max(2,b.h*ch));}
+  const homeLinks=game.units.filter(unit=>selectedIds.has(unit.id)&&unit.owner==='player'&&unit.defId==='harvester'&&unit.homeRefineryId!=null).slice(0,8);
+  if(homeLinks.length){
+    mctx.save();mctx.setLineDash([2,2]);mctx.lineWidth=1.2;mctx.strokeStyle='#f2d58b';mctx.fillStyle='#071713';
+    for(const unit of homeLinks){
+      const refinery=game.buildings.find(building=>building.id===unit.homeRefineryId&&building.owner==='player'&&building.defId==='refinery');
+      if(!refinery)continue;
+      const ux=unit.x*cw,uy=unit.y*ch,rx=(refinery.x+refinery.w/2)*cw,ry=(refinery.y+refinery.h/2)*ch;
+      mctx.beginPath();mctx.moveTo(ux,uy);mctx.lineTo(rx,ry);mctx.stroke();
+      mctx.setLineDash([]);mctx.beginPath();mctx.arc(rx,ry,4.4,0,Math.PI*2);mctx.fill();mctx.stroke();mctx.setLineDash([2,2]);
+    }
+    mctx.restore();
+  }
   if(orderCues.length){
     mctx.save();mctx.globalAlpha=.58;mctx.lineWidth=1.2;mctx.setLineDash([2,3]);
     for(const cue of orderCues){
@@ -4175,6 +4295,7 @@ function issueDigInAt(x,y){
 }
 function updateSelectionCard() {
   const selected=selectedObjects();
+  if(attackMoveMode==='assignRefinery'&&!isHarvesterHomeSelection(selected))cancelActiveTargeting();
   updateFormationControl(selected);
   if(digInMode){
     const selectedDigInKey=selected.filter(unit=>!('w' in unit)&&unit.owner==='player'&&unit.hp>0&&
@@ -4356,9 +4477,16 @@ function updateSelectionCard() {
   stanceButton.setAttribute('aria-label',armed.length?`Combat stance: ${stanceUI.name}. Cycle with T.`:'Combat stance unavailable; select an armed unit.');
   const canRepairStructure=selected.some(o=>'w' in o&&o.owner==='player');
   const canOrderEngineer=selected.some(o=>o.defId==='engineer'&&o.owner==='player');
-  $('#cmd-repair').disabled=!canRepairStructure&&!canOrderEngineer;
-  $('#cmd-repair').lastChild.textContent=canOrderEngineer&&!canRepairStructure?'ENGINEER':'REPAIR';
-  $('#cmd-repair').title=canOrderEngineer&&!canRepairStructure?'Send engineer to a wreck, bridge, or structure (R)':'Repair selected structure (R)';
+  const canAssignHome=isHarvesterHomeSelection(selected);
+  const homeCanAutoDock=canAssignHome&&selected.some(unit=>unit.homeRefineryId!=null);
+  $('#cmd-repair').disabled=!canRepairStructure&&!canOrderEngineer&&!canAssignHome;
+  $('#cmd-repair').lastChild.textContent=canAssignHome?'HOME':canOrderEngineer&&!canRepairStructure?'ENGINEER':'REPAIR';
+  $('#cmd-repair').title=canAssignHome?'Choose a completed friendly Refinery as the selected Harvesters’ persistent home. Loaded cargo unloads there, then they keep mining. Press R.':canOrderEngineer&&!canRepairStructure?'Send engineer to a wreck, bridge, or structure (R)':'Repair selected structure (R)';
+  $('#cmd-repair').setAttribute('aria-label',canAssignHome?'Choose Home Refinery for selected Harvesters (R)':canOrderEngineer&&!canRepairStructure?'Engineer task (R)':'Repair selected structure (R)');
+  const guardButton=$('#cmd-guard');
+  guardButton.lastChild.textContent=homeCanAutoDock?'AUTO DOCK':'GUARD';
+  guardButton.title=homeCanAutoDock?'Clear the selected Harvesters’ home Refinery and restore automatic refinery routing (G).':'Guard this position (G)';
+  guardButton.setAttribute('aria-label',homeCanAutoDock?'Clear Home Refinery and restore automatic docking (G)':'Guard this position (G)');
   const serviceUnits=units.filter(unit=>unit.owner==='player'&&!unit.embarkedIn&&unit.hp>0&&unit.hp<unit.maxHp&&
     !game.unitDefs?.[unit.defId]?.flying&&['light','heavy'].includes(game.unitDefs?.[unit.defId]?.armor));
   const serviceBays=game.buildings.filter(building=>building.owner==='player'&&building.defId==='serviceBay'&&
@@ -4367,7 +4495,11 @@ function updateSelectionCard() {
   $('#cmd-service').title=!serviceUnits.length?'Select a damaged ground vehicle':!serviceBays.length?
     'Build a Field Workshop first':'Send selected damaged vehicles to a Field Workshop and restore their previous orders';
   updateMobileSquads();
-  if(!selected.length){$('#selection-card').classList.remove('is-critical','has-promotion-choice','has-power-control');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;}
+  if(!selected.length){
+    $('#cmd-repair').disabled=true;$('#cmd-repair').lastChild.textContent='REPAIR';$('#cmd-repair').title='Repair selected structure (R)';$('#cmd-repair').setAttribute('aria-label','Repair selected structure (R)');
+    $('#cmd-guard').lastChild.textContent='GUARD';$('#cmd-guard').title='Guard this position (G)';$('#cmd-guard').setAttribute('aria-label','Guard this position (G)');
+    $('#selection-card').classList.remove('is-critical','has-promotion-choice','has-power-control');$('#promotion-trigger').classList.add('hidden');$('#selection-content').innerHTML='<div class="empty-selection"><span>⌖</span><strong>NO UNIT SELECTED</strong><small>SELECT A UNIT OR STRUCTURE TO VIEW DETAILS</small></div>';return;
+  }
   const first=selected[0],isBuilding='w' in first,def=isBuilding?game.buildingDefs?.[first.defId]:game.unitDefs?.[first.defId];
   const hp=selected.length===1?first.hp:selected.reduce((n,u)=>n+u.hp,0),maxHp=selected.length===1?first.maxHp:selected.reduce((n,u)=>n+u.maxHp,0),pct=Math.max(0,Math.round(hp/maxHp*100));
   const critical=selected.some(o=>o.owner==='player')&&pct<=25;
@@ -4456,11 +4588,18 @@ function updateSelectionCard() {
   $('#promotion-trigger').classList.toggle('hidden',!promotionReady);
   const rankBadge=rank?`<span class="veterancy-badge rank-${first.veterancy||0}" title="${rank.name} · ${Math.floor(first.xp||0)} XP · ${Math.floor(((rank.damageMultiplier||1)-1)*100)}% damage and health bonus${promotionName?` · ${promotionName} field modification`:''}">${first.veterancy?'★':'◇'} ${rank.name.toUpperCase()}</span>`:'';
   const rankLine=rank?`<div class="veterancy-track" role="progressbar" aria-label="${rank.name} experience" aria-valuenow="${rankProgress}" aria-valuemin="0" aria-valuemax="100" aria-valuetext="${Math.floor(first.xp||0)} XP${nextRank?` of ${nextRank.xp} XP to ${nextRank.name}`:' · maximum rank'}"><span style="width:${rankProgress}%"></span></div>`:'';
+  const homeRefinery=first.owner==='player'&&first.defId==='harvester'&&first.homeRefineryId!=null
+    ?game.getEntity?.(first.homeRefineryId)||game.buildings.find(building=>building.id===first.homeRefineryId):null;
+  const homeStatus=first.homeRefineryId==null?'AUTO':!homeRefinery||homeRefinery.hp<=0||homeRefinery.progress<1?'OFFLINE':homeRefinery.powerStandby===true?'STANDBY':homeRefinery.powered===false?'OFFLINE':'WORKING';
+  const homeMeta=!isBuilding&&selected.length===1&&first.owner==='player'&&first.defId==='harvester'
+    ?` · HOME ${homeStatus==='AUTO'?'AUTO':`${homeRefinery?`${buildingSectorLabel(homeRefinery)} · `:''}${homeStatus}`}`:'';
   const chargedCargo=first.owner==='player'&&first.defId==='harvester'?Math.floor(first._stormglassCargo||0):0;
   const cargoMeta=!isBuilding&&selected.length===1&&first.defId==='harvester'
-    ?` · CARGO ${Math.floor(first.cargo||0)}/${unitDef.capacity}${chargedCargo?` · CHARGED ${chargedCargo} (+35% ON DELIVERY)`:''}`:'';
+    ?` · CARGO ${Math.floor(first.cargo||0)}/${unitDef.capacity}${chargedCargo?` · CHARGED ${chargedCargo} (+35% ON DELIVERY)`:''}${homeMeta}`:'';
+  const assignedHarvesterCount=isBuilding&&first.owner==='player'&&first.defId==='refinery'&&harvesterHomeRulesAvailable()
+    ?game.units.filter(unit=>unit.owner==='player'&&unit.defId==='harvester'&&unit.homeRefineryId===first.id).length:0;
   const bayMeta=isBuilding&&selected.length===1&&first.owner==='player'&&first.defId==='refinery'
-    ?` · UNLOAD BAY ${first._unloadHarvesterId?'BUSY':'READY'}`:'';
+    ?` · UNLOAD BAY ${first._unloadHarvesterId?'BUSY':'READY'}${harvesterHomeRulesAvailable()?` · HOME HARVESTERS ${assignedHarvesterCount}`:''}`:'';
   const selectedGunships=selected.length===units.length?gunships:[];
   const ammoCapacity=selectedGunships.reduce((sum,unit)=>sum+game.unitDefs[unit.defId].ammoMax,0);
   const readyShots=selectedGunships.reduce((sum,unit)=>sum+Math.floor(Math.max(0,unit.ammo||0)+.001),0);
@@ -6386,7 +6525,7 @@ function sendMatchCommand(command,data={}){
 function installMultiplayerCommandAdapters(target){
   const commands={
     issueMove:(x,y,attackMove=false,queue=false,matchPace=false)=>({x,y,attackMove,queue,...(matchPace===true?{matchPace:true}:{})}),issueForceMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueFormationMove:(x,y,formationId,movement='move',queue=false,matchPace=false)=>({x,y,formationId,movement,queue,...(matchPace===true?{matchPace:true}:{})}),issueReverseMove:(x,y,queue=false,matchPace=false)=>({x,y,queue,...(matchPace===true?{matchPace:true}:{})}),issueAttack:(targetId,queue=false)=>({targetId,queue}),
-    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueDigIn:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
+    issueHarvest:()=>({}),issueBloomExpedition:()=>({}),issueReturnCargo:()=>({}),issueRearm:()=>({}),issueStop:()=>({}),issueGuard:()=>({}),issueAssignRefinery:(refineryId=null)=>({refineryId}),issuePatrol:(x,y)=>({x,y}),issueFollow:targetId=>({targetId}),issueBoard:carrierId=>({carrierId}),issueUnload:(x,y)=>({x,y}),issueForceFire:(x,y)=>({x,y}),issueDigIn:(x,y)=>({x,y}),issueScatter:()=>({}),issueDeploy:()=>({}),issueSetStance:stance=>({stance}),
     issueEngineer:targetId=>({targetId}),issueRecoverWreck:wreckId=>({wreckId}),issueRecommissionWreck:wreckId=>({wreckId}),issueServiceAtWorkshop:workshopId=>({workshopId}),startConstruction:defId=>({defId}),cancelConstruction:()=>({}),
     issueBuild:(defId,x,y)=>({defId,x,y}),queueUnit:(defId,producerId)=>({defId,...(producerId!==undefined?{producerId}:{})}),chooseDoctrine:doctrineId=>({doctrineId}),chooseTacticalPackage:packageId=>({packageId}),
     issuePromoteUnit:(unitId,promotionId)=>({unitId,promotionId}),
@@ -7154,7 +7293,7 @@ $('#route-plan-toggle').addEventListener('click',()=>{
 $('#command-actions').addEventListener('click',event=>{
   if(routePlanMode&&event.target.closest('button:not(#cmd-attack):not(#cmd-move):not(#cmd-reverse)'))setRoutePlanMode(false);
 },true);
-$('#cmd-guard').addEventListener('click',()=>resultMessage(game?.issueGuard?.(),'GUARD POSITION SET'));
+$('#cmd-guard').addEventListener('click',activateGuardCommand);
 $('#cmd-patrol').addEventListener('click',()=>startTargetOrder('patrol','PATROL'));
 $('#cmd-follow').addEventListener('click',()=>startTargetOrder('follow','FOLLOW','SELECT FRIENDLY TARGET'));
 $('#cmd-service').addEventListener('click',()=>startTargetOrder('service','SERVICE','SELECT FRIENDLY FIELD WORKSHOP'));
@@ -7174,7 +7313,7 @@ function returnSelection(){
   resultMessage(!cargo&&air?game.issueRearm():game.issueReturnCargo(),!cargo&&air?'GUNSHIPS RETURNING TO REARM':'HARVESTER RETURNING CARGO');
 }
 $('#cmd-return').addEventListener('click',returnSelection);
-$('#cmd-repair').addEventListener('click',()=>{const b=selectedBuilding();if(b){const stopping=!!b.repairing;resultMessage(game.toggleRepair(b.id),stopping?'REPAIR STOPPED':'REPAIR ORDERED');updateUI(true);return;}if(selectedObjects().some(o=>o.defId==='engineer')){startTargetOrder('engineer','ENGINEER TASK','SELECT WRECK, BRIDGE, OR STRUCTURE');return;}toast('SELECT A STRUCTURE OR ENGINEER',true);});
+$('#cmd-repair').addEventListener('click',activateRepairCommand);
 $('#battlefield-picker-toggle').addEventListener('click',()=>setBattlefieldPickerOpen(!battlefieldPickerIsOpen(),{focusFirst:!battlefieldPickerIsOpen()}));
 $('#battlefield-picker-add-squad').addEventListener('click',()=>setBattlefieldPickerAddSquadMode(!battlefieldPickerAddSquadMode));
 $('#battlefield-picker-list').addEventListener('click',event=>{
@@ -7443,7 +7582,7 @@ window.addEventListener('keydown',e=>{
   }
   if(e.code==='Space')e.preventDefault();
   if(e.code==='Space')centerOnBase();
-  if(e.code==='KeyG')resultMessage(game.issueGuard(),'GUARD POSITION SET');
+  if(e.code==='KeyG')activateGuardCommand();
   if(e.code==='KeyP')startTargetOrder('patrol','PATROL');
   if(e.code==='KeyF')startTargetOrder('follow','FOLLOW','SELECT FRIENDLY TARGET');
   if(e.code==='KeyL'&&selectedObjects().some(o=>game.unitDefs?.[o.defId]?.armor==='infantry'))startTargetOrder('board','BOARD','SELECT FRIENDLY CARRIER');
@@ -7464,9 +7603,7 @@ window.addEventListener('keydown',e=>{
   if(e.code==='KeyE'&&!e.repeat&&($('#cmd-deploy').dataset.unitAbility||$('#cmd-deploy').dataset.digIn==='true'||selectedObjects().some(o=>o.defId==='mcv')))
     activateFieldAbilityOrDeploy();
   if(e.code==='KeyR'){
-    const b=selectedBuilding();
-    if(b){const stopping=!!b.repairing;resultMessage(game.toggleRepair(b.id),stopping?'REPAIR STOPPED':'REPAIR ORDERED');}
-    else if(selectedObjects().some(o=>o.defId==='engineer'))startTargetOrder('engineer','ENGINEER TASK','SELECT WRECK, BRIDGE, OR STRUCTURE');
+    activateRepairCommand();
   }
   if(e.code==='KeyB'&&!isFixedForceOperation()){tab='structures';document.querySelectorAll('.tab').forEach(t=>t.classList.toggle('active',t.dataset.tab===tab));renderProduction();}
   if(e.code.startsWith('Digit')){const digit=e.code.slice(5);if(digit==='0')return;if(e.ctrlKey){groups[digit]=[...(game.selection||[])];toast(`SQUAD ${digit} ASSIGNED`);updateMobileSquads();}else if(groups[digit]){game.select(groups[digit].filter(id=>[...game.units,...game.buildings].some(o=>o.id===id)));const first=selectedObjects()[0];if(first&&e.shiftKey)centerCamera(first.x,first.y);updateSelectionCard();}}
