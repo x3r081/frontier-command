@@ -89,6 +89,7 @@ export const GARRISON_RULES_VERSION = 79;
 export const AI_FIELD_BUNKER_RULES_VERSION = 80;
 export const MOBILE_RALLY_RULES_VERSION = 81;
 export const TARGET_PRIORITY_RULES_VERSION = 82;
+export const MEDIC_ESCORT_RULES_VERSION = 83;
 export const TARGET_PRIORITY_OPTIONS = Object.freeze(['auto', 'infantry', 'vehicles', 'aircraft', 'structures']);
 export const MAX_QUEUED_ORDERS = 8;
 export const AI_ECONOMY_RECON_RULES_VERSION = 48;
@@ -384,6 +385,7 @@ export class Game {
     this.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
     this.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
     this.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
+    this.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
     this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
@@ -2563,6 +2565,10 @@ export class Game {
     return this.replayVersion == null || this.replayVersion >= TARGET_PRIORITY_RULES_VERSION;
   }
 
+  _medicEscortEnabled() {
+    return this.replayVersion == null || this.replayVersion >= MEDIC_ESCORT_RULES_VERSION;
+  }
+
   _targetPriorityMatches(priority, target) {
     if (priority === 'structures') return 'w' in target;
     if ('w' in target) return false;
@@ -4151,17 +4157,31 @@ export class Game {
     u._healCooldown -= dt;
     if (u._healCooldown > 0) return;
     let patient = null, missing = 0;
-    for (const ally of this.units) {
-      if (ally.owner !== u.owner || ally.id === u.id || ally.embarkedIn || UNIT_DEFS[ally.defId].armor !== 'infantry') continue;
-      if (dist(u.x, u.y, ally.x, ally.y) > 3.2) continue;
-      const m = ally.maxHp - ally.hp;
-      if (m > missing) { patient = ally; missing = m; }
+    const followPatient = this._medicEscortEnabled() && u.order?.type === 'follow'
+      ? this.getEntity(u.order.targetId) : null;
+    if (followPatient && followPatient.owner === u.owner && followPatient.id !== u.id &&
+        followPatient.hp > 0 && !followPatient.embarkedIn &&
+        UNIT_DEFS[followPatient.defId]?.armor === 'infantry' &&
+        dist(u.x, u.y, followPatient.x, followPatient.y) <= 3.2 &&
+        followPatient.maxHp - followPatient.hp > 1) {
+      patient = followPatient;
+      missing = followPatient.maxHp - followPatient.hp;
+    } else {
+      for (const ally of this.units) {
+        if (ally.owner !== u.owner || ally.id === u.id || ally.embarkedIn || UNIT_DEFS[ally.defId].armor !== 'infantry') continue;
+        if (this._medicEscortEnabled() && ally.hp <= 0) continue;
+        if (dist(u.x, u.y, ally.x, ally.y) > 3.2) continue;
+        const m = ally.maxHp - ally.hp;
+        if (m > missing) { patient = ally; missing = m; }
+      }
     }
     if (patient && missing > 1) {
       patient.hp = Math.min(patient.maxHp, patient.hp + 22);
       u._healCooldown = 1.4;
-      this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'heal', x: patient.x, y: patient.y,
-        radius: 0.6, ttl: 0.55, maxTtl: 0.55 });
+      const effect = { id: `fx${this._nextEffectId++}`, type: 'heal', x: patient.x, y: patient.y,
+        radius: 0.6, ttl: 0.55, maxTtl: 0.55 };
+      if (this._medicEscortEnabled()) Object.assign(effect, { sourceId: u.id, targetId: patient.id, owner: u.owner });
+      this.effects.push(effect);
     }
   }
 
@@ -8674,6 +8694,11 @@ export class Game {
     if (game.replayVersion == null && data.mobileRallyRulesVersion === MOBILE_RALLY_RULES_VERSION &&
         data.targetPriorityRulesVersion !== TARGET_PRIORITY_RULES_VERSION)
       game.replayVersion = MOBILE_RALLY_RULES_VERSION;
+    // Markerless v82 saves predate Medic follow-patient triage. Pin them to
+    // the original most-injured-nearby behavior before later migrations.
+    if (game.replayVersion == null && data.targetPriorityRulesVersion === TARGET_PRIORITY_RULES_VERSION &&
+        data.medicEscortRulesVersion !== MEDIC_ESCORT_RULES_VERSION)
+      game.replayVersion = TARGET_PRIORITY_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -8822,6 +8847,7 @@ export class Game {
     game.aiFieldBunkerRulesVersion = AI_FIELD_BUNKER_RULES_VERSION;
     game.mobileRallyRulesVersion = MOBILE_RALLY_RULES_VERSION;
     game.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
+    game.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
     game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
       data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
         building.owner === 'enemy' && building.defId === 'bunker');

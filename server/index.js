@@ -6,8 +6,8 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  INFANTRY_DIG_IN_RULES_VERSION, GARRISON_RULES_VERSION, AI_FIELD_BUNKER_RULES_VERSION,
-  TARGET_PRIORITY_OPTIONS,
+  INFANTRY_DIG_IN_RULES_VERSION,
+  TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -31,7 +31,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = 79;
+const RANKED_SEASON = MEDIC_ESCORT_RULES_VERSION;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -82,10 +82,12 @@ const RANKED_SEASON = 79;
 // Version 80 adds the skirmish Veteran/Elite AI bunker policy and visible-only
 // Siege Director response. It advances those difficulty boards only; campaign,
 // Easy skirmish, and ranked multiplayer behavior remain on their existing rules.
-// Version 81 adds opt-in mobile rally targets; comparison floors and season stay.
-const CAMPAIGN_SCORE_FLOOR = GARRISON_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = AI_FIELD_BUNKER_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = GARRISON_RULES_VERSION;
+// Version 81 adds opt-in mobile rally targets and v82 optional target priority,
+// leaving floors unchanged. Version 83 changes Medic escort/dead-patient triage
+// across solo and ranked play, advancing every solo floor and ranked season.
+const CAMPAIGN_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = MEDIC_ESCORT_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -912,8 +914,18 @@ function projectedState(lobby, member) {
     // whether a hidden or visible building has been switched off.
     if (entity.kind === 'building' || data.buildings.includes(entity)) delete entity.powerStandby;
   }
+  // Healing pulses may stay visible around a patient even when the Medic is
+  // hidden. Keep their entity references only when those entities are part of
+  // this seat's current projection, so the pulse cannot disclose hidden IDs.
+  const projectedEntityIds = new Set([...data.units, ...data.buildings].map(entity => entity.id));
   data.effects = data.effects.filter(effect => fog[Math.floor(effect.y)]?.[Math.floor(effect.x)] === 2 &&
-    (effect.type !== 'wreckCover' || visibleWreckIds.has(effect.wreckId)));
+    (effect.type !== 'wreckCover' || visibleWreckIds.has(effect.wreckId))).map(effect => {
+    if (effect.type !== 'heal') return effect;
+    const projected = { ...effect };
+    if (!projectedEntityIds.has(projected.sourceId)) delete projected.sourceId;
+    if (!projectedEntityIds.has(projected.targetId)) delete projected.targetId;
+    return projected;
+  });
   data.scans = data.scans.filter(scan => scan.owner === side);
   // Breach target zones persist longer than their visual effect. Keep an
   // opponent's hidden cast out of the serialized multiplayer state too.

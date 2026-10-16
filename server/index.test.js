@@ -11,6 +11,7 @@ import WebSocket from 'ws';
 import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESERVE_RULES_VERSION,
   AI_ENGINEER_RAID_RULES_VERSION, AI_FIELD_BUNKER_RULES_VERSION, POWER_STANDBY_RULES_VERSION,
   WRECK_RECOMMISSION_RULES_VERSION, WRECK_COVER_RULES_VERSION, GARRISON_RULES_VERSION,
+  MEDIC_ESCORT_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
@@ -489,11 +490,15 @@ test('current solo rules floor applies across campaign and every skirmish diffic
   const rows = [
     { ...base, id: 'assembly-campaign-v71', mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: 71 },
+    { ...base, id: 'assembly-campaign-v82', mode: 'campaign', scenarioId: 'first-harvest',
+      scoreVersion: 82 },
     { ...base, id: `assembly-campaign-v${SOLO_REPLAY_VERSION}`, mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: SOLO_REPLAY_VERSION },
     ...['easy', 'normal', 'hard'].flatMap(difficulty => [
       { ...base, id: `assembly-skirmish-${difficulty}-v71`, mode: 'skirmish', difficulty,
         scenarioId: 'shard-valley', scoreVersion: 71, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+      { ...base, id: `assembly-skirmish-${difficulty}-v82`, mode: 'skirmish', difficulty,
+        scenarioId: 'shard-valley', scoreVersion: 82, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
       { ...base, id: `assembly-skirmish-${difficulty}-v${SOLO_REPLAY_VERSION}`, mode: 'skirmish', difficulty,
         scenarioId: 'shard-valley', scoreVersion: SOLO_REPLAY_VERSION, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
     ]),
@@ -514,6 +519,7 @@ test('current solo rules floor applies across campaign and every skirmish diffic
     }
     assert.ok(SOLO_REPLAY_VERSION >= WRECK_RECOMMISSION_RULES_VERSION,
       'the current replay version includes the global solo comparison floor');
+    assert.equal(SOLO_REPLAY_VERSION, MEDIC_ESCORT_RULES_VERSION);
     assert.equal(POWER_STANDBY_RULES_VERSION, 71);
     assert.equal(WRECK_RECOMMISSION_RULES_VERSION, 72);
     assert.equal(AI_ENGINEER_RAID_RULES_VERSION, 70);
@@ -1093,7 +1099,7 @@ test('Iron Reclaimed tickets follow the verified After the Dawn rescue at the sa
   assert.ok(!progress.difficulties.hard.unlockedMissionIds.includes('iron-reclaimed'));
 });
 
-test('v79 bunker combat floor retires older campaign boards without deleting campaign progress', async () => {
+test('v83 Medic floor retires older campaign boards without deleting campaign progress', async () => {
   const profile = await createProfile('Recovery Ranking');
   const base = { profileId: profile.profile.id, mode: 'campaign', difficulty: 'normal',
     faction: 'aegis', fieldOrderId: 'none', fieldOrderStatus: 'none', carryoverId: 'none',
@@ -1108,22 +1114,23 @@ test('v79 bunker combat floor retires older campaign boards without deleting cam
     { ...base, id: 'rescue-now-v73', scenarioId: 'after-the-dawn', scoreVersion: 73 },
     { ...base, id: 'recovery-v79', scenarioId: 'iron-reclaimed', scoreVersion: 79 },
     { ...base, id: 'rescue-now-v79', scenarioId: 'after-the-dawn', scoreVersion: 79 },
-    { ...base, id: 'recovery-v80', scenarioId: 'iron-reclaimed', scoreVersion: SOLO_REPLAY_VERSION },
-    { ...base, id: 'rescue-now-v80', scenarioId: 'after-the-dawn', scoreVersion: SOLO_REPLAY_VERSION });
+    { ...base, id: 'recovery-v83', scenarioId: 'iron-reclaimed', scoreVersion: SOLO_REPLAY_VERSION },
+    { ...base, id: 'rescue-now-v83', scenarioId: 'after-the-dawn', scoreVersion: SOLO_REPLAY_VERSION });
   const rows = async scenario => (await (await api(
     `/api/leaderboard?mode=campaign&scenarioId=${scenario}`, profile.token)).json()).entries.map(row => row.id);
-  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v79', 'recovery-v80']);
+  assert.deepEqual(await rows('iron-reclaimed'), ['recovery-v83']);
   assert.deepEqual((await rows('after-the-dawn')).filter(id => id.startsWith('rescue-')),
-    ['rescue-now-v79', 'rescue-now-v80']);
+    ['rescue-now-v83']);
+  assert.ok(store.scores.some(score => score.id === 'recovery-v79'), 'archived scores remain stored');
   assert.ok(store.scores.some(score => score.id === 'rescue-still-v72'), 'archived victories stay stored');
   assert.ok(store.scores.some(score => score.id === 'recovery-v78'), 'v78 results remain stored off-board');
-  assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 79);
+  assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 83);
 });
 
-test('v80 Veteran and Elite bunker policy advances only those skirmish boards and retains v79 history', async () => {
+test('v80 AI bunker history remains stored below the v83 all-mode Medic floor', async () => {
   assert.equal(AI_FIELD_BUNKER_RULES_VERSION, 80);
   assert.equal(GARRISON_RULES_VERSION, 79);
-  assert.ok(SOLO_REPLAY_VERSION >= AI_FIELD_BUNKER_RULES_VERSION);
+  assert.equal(SOLO_REPLAY_VERSION, MEDIC_ESCORT_RULES_VERSION);
   const profile = await createProfile('Bunker AI Ranking');
   const common = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis', seconds: 100,
     kills: 4, completedAt: 100, verified: true, result: 'victory' };
@@ -1135,10 +1142,11 @@ test('v80 Veteran and Elite bunker policy advances only those skirmish boards an
     skirmishOpening: 'established', victoryMode: 'dominion',
     aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id });
   const rows = [
-    campaignScore(78), campaignScore(79), campaignScore(80),
+    campaignScore(78), campaignScore(79), campaignScore(80), campaignScore(82), campaignScore(83),
     skirmishScore('easy', 78), skirmishScore('easy', 79), skirmishScore('easy', 80),
-    skirmishScore('normal', 79), skirmishScore('normal', 80),
-    skirmishScore('hard', 79), skirmishScore('hard', 80),
+    skirmishScore('easy', 82), skirmishScore('easy', 83),
+    skirmishScore('normal', 79), skirmishScore('normal', 80), skirmishScore('normal', 82), skirmishScore('normal', 83),
+    skirmishScore('hard', 79), skirmishScore('hard', 80), skirmishScore('hard', 82), skirmishScore('hard', 83),
   ];
   const history = { id: 'history-bunker-normal-v79', profileId: profile.profile.id,
     mode: 'skirmish', scenarioId: 'shard-valley', scenarioName: 'Shard Valley', difficulty: 'normal',
@@ -1150,20 +1158,20 @@ test('v80 Veteran and Elite bunker policy advances only those skirmish boards an
   const asSet = values => [...values].sort();
   try {
     assert.deepEqual(asSet(await ids('/api/leaderboard?mode=campaign&scenarioId=first-harvest')),
-      ['bunker-floor-campaign-v79', 'bunker-floor-campaign-v80'],
-      'campaign comparison floor remains v79');
+      ['bunker-floor-campaign-v83'],
+      'campaign floor advances with the all-mode Medic fix');
     assert.deepEqual(asSet(await ids('/api/leaderboard?mode=skirmish&difficulty=easy&scenarioId=shard-valley')),
-      ['bunker-floor-easy-v79', 'bunker-floor-easy-v80'],
-      'Easy skirmish does not use the Veteran/Elite AI policy');
+      ['bunker-floor-easy-v83'],
+      'Easy skirmish receives the global Medic floor');
     for (const difficulty of ['normal', 'hard'])
       assert.deepEqual(await ids(`/api/leaderboard?mode=skirmish&difficulty=${difficulty}&scenarioId=shard-valley`),
-        [`bunker-floor-${difficulty}-v80`], `${difficulty} retires v79 from its comparison board`);
+        [`bunker-floor-${difficulty}-v83`], `${difficulty} receives the global Medic floor`);
     assert.ok(store.scores.includes(rows.find(row => row.id === 'bunker-floor-normal-v79')),
       'the retired v79 result remains stored');
     assert.ok((await ids('/api/records/history')).includes(history.id),
       'the retired v79 skirmish victory remains in private history');
-    assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 79,
-      'the skirmish-only AI policy does not reset ranked multiplayer ratings');
+    assert.equal((await (await api('/api/multiplayer/rating', profile.token)).json()).season, 83,
+      'the all-mode Medic fix starts its ranked multiplayer season');
   } finally {
     for (const row of rows) {
       const index = store.scores.indexOf(row);
@@ -4135,6 +4143,55 @@ test('multiplayer projection shares public salvage drop and persists its public 
     landsAt: 12, expiresAt: 42, captureOwner: 'player', captureProgress: 3.25, claimedBy: null,
     contested: true },
     'serialized match checkpoints retain the active drop across server restart');
+});
+
+test('heal effects expose only currently projected Medic and patient IDs with viewer-oriented owners', () => {
+  const game = new Game({ mode: 'multiplayer', seed: 109, replayVersion: MEDIC_ESCORT_RULES_VERSION });
+  game.units = [];
+  game.buildings = [];
+  game.effects = [];
+  for (const row of game.fog) row.fill(0);
+  const patient = game._createUnit('player', 'rifle', 20.5, 20.5);
+  const medic = game._createUnit('enemy', 'medic', 52.5, 40.5);
+  const members = side => ({ side, selection: [],
+    explored: Array.from({ length: game.height }, () => Array(game.width).fill(0)) });
+  const addHeal = (id, sourceId, targetId, owner, x = patient.x, y = patient.y) => {
+    game.effects.push({ id, type: 'heal', x, y, radius: 0.6, ttl: 0.55, maxTtl: 0.55,
+      sourceId, targetId, owner });
+  };
+  game.fog[Math.floor(patient.y)][Math.floor(patient.x)] = 2;
+  addHeal('fx100', medic.id, patient.id, 'enemy');
+  let view = projectedState({ game }, members('player'));
+  let heal = view.effects.find(effect => effect.id === 'fx100');
+  assert.ok(heal, 'the patient-side heal pulse remains visible at the friendly patient');
+  assert.equal('sourceId' in heal, false, 'a hidden enemy Medic ID is removed');
+  assert.equal(heal.targetId, patient.id, 'the own visible patient ID is retained');
+  assert.equal(heal.owner, 'enemy');
+
+  medic.x = patient.x + 1;
+  medic.y = patient.y;
+  game.fog[Math.floor(medic.y)][Math.floor(medic.x)] = 2;
+  addHeal('fx101', medic.id, patient.id, 'enemy');
+  view = projectedState({ game }, members('player'));
+  heal = view.effects.find(effect => effect.id === 'fx101');
+  assert.equal(heal.sourceId, medic.id, 'visible Medic IDs can be projected');
+  assert.equal(heal.targetId, patient.id);
+  assert.equal(heal.owner, 'enemy');
+
+  const enemyView = projectedState({ game }, members('enemy'));
+  const oriented = enemyView.effects.find(effect => effect.id === 'fx101');
+  assert.equal(oriented.sourceId, medic.id);
+  assert.equal(oriented.targetId, patient.id);
+  assert.equal(oriented.owner, 'player', 'the healing owner is oriented to the receiving seat');
+
+  const ownMedic = game._createUnit('player', 'medic', patient.x - 1, patient.y);
+  game.fog[Math.floor(ownMedic.y)][Math.floor(ownMedic.x)] = 2;
+  addHeal('fx102', ownMedic.id, patient.id, 'player');
+  const ownView = projectedState({ game }, members('player'));
+  const ownHeal = ownView.effects.find(effect => effect.id === 'fx102');
+  assert.equal(ownHeal.sourceId, ownMedic.id, 'own known Medic IDs are retained');
+  assert.equal(ownHeal.targetId, patient.id);
+  assert.equal(ownHeal.owner, 'player');
 });
 
 test('multiplayer projection shares the Bloom beacon but keeps opponent charged cargo private', () => {

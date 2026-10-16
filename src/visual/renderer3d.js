@@ -6074,6 +6074,21 @@ export class Renderer3D {
         }),0,0,0.012,false);
         bar.renderOrder=12;bar.userData.healPart=true;bar.userData.healBaseOpacity=0.96;
       }
+      // Only engine-authored Medic heals carry both IDs. Keep the tether as a
+      // tiny reusable line on this effect so its lifetime follows the pulse.
+      if(fx.sourceId&&fx.targetId) {
+        const geometry=new THREE.BufferGeometry();
+        geometry.setAttribute('position',new THREE.Float32BufferAttribute(new Float32Array(6),3));
+        const tether=new THREE.Line(geometry,new THREE.LineBasicMaterial({
+          color:0x9bffd0,transparent:true,opacity:0.78,depthWrite:false,
+          blending:THREE.AdditiveBlending,toneMapped:false
+        }));
+        tether.userData.healTether=true;
+        tether.userData.healTetherBaseOpacity=0.78;
+        tether.renderOrder=9;
+        tether.frustumCulled=false;
+        g.add(tether);
+      }
     } else {
       const color=0x66ffde;
       const ring=addMesh(g,new THREE.RingGeometry(0.45,0.52,32),new THREE.MeshBasicMaterial({color,transparent:true,opacity:0.8,side:THREE.DoubleSide,depthWrite:false}),0,0.11,0,false);
@@ -6117,10 +6132,12 @@ export class Renderer3D {
     if(Number.isFinite(game.time)) this.lastEffectGameTime=game.time;
     const live=new Set();
     const effectById=new Map((game.effects||[]).map(effect=>[effect.id,effect]));
+    const projectedUnitsById=new Map((game.units||[]).map(unit=>[unit.id,unit]));
     for(const fx of game.effects||[]) {
       live.add(fx.id);
       let g=this.effects.get(fx.id);
-      const visualSignature=`${fx.type}|${fx.damageType||''}|${Number.isFinite(fx.impactAngle)?Math.round(fx.impactAngle*10000):''}`;
+      const healIdentity=fx.type==='heal'?`${fx.sourceId||''}:${fx.targetId||''}:${fx.owner||''}`:'';
+      const visualSignature=`${fx.type}|${fx.damageType||''}|${Number.isFinite(fx.impactAngle)?Math.round(fx.impactAngle*10000):''}|${healIdentity}`;
       if(g&&g.userData.visualSignature!==visualSignature) {
         this.effectGroup.remove(g);
         g.traverse(o=>{if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});
@@ -6237,6 +6254,38 @@ export class Renderer3D {
       const r=fx.radius||0.4;
       g.scale.setScalar(g.userData.stormcallVisual||fx.type==='breach'||fx.type==='interdict'||fx.type==='harvest'?1:fx.type==='projectile'?1:
         (fx.type==='wallCover'||fx.type==='wreckCover')?0.82:Math.max(0.15,r*(1.65-life*0.65)));
+      if(fx.type==='heal') {
+        const tether=g.children.find(object=>object.userData.healTether);
+        if(tether) {
+          const source=projectedUnitsById.get(fx.sourceId);
+          const target=projectedUnitsById.get(fx.targetId);
+          const sourceState=source&&this.entities.get(source.id);
+          const targetState=target&&this.entities.get(target.id);
+          const visible=unit=>unit&&(unit.owner==='player'||(typeof game.isVisible==='function'&&game.isVisible(unit)));
+          const defs=game.unitDefs||{};
+          const valid=source&&target&&source.id!==target.id&&source.owner===fx.owner&&target.owner===fx.owner&&
+            source.defId==='medic'&&defs[target.defId]?.armor==='infantry'&&source.hp>0&&target.hp>0&&
+            !source.embarkedIn&&!target.embarkedIn&&visible(source)&&visible(target)&&
+            sourceState?.group?.visible&&targetState?.group?.visible;
+          tether.visible=!!valid&&g.visible;
+          if(valid) {
+            const invScale=1/Math.max(0.001,g.scale.x);
+            const sourceGroup=sourceState.group,targetGroup=targetState.group;
+            const positions=tether.geometry.attributes.position;
+            // Entity and effect groups share the battlefield's world origin.
+            // Convert the latest visible entity poses into effect-local space,
+            // compensating for the pulse's animated scale.
+            positions.setXYZ(0,(sourceGroup.position.x-g.position.x)*invScale,
+              (sourceGroup.position.y+0.40-g.position.y)*invScale,
+              (sourceGroup.position.z-g.position.z)*invScale);
+            positions.setXYZ(1,(targetGroup.position.x-g.position.x)*invScale,
+              (targetGroup.position.y+0.40-g.position.y)*invScale,
+              (targetGroup.position.z-g.position.z)*invScale);
+            positions.needsUpdate=true;
+            tether.material.opacity=tether.userData.healTetherBaseOpacity*life*(0.78+0.22*Math.sin(time*10));
+          }
+        }
+      }
       if(g.userData.stormcallVisual) this._animateStormcallEffect(g,life,time);
       if(fx.type==='harvest') {
         const age=1-life;
@@ -6381,7 +6430,7 @@ export class Renderer3D {
           !o.userData.salvageRing && !o.userData.salvageShard && !o.userData.harvestRing &&
           !o.userData.harvestShard && !o.userData.flashCore &&
           !o.userData.burstSmoke && !o.userData.shockRing && !o.userData.impactDustWave &&
-          !o.userData.muzzlePlume && !o.userData.wallCoverRing && !o.userData.healRing &&
+          !o.userData.muzzlePlume && !o.userData.wallCoverRing && !o.userData.healRing && !o.userData.healTether &&
           !o.userData.healPart && !o.userData.wallCoverStreaks && !o.userData.wallCoverCore &&
           !o.userData.wreckCoverRing && !o.userData.wreckCoverStreaks && !o.userData.wreckCoverCore &&
           !o.userData.breachPart && !o.userData.interdictPart) o.material.opacity=o.userData.haze?(1-life)*life*0.65:
