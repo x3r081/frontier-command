@@ -5955,6 +5955,7 @@ function updateCampaignGuidance(powerState) {
 }
 function processEvents() {
   if(!game?.events?.length)return;
+  renderer3d?.captureUnitLosses?.(game.events,game);
   const events=game.events.splice(0);
   for(const e of events){
     const type=typeof e==='string'?e:e.type||'';
@@ -7150,6 +7151,8 @@ function hydrateMultiplayerState(state){
     next.terrain=game.terrain;
     next.selection=(game.selection||[]).filter(id=>[...next.units,...next.buildings].some(o=>o.id===id&&o.owner==='player'));
   }
+  if(game&&currentMode==='multiplayer'&&game.terrain===next.terrain)
+    renderer3d?.adoptMultiplayerSnapshot?.(game,next);
   next.events=[];
   installMultiplayerCommandAdapters(next);
   game=next;faction=next.faction;relayScoutIndex=0;

@@ -8,6 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   INFANTRY_DIG_IN_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
+  AI_ROCKET_PRIORITY_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
@@ -88,11 +89,12 @@ const RANKED_SEASON = ENGINEER_FIELD_REPAIR_RULES_VERSION;
 // across solo and ranked play, advancing every solo floor and ranked season.
 // Version 84 adds Counterbattery as a bonus sequel; only its campaign board
 // requires v84, while earlier campaign/skirmish boards and multiplayer stay put.
-// Version 85 adds Engineer Field Repair, a combat heal with private kit/refill
-// state. Its combat impact advances all solo comparison floors and ranked play.
+// Version 85 adds Engineer Field Repair, advancing all solo floors and ranked play.
+// Version 86 changes visibility-gated skirmish Rocket priorities only; campaign
+// and ranked behavior remain at the v85 floor/season.
 const CAMPAIGN_SCORE_FLOOR = ENGINEER_FIELD_REPAIR_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = ENGINEER_FIELD_REPAIR_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = ENGINEER_FIELD_REPAIR_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = AI_ROCKET_PRIORITY_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = AI_ROCKET_PRIORITY_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&
@@ -107,6 +109,8 @@ const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;
 const MAX_HISTORY_RECORDS = 10_000;
 const MAX_MULTIPLAYER_HISTORY_RECORDS = 10_000;
+const MAX_RECENT_VISIBLE_INFANTRY = 512;
+const RECENT_VISIBLE_INFANTRY_SECONDS = 0.6;
 const VERIFY_TIMEOUT_MS = 30_000;
 const verifyingRuns = new Set();
 let activeVerifications = 0;
@@ -889,6 +893,28 @@ function projectedState(lobby, member) {
   })();
   data.units = data.units.filter(visible);
   data.buildings = data.buildings.filter(visible);
+  // Unit death animation is only safe when this seat previously received the
+  // living, unembarked infantry entity itself. A visible tile alone can expose
+  // stealth or passenger losses that the client never actually observed.
+  if (member._unitLossObservationGame !== game || member._unitLossObservationMatchId !== lobby.matchId ||
+      !Number.isFinite(member._unitLossObservationTime) || game.time < member._unitLossObservationTime) {
+    member._recentVisibleInfantry = new Map();
+    member._unitLossObservationGame = game;
+    member._unitLossObservationMatchId = lobby.matchId;
+  }
+  const recentVisibleInfantry = member._recentVisibleInfantry;
+  for (const [unitId, observation] of recentVisibleInfantry) {
+    const age = game.time - observation.seenAt;
+    if (age < 0 || age > RECENT_VISIBLE_INFANTRY_SECONDS) recentVisibleInfantry.delete(unitId);
+  }
+  for (const unit of data.units) {
+    if (UNIT_DEFS[unit.defId]?.armor !== 'infantry' || unit.hp <= 0 || unit.embarkedIn) continue;
+    recentVisibleInfantry.delete(unit.id);
+    recentVisibleInfantry.set(unit.id, { owner: unit.owner, defId: unit.defId, seenAt: game.time });
+  }
+  while (recentVisibleInfantry.size > MAX_RECENT_VISIBLE_INFANTRY)
+    recentVisibleInfantry.delete(recentVisibleInfantry.keys().next().value);
+  member._unitLossObservationTime = game.time;
   // Salvage is shared battlefield information only while in live sight.
   // An old explored tile must not report fresh losses or remote recovery.
   data.wrecks = (data.wrecks || []).filter(wreck =>
@@ -959,15 +985,22 @@ function projectedState(lobby, member) {
       fog[Math.floor(data.storm.lure.y)]?.[Math.floor(data.storm.lure.x)] !== 2)
     data.storm.lure = null;
   data.fog = fog;
-  // Only currently observed building losses are visual history for the seat.
-  // Send explicit public fields so older event payloads cannot expose hidden
-  // attacker or economy state through a multiplayer snapshot.
-  data.events = data.events.filter(event => event.type === 'buildingLost' &&
-    Number.isFinite(event.time) && game.time - event.time < 150 &&
-    Number.isFinite(event.x) && Number.isFinite(event.y) &&
-    fog[Math.floor(event.y)]?.[Math.floor(event.x)] === 2)
-    .map(event => ({ type: 'buildingLost', time: event.time, id: event.id,
-      owner: event.owner, defId: event.defId, x: event.x, y: event.y }));
+  // Only currently observed losses are visual history for the seat. Building
+  // ruins persist for 150s; unit deaths only drive a short fall/fade (0.6s).
+  // Send explicit public fields so event payloads cannot reveal hidden state.
+  data.events = data.events.filter(event => {
+    if (!['buildingLost', 'unitLost'].includes(event.type) || !Number.isFinite(event.time) ||
+        !Number.isFinite(event.x) || !Number.isFinite(event.y) ||
+        fog[Math.floor(event.y)]?.[Math.floor(event.x)] !== 2) return false;
+    const age = game.time - event.time;
+    if (event.type === 'buildingLost') return age < 150;
+    if (age < 0 || age > RECENT_VISIBLE_INFANTRY_SECONDS || UNIT_DEFS[event.defId]?.armor !== 'infantry')
+      return false;
+    const observed = recentVisibleInfantry.get(event.id);
+    return !!observed && observed.owner === event.owner && observed.defId === event.defId &&
+      event.time >= observed.seenAt;
+  }).map(event => ({ type: event.type, time: event.time, id: event.id,
+    owner: event.owner, defId: event.defId, x: event.x, y: event.y }));
   data.selection = member.selection || [];
   for (const entity of [...data.units, ...data.buildings]) entity.selected = data.selection.includes(entity.id);
   if (side === 'enemy') {

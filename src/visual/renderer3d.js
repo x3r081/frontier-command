@@ -1252,6 +1252,9 @@ export class Renderer3D {
     this.vehicleBuckets = new Map();
     this.vehicleBucketPool = [];
     this.effects = new Map();
+    this.unitLossGameRef = null;
+    this.unitLossSeen = new Map();
+    this.unitLossLastTime = -Infinity;
     this.scorches = new Map();
     this.maxScorches = 48;
     this.orderMarkers = new Map();
@@ -3936,9 +3939,11 @@ export class Renderer3D {
       const backing=new THREE.Mesh(new THREE.RingGeometry(radius*0.68,radius*1.17,28),
         new THREE.MeshBasicMaterial({color:0x08171c,transparent:true,opacity:0.91,
           depthWrite:false,toneMapped:false,side:THREE.DoubleSide}));
+      backing.userData.rendererAdornment='team-mark';
       backing.rotation.x=-Math.PI/2;backing.position.y=0.042;backing.renderOrder=2;
       group.add(backing);
       const marker=new THREE.Mesh(new THREE.RingGeometry(radius*0.78,radius,28),material);
+      marker.userData.rendererAdornment='team-mark';
       marker.rotation.x=-Math.PI/2;marker.position.y=0.052;marker.renderOrder=3;
       group.add(marker);
     }
@@ -4763,6 +4768,7 @@ export class Renderer3D {
   }
 
   _removeEntity(id,state) {
+    this._clearInfantryDeathVisual(state);
     state.group.visible=false;
     this.entityGroup.remove(state.group);
     if(state.dust) {this.effectGroup.remove(state.dust);state.dust.material.dispose();}
@@ -5329,7 +5335,163 @@ export class Renderer3D {
     });
   }
 
+  _resetUnitLossTracking(game) {
+    if(!this.unitLossSeen) this.unitLossSeen=new Map();
+    if(!Number.isFinite(this.unitLossLastTime)) this.unitLossLastTime=-Infinity;
+    const rewound=Number.isFinite(game?.time)&&Number.isFinite(this.unitLossLastTime)&&
+      game.time<this.unitLossLastTime-0.8;
+    if(this.unitLossGameRef===game&&!rewound) return;
+    for(const state of this.entities.values()) this._clearInfantryDeathVisual(state);
+    this.unitLossSeen.clear();
+    this.unitLossGameRef=game;
+    this.unitLossLastTime=Number.isFinite(game?.time)?game.time:-Infinity;
+  }
+
+  captureUnitLosses(events,game) {
+    if(!Array.isArray(events)||!game) return;
+    this._resetUnitLossTracking(game);
+    const now=Number.isFinite(game.time)?game.time:0;
+    this.unitLossLastTime=now;
+    for(const [id,at] of this.unitLossSeen) if(now-at>2) this.unitLossSeen.delete(id);
+    for(const event of events) {
+      if(event?.type!=='unitLost'||!event.id||this.unitLossSeen.has(event.id)||
+        !Number.isFinite(event.time)||now-event.time<0||now-event.time>0.60||
+        !Number.isFinite(event.x)||!Number.isFinite(event.y)) continue;
+      const def=game.unitDefs?.[event.defId];
+      if(def?.armor!=='infantry') continue;
+      const state=this.entities.get(event.id);
+      const last=state?.lastObservedUnit;
+      if(!state||state.building||!state.unitVisual||state.defId!==event.defId||state.owner!==event.owner||
+        !last||last.gameRef!==game||last.hp<=0||last.embarkedIn||last.defId!==event.defId||
+        now-last.time>0.60||Math.hypot(last.x-event.x,last.y-event.y)>1.25||
+        (game.units||[]).some(unit=>unit.id===event.id)) continue;
+      // Enemy death visuals are allowed only on a tile still in current sight.
+      // Friendly units are always observable to their owner.
+      if(event.owner!=='player'&&game.fog?.[Math.floor(event.y)]?.[Math.floor(event.x)]!==2) continue;
+      this.unitLossSeen.set(event.id,event.time);
+      if(this.unitLossSeen.size>256) this.unitLossSeen.delete(this.unitLossSeen.keys().next().value);
+      this._beginInfantryDeathVisual(state,event,game);
+    }
+  }
+
+  adoptMultiplayerSnapshot(previous,next) {
+    if(!previous||!next||previous.mode!=='multiplayer'||next.mode!=='multiplayer'||
+      this.unitLossGameRef!==previous||
+      previous.terrain!==next.terrain||previous.mapId!==next.mapId||
+      !Number.isFinite(previous.time)||!Number.isFinite(next.time)||next.time<previous.time) return false;
+    const observedGame=this.unitLossGameRef;
+    for(const state of this.entities.values()) {
+      if(state.lastObservedUnit?.gameRef===observedGame)
+        state.lastObservedUnit.gameRef=next;
+    }
+    this.unitLossGameRef=next;
+    this.unitLossLastTime=next.time;
+    this.captureUnitLosses(next.events,next);
+    return true;
+  }
+
+  _beginInfantryDeathVisual(state,event,game) {
+    if(state.deathVisual||!state.unitVisual) return;
+    state.unitVisual.updateWorldMatrix(true,true);
+    const inverseRoot=state.unitVisual.matrixWorld.clone().invert();
+    const relative=new THREE.Matrix4();
+    const bounds=new THREE.Box3();
+    const vertex=new THREE.Vector3();
+    state.unitVisual.traverse(object=>{
+      if(!object.isMesh||!object.geometry) return;
+      if(!object.geometry.boundingBox) object.geometry.computeBoundingBox();
+      const box=object.geometry.boundingBox;
+      if(!box) return;
+      relative.multiplyMatrices(inverseRoot,object.matrixWorld);
+      for(let mask=0;mask<8;mask++) {
+        vertex.set(mask&1?box.max.x:box.min.x,mask&2?box.max.y:box.min.y,
+          mask&4?box.max.z:box.min.z).applyMatrix4(relative);
+        bounds.expandByPoint(vertex);
+      }
+    });
+    const fallCorners=[];
+    if(!bounds.isEmpty()) for(let mask=0;mask<8;mask++) fallCorners.push(new THREE.Vector3(
+      mask&1?bounds.max.x:bounds.min.x,mask&2?bounds.max.y:bounds.min.y,
+      mask&4?bounds.max.z:bounds.min.z).multiply(state.unitVisual.scale));
+    const meshes=[];
+    state.unitVisual.traverse(object=>{
+      if(!object.isMesh||!object.material) return;
+      const original=object.material;
+      const cloneMaterial=material=>{
+        const clone=material.clone();
+        clone.transparent=true;
+        clone.depthWrite=material.depthWrite;
+        return {clone,opacity:material.opacity,initialDepthWrite:material.depthWrite};
+      };
+      const records=Array.isArray(original)?original.map(cloneMaterial):[cloneMaterial(original)];
+      object.material=Array.isArray(original)?records.map(record=>record.clone):records[0].clone;
+      meshes.push({object,original,records});
+    });
+    const originX=event.x,originZ=event.y;
+    state.group.position.set(originX,this.visualHeightAt(originX,originZ)+0.02,originZ);
+    const hiddenChildren=[];
+    for(const child of state.group.children) if(child!==state.unitVisual&&child.visible) {
+      hiddenChildren.push({child,visible:child.visible});
+      child.visible=false;
+    }
+    if(state.dust?.visible) {hiddenChildren.push({child:state.dust,visible:true});state.dust.visible=false;}
+    const baseRotation=state.unitVisual.rotation.clone();
+    const basePosition=state.unitVisual.position.clone();
+    const baseQuaternion=new THREE.Quaternion().setFromEuler(baseRotation);
+    let baseMinY=Infinity;
+    for(const corner of fallCorners) baseMinY=Math.min(baseMinY,corner.clone().applyQuaternion(baseQuaternion).y);
+    state.deathVisual={startedAt:event.time,meshes,originX,originZ,
+      baseRotation,basePosition,hiddenChildren,fallCorners,baseMinY,
+      scratch:new THREE.Vector3(),sign:(String(event.id).charCodeAt(0)||0)%2?1:-1};
+  }
+
+  _clearInfantryDeathVisual(state) {
+    const death=state?.deathVisual;
+    if(!death) return;
+    for(const {object,original,records} of death.meshes) {
+      object.material=original;
+      for(const record of records) record.clone.dispose();
+    }
+    state.unitVisual?.rotation.copy(death.baseRotation);
+    state.unitVisual?.position.copy(death.basePosition);
+    for(const {child,visible} of death.hiddenChildren||[]) if(child.parent) child.visible=visible;
+    state.deathVisual=null;
+  }
+
+  _updateInfantryDeathVisual(id,state,game) {
+    const death=state?.deathVisual;
+    if(!death) return false;
+    const x=Math.floor(death.originX),y=Math.floor(death.originZ);
+    if(state.owner!=='player'&&game.fog?.[y]?.[x]!==2) {
+      this._removeEntity(id,state);
+      return false;
+    }
+    const age=Math.max(0,(Number(game.time)||0)-death.startedAt);
+    if((this.reducedMotionQuery?.matches??false)||age>=0.55) {
+      this._removeEntity(id,state);
+      return false;
+    }
+    const fall=smooth(clamp(age/0.34,0,1));
+    const fade=clamp((age-0.22)/0.33,0,1);
+    const rotation=new THREE.Euler(death.baseRotation.x,death.baseRotation.y,
+      death.baseRotation.z+death.sign*1.18*fall);
+    state.unitVisual.rotation.copy(rotation);
+    state.unitVisual.position.copy(death.basePosition);
+    const quaternion=new THREE.Quaternion().setFromEuler(rotation);
+    let minimumY=Infinity;
+    for(const corner of death.fallCorners)
+      minimumY=Math.min(minimumY,death.scratch.copy(corner).applyQuaternion(quaternion).y);
+    state.unitVisual.position.y+=death.baseMinY-minimumY;
+    for(const {records} of death.meshes) for(const record of records) {
+      if(fade>0&&record.initialDepthWrite) record.clone.depthWrite=false;
+      record.clone.opacity=record.opacity*(1-fade);
+    }
+    return true;
+  }
+
   _syncEntities(game,time) {
+    this._resetUnitLossTracking(game);
+    this.captureUnitLosses(game.events,game);
     const live = this.entitySyncLive;
     const selected = this.entitySyncSelected;
     const acquiredTargets = this.entitySyncAcquiredTargets;
@@ -5603,8 +5765,16 @@ export class Renderer3D {
       if(building) this._setCampaignShield(state,o,time);
       // Damage tint is expressed with a subtle red emergency light.
       if(o.hp/o.maxHp < 0.35) state.group.position.y+=Math.sin(time*6+o.x)*0.012;
+      if(!building) state.lastObservedUnit={gameRef:game,defId:o.defId,owner:o.owner,x:o.x,y:o.y,
+        hp:o.hp,embarkedIn:o.embarkedIn||null,time:game.time};
     }
-    for(const [id,state] of this.entities) if(!live.has(id)) this._removeEntity(id,state);
+    for(const [id,state] of this.entities) if(!live.has(id)) {
+      if(state.deathVisual&&this._updateInfantryDeathVisual(id,state,game)) {
+        live.add(id);
+        continue;
+      }
+      if(this.entities.has(id)) this._removeEntity(id,state);
+    }
   }
 
   _clearGroundContacts() {
@@ -7383,6 +7553,7 @@ export class Renderer3D {
   }
 
   dispose() {
+    for(const state of this.entities.values()) this._clearInfantryDeathVisual(state);
     this._clearGroundContacts();
     this._disposeGroup(this.terrainGroup);
     this.fogTexture?.dispose();

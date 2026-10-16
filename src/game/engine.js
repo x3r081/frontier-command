@@ -91,6 +91,7 @@ export const MOBILE_RALLY_RULES_VERSION = 81;
 export const TARGET_PRIORITY_RULES_VERSION = 82;
 export const MEDIC_ESCORT_RULES_VERSION = 83;
 export const ENGINEER_FIELD_REPAIR_RULES_VERSION = 85;
+export const AI_ROCKET_PRIORITY_RULES_VERSION = 86;
 export const ENGINEER_FIELD_REPAIR_KITS = 2;
 export const ENGINEER_FIELD_REPAIR_AMOUNT = 120;
 export const ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS = 5;
@@ -393,6 +394,7 @@ export class Game {
     this.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
     this.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
     this.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
+    this.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
     this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
@@ -2576,6 +2578,27 @@ export class Game {
 
   _targetPriorityEnabled() {
     return this.replayVersion == null || this.replayVersion >= TARGET_PRIORITY_RULES_VERSION;
+  }
+
+  _aiRocketTargetPriorityEnabled() {
+    return this.mode === 'skirmish' &&
+      (this.replayVersion == null || this.replayVersion >= AI_ROCKET_PRIORITY_RULES_VERSION);
+  }
+
+  _aiAdaptRocketTargetPriorities() {
+    if (!this._aiRocketTargetPriorityEnabled()) return;
+    const recentIntel = this._aiIntel.filter(item => !item.building && this.time - item.seen < 24);
+    for (const rocket of this.units) {
+      if (rocket.owner !== 'enemy' || rocket.defId !== 'rocket' || rocket.hp <= 0 || rocket.embarkedIn) continue;
+      // Base the preference on recent sightings near this rocket, not global
+      // enemy composition, so a distant aircraft does not distract a local
+      // anti-armor response. Actual acquisition still requires current vision.
+      const sight = this._unitSight(rocket, UNIT_DEFS.rocket.sight);
+      const nearby = recentIntel.filter(item => dist(rocket.x, rocket.y, item.x, item.y) <= sight);
+      const hasAircraft = nearby.some(item => UNIT_DEFS[item.defId]?.flying);
+      const hasArmor = nearby.some(item => ['light', 'heavy'].includes(UNIT_DEFS[item.defId]?.armor));
+      rocket.targetPriority = hasAircraft ? 'aircraft' : hasArmor ? 'vehicles' : 'auto';
+    }
   }
 
   _medicEscortEnabled() {
@@ -7880,6 +7903,7 @@ export class Game {
       !(u.order?.type === 'board' && this.getEntity(u.order.carrierId)?.owner === 'enemy') &&
       !['harvester', 'engineer', 'medic', 'apc', 'dropship'].includes(u.defId));
     this._aiObserve();
+    this._aiAdaptRocketTargetPriorities();
     this._aiRetreatHarvesters();
     this._aiSiegeVisibleDefenses(combatUnits);
     this._aiRelayProtocols();
@@ -8939,6 +8963,10 @@ export class Game {
     if (game.replayVersion == null && data.medicEscortRulesVersion === MEDIC_ESCORT_RULES_VERSION &&
         data.engineerFieldRepairRulesVersion !== ENGINEER_FIELD_REPAIR_RULES_VERSION)
       game.replayVersion = MEDIC_ESCORT_RULES_VERSION + 1;
+    // Markerless v85 saves predate the AI-only Rocket counter-targeting policy.
+    if (game.replayVersion == null && data.engineerFieldRepairRulesVersion === ENGINEER_FIELD_REPAIR_RULES_VERSION &&
+        data.aiRocketPriorityRulesVersion !== AI_ROCKET_PRIORITY_RULES_VERSION)
+      game.replayVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -9089,6 +9117,7 @@ export class Game {
     game.targetPriorityRulesVersion = TARGET_PRIORITY_RULES_VERSION;
     game.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
     game.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
+    game.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
     game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
       data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
         building.owner === 'enemy' && building.defId === 'bunker');
