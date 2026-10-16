@@ -87,10 +87,11 @@ test('projectile wake grows from launch point and fades with the shot',()=>{
     'the wake appears after the enemy firing position is actually visible');
 });
 
-async function authoredAnimation(defId,file,building=false,faction='aegis') {
+async function authoredAnimation(defId,file,building=false,faction='aegis',compact=false) {
   const bytes=await readFile(new URL(`../public/assets/models/${file}`,import.meta.url));
   const payload=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
   const gltf=await new Promise((resolve,reject)=>new GLTFLoader().parse(payload,'',resolve,reject));
+  if(compact)compactAuthoredModel(gltf.scene,defId);
   const group=new THREE.Group();
   group.userData.authoredVisual=gltf.scene;
   group.add(gltf.scene);
@@ -220,6 +221,45 @@ test('Guardian weapon follows rendered shots independently of its hull',async()=
   game.effects=[];
   renderer._animateEntity(state,entity,game,10);
   assert.ok(Math.abs(animation.aim)<lastAim,'without a new shot the weapon settles forward');
+});
+
+test('compacted Siege Crawler keeps its complete moving cannon and attached muzzle',async()=>{
+  const {group,animation}=await authoredAnimation('artillery','siege-crawler.glb',false,'aegis',true);
+  const assembly=animation.pivot?.children.find(node=>node.name==='Artillery_cannon_assembly');
+  const cannonMeshes=[];
+  assembly?.traverse(node=>{if(node.isMesh)cannonMeshes.push(node);});
+  assert.equal(cannonMeshes.length,4,'the authored gun uses four material primitives');
+  assert.ok(cannonMeshes.every(mesh=>mesh.visible&&!mesh.userData.rendererBatchSource),
+    'all cannon primitives must stay attached instead of entering static hull batches');
+  group.updateMatrixWorld(true);
+  const muzzle=animation.muzzleSocket.getWorldPosition(new THREE.Vector3());
+  assert.ok(muzzle.distanceTo(new THREE.Vector3(0,1.08,-1.647))<1e-6);
+  let visibleMeshes=0;
+  group.traverse(node=>{if(node.isMesh&&node.visible)visibleMeshes++;});
+  assert.ok(visibleMeshes<=11,'the moving gun keeps a bounded material-submission budget');
+});
+
+test('Siege Crawler recoil follows projectile age and settles without moving its hull',async()=>{
+  const {renderer,group,entity,animation}=await authoredAnimation('artillery','siege-crawler.glb');
+  const state={group,animation,building:false};
+  const shot={id:'shell-1',type:'projectile',sourceId:entity.id,maxTtl:1,ttl:1};
+  const game={effects:[shot],getEntity:()=>{throw new Error('recoil must not inspect targets');}};
+  group.updateMatrixWorld(true);
+  const rest=animation.muzzleSocket.getWorldPosition(new THREE.Vector3());
+  renderer._animateEntity(state,entity,game,10);
+  group.updateMatrixWorld(true);
+  assert.ok(animation.muzzleSocket.getWorldPosition(new THREE.Vector3()).z>rest.z+.09);
+  shot.ttl=.6;
+  renderer._animateEntity(state,entity,game,10.4);
+  assert.ok(Math.abs(animation.pivot.position.z+.48)<.005,'the gun returns as the shell travels');
+  shot.ttl=1;
+  renderer._animateEntity(state,entity,game,10.5);
+  assert.ok(animation.pivot.position.z>-.39,'a replay seek can reuse an effect ID at a different age');
+  game.effects=[];
+  renderer._animateEntity(state,entity,game,12);
+  assert.ok(Math.abs(animation.pivot.position.z+.48)<1e-5);
+  assert.equal(group.position.length(),0,'recoil only moves the cannon assembly');
+  assert.equal(group.rotation.y,0,'the casemate retains its hull heading');
 });
 
 test('Brace and Ghost Run get transient battlefield cues from live ability clocks',()=>{

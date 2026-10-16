@@ -53,6 +53,7 @@ export const AI_HARVESTER_RETREAT_RULES_VERSION = 56;
 export const AI_COUNTER_PLAN_RULES_VERSION = 59;
 export const AI_COMMAND_RECOVERY_RULES_VERSION = 62;
 export const AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION = 64;
+export const AI_ASSAULT_COORDINATION_RULES_VERSION = 65;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
@@ -364,6 +365,7 @@ export class Game {
     this.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     this.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
     this.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
+    this.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     this._aiCommandRecovery = null;
     this.salvageDrop = null;
@@ -1269,6 +1271,11 @@ export class Game {
       pace = Math.min(pace, effectiveSpeed);
     }
     return Number.isFinite(pace) ? pace : null;
+  }
+
+  _aiAssaultCoordinationActive() {
+    return this.mode === 'skirmish' && ['normal', 'hard'].includes(this.difficulty) &&
+      (this.replayVersion == null || this.replayVersion >= AI_ASSAULT_COORDINATION_RULES_VERSION);
   }
 
   _validateMatchPace(matchPace) {
@@ -2541,6 +2548,11 @@ export class Game {
     if (!ghostRun && (this.replayVersion == null || this.replayVersion >= MATCHED_PACE_RULES_VERSION) &&
       Number.isFinite(pace) && pace > 0 && ['move', 'forceMove'].includes(unit.order?.type))
       remaining = Math.min(remaining, dt * pace);
+    const aiMarchPace = this._aiAssaultCoordinationActive() && unit.owner === 'enemy' && !d.flying &&
+      unit.order?.type === 'attack' && Number.isFinite(unit.order.aiMarchPace) && unit.order.aiMarchPace > 0 &&
+      Number.isFinite(unit.order.aiMarchUntil) && unit.order.aiMarchUntil > this.time
+      ? unit.order.aiMarchPace : null;
+    if (!ghostRun && Number.isFinite(aiMarchPace)) remaining = Math.min(remaining, dt * aiMarchPace);
     while (remaining > 0 && unit.path.length) {
       const next = unit.path[0];
       const distance = dist(unit.x, unit.y, next.x, next.y);
@@ -5967,6 +5979,7 @@ export class Game {
     // Apply the screen after defense and relay assignments so those higher
     // priority duties are respected and the hold order persists while safe.
     this._aiExecuteCounterPlan(combatUnits);
+    this._aiCoordinateAssaults();
     const harvesters = this.units.filter(u => u.owner === 'enemy' && u.hp > 0 && u.defId === 'harvester').length;
     const airDefense = this.enemyFaction === 'aegis' ? 'aaTower' : 'sam';
     const specialDefense = this.enemyFaction === 'vesper' ? 'obelisk' : 'guardTower';
@@ -6443,6 +6456,46 @@ export class Game {
     }
   }
 
+  _aiCoordinateAssaults() {
+    if (!this._aiAssaultCoordinationActive()) return;
+    const packets = new Map();
+    for (const unit of this.units) {
+      const order = unit.order;
+      if (unit.owner !== 'enemy' || unit.hp <= 0 || unit.embarkedIn || UNIT_DEFS[unit.defId]?.flying ||
+          !UNIT_DEFS[unit.defId]?.weapon || order?.type !== 'attack' || !Number.isInteger(order.aiTeam) ||
+          !Number.isFinite(order.aiMarchPace) || order.aiMarchPace <= 0 ||
+          !Number.isFinite(order.aiMarchUntil) || !Number.isFinite(order.aiMarchHealth)) continue;
+      const key = `${order.aiTeam}:${order.targetId}`;
+      if (!packets.has(key)) packets.set(key, []);
+      packets.get(key).push(unit);
+    }
+    if (!packets.size) return;
+
+    const visibleGroundThreats = this.units.filter(unit => unit.owner === 'player' && unit.hp > 0 &&
+      !unit.embarkedIn && !UNIT_DEFS[unit.defId]?.flying && UNIT_DEFS[unit.defId]?.weapon &&
+      this.isVisible(unit, 'enemy'));
+    const visibleGroundDefenses = this.buildings.filter(building => {
+      const weapon = BUILDING_DEFS[building.defId]?.weapon;
+      return building.owner === 'player' && building.hp > 0 && building.progress >= 1 && building.powered &&
+        this.isVisible(building, 'enemy') && weapon && ['ground', 'both'].includes(weapon.target || 'ground');
+    });
+    const nearbyContact = unit => visibleGroundThreats.some(threat => dist(unit.x, unit.y, threat.x, threat.y) <= 8) ||
+      visibleGroundDefenses.some(defense => dist(unit.x, unit.y, defense.x + defense.w / 2,
+        defense.y + defense.h / 2) <= 8);
+
+    for (const members of packets.values()) {
+      const deadline = Math.min(...members.map(unit => unit.order.aiMarchUntil));
+      const damaged = members.some(unit => unit.hp < unit.order.aiMarchHealth - 0.001);
+      const contact = members.some(nearbyContact);
+      if (members.length >= 2 && !damaged && !contact && this.time < deadline) continue;
+      for (const unit of members) {
+        delete unit.order.aiMarchPace;
+        delete unit.order.aiMarchUntil;
+        delete unit.order.aiMarchHealth;
+      }
+    }
+  }
+
   _launchAiWave() {
     const teamPolicy = this.mode === 'skirmish' && (this.replayVersion == null || this.replayVersion >= 22);
     const siegeDirector = this._aiSiegeDirectorActive();
@@ -6538,13 +6591,41 @@ export class Game {
       }
     } else attack = candidates.slice(0, size);
     if (!attack.length) return false;
+    let marchPace = null;
+    let marchUnitIds = null;
+    const targetBuilding = visible ? this.getEntity(target.id) : null;
+    if (this._aiAssaultCoordinationActive() && targetBuilding && targetBuilding.owner === 'player' &&
+        'w' in targetBuilding && targetBuilding.hp > 0 && this.isVisible(targetBuilding, 'enemy')) {
+      const groundAttack = attack.filter(unit => !UNIT_DEFS[unit.defId]?.flying && UNIT_DEFS[unit.defId]?.weapon);
+      if (groundAttack.length >= 3) {
+        const mean = groundAttack.reduce((point, unit) => ({ x: point.x + unit.x / groundAttack.length,
+          y: point.y + unit.y / groundAttack.length }), { x: 0, y: 0 });
+        const clustered = groundAttack.every(unit => dist(unit.x, unit.y, mean.x, mean.y) <= 8);
+        const targetCenter = this._entityCenter(targetBuilding);
+        const defended = this.buildings.some(building => {
+          const weapon = BUILDING_DEFS[building.defId]?.weapon;
+          return building.owner === 'player' && building.hp > 0 && building.progress >= 1 && building.powered &&
+            weapon && ['ground', 'both'].includes(weapon.target || 'ground') && this.isVisible(building, 'enemy') &&
+            dist(targetCenter.x, targetCenter.y, building.x + building.w / 2, building.y + building.h / 2) <= 12;
+        });
+        if (clustered && defended) {
+          marchPace = this._matchedPace(groundAttack);
+          if (Number.isFinite(marchPace)) marchUnitIds = new Set(groundAttack.map(unit => unit.id));
+        }
+      }
+    }
     for (const u of attack) {
-      u.order = visible
+      const order = visible
         ? { type: 'attack', targetId: target.id, aiIntel: true, lastX: target.x, lastY: target.y,
           ...(teamPolicy ? { aiTeam: this._aiWaveNumber, aiTeamRole: role(u) } : {}) }
         : { type: 'move', x: destination.x, y: destination.y, attackMove: true };
+      if (marchPace && marchUnitIds.has(u.id)) Object.assign(order, { aiMarchPace: marchPace,
+        aiMarchUntil: this.time + 25, aiMarchHealth: u.hp });
+      u.order = order;
       u.path = []; u._pathGoal = null;
     }
+    // A packet already in contact should never acquire a travel restriction.
+    this._aiCoordinateAssaults();
     this._aiWaveNumber++;
     this._event('incomingAttack', { count: attack.length, x: destination.x, y: destination.y });
     return true;
@@ -6752,6 +6833,10 @@ export class Game {
     if (game.mode === 'skirmish' && game.replayVersion == null &&
         data.aiInfrastructureDefenseRulesVersion !== AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION)
       game.replayVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION - 1;
+    // Markerless skirmish saves predate defended-front assault coordination.
+    if (game.mode === 'skirmish' && game.replayVersion == null &&
+        data.aiAssaultCoordinationRulesVersion !== AI_ASSAULT_COORDINATION_RULES_VERSION)
+      game.replayVersion = AI_ASSAULT_COORDINATION_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6773,6 +6858,7 @@ export class Game {
     game.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     game.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
     game.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
+    game.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     game.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     const savedRecovery = game._aiCommandRecovery;
     game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)

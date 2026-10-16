@@ -56,8 +56,10 @@ const RANKED_SEASON = 53;
 // the v59 comparison floor because that recovery rule does not apply there.
 // Version 64 extends bounded defense to operational support infrastructure at
 // every skirmish difficulty. Campaign rules and multiplayer season are unchanged.
+// Version 65 coordinates normal/hard ground assaults on observed fortifications.
+// Easy retains the v64 infrastructure-defense floor.
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
-  (score.mode === 'skirmish' ? score.scoreVersion >= 64 &&
+  (score.mode === 'skirmish' ? score.scoreVersion >= (score.difficulty === 'easy' ? 64 : 65) &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
     : score.mode === 'campaign' && score.scoreVersion >=

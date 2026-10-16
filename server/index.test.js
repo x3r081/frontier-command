@@ -478,7 +478,7 @@ test('leaderboard validates filters and ranks only compatible verified scores', 
   assert.equal(history[1].score, 7410);
 });
 
-test('v64 skirmish boards compare infrastructure defense at every difficulty while preserving older results', async () => {
+test('v65 skirmish boards compare assault coordination by difficulty while preserving older results', async () => {
   const profile = await createProfile('Route Compatibility');
   const base = { profileId: profile.profile.id, mode: 'skirmish', difficulty: 'normal',
     faction: 'aegis', skirmishOpening: 'established', victoryMode: 'dominion',
@@ -568,6 +568,14 @@ test('v64 skirmish boards compare infrastructure defense at every difficulty whi
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
     { ...base, id: 'siege-easy-v64', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 64,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
+    { ...base, id: 'route-v65-shard', scenarioId: 'shard-valley', scoreVersion: 65,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
+    { ...base, id: 'route-v65-canyon', scenarioId: 'canyon-ring', scoreVersion: 65,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+    { ...base, id: 'siege-v65', scenarioId: 'twin-passes', scoreVersion: 65,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
+    { ...base, id: 'siege-hard-v65', difficulty: 'hard', scenarioId: 'twin-passes', scoreVersion: 65,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
   ];
   store.scores.push(...rows);
   store.history.push({ id: 'history-route-v48', profileId: profile.profile.id, mode: 'skirmish',
@@ -581,23 +589,23 @@ test('v64 skirmish boards compare infrastructure defense at every difficulty whi
   try {
     const shard = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=shard-valley', profile.token)).json()).entries;
     const canyon = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=canyon-ring', profile.token)).json()).entries;
-    assert.deepEqual(shard.map(entry => entry.id), ['route-v64-shard']);
-    assert.deepEqual(canyon.map(entry => entry.id), ['route-v64-canyon']);
+    assert.deepEqual(shard.map(entry => entry.id), ['route-v65-shard']);
+    assert.deepEqual(canyon.map(entry => entry.id), ['route-v65-canyon']);
     const siege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=normal',
       profile.token)).json()).entries;
-    assert.deepEqual(siege.map(entry => entry.id), ['siege-v64'],
-      'normal scores before infrastructure defense are incomparable');
+    assert.deepEqual(siege.map(entry => entry.id), ['siege-v65'],
+      'normal scores before assault coordination are incomparable');
     const hardSiege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=hard',
       profile.token)).json()).entries;
-    assert.deepEqual(hardSiege.map(entry => entry.id), ['siege-hard-v64'],
-      'hard scores before infrastructure defense are incomparable');
+    assert.deepEqual(hardSiege.map(entry => entry.id), ['siege-hard-v65'],
+      'hard scores before assault coordination are incomparable');
     const easySiege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=easy',
       profile.token)).json()).entries;
     assert.deepEqual(easySiege.map(entry => entry.id), ['siege-easy-v64'],
-      'Easy also uses the infrastructure-defense comparison floor');
+      'Easy retains its infrastructure-defense comparison floor');
     assert.equal(shard[0].aiCommanderProfileId, AI_COMMANDER_PROFILES[1].id);
     assert.deepEqual((await (await api(`/api/leaderboard?mode=skirmish&scenarioId=canyon-ring&aiCommanderProfileId=${AI_COMMANDER_PROFILES[0].id}`,
-      profile.token)).json()).entries.map(entry => entry.id), ['route-v64-canyon']);
+      profile.token)).json()).entries.map(entry => entry.id), ['route-v65-canyon']);
     assert.equal((await api('/api/leaderboard?mode=skirmish&aiCommanderProfileId=unknown', profile.token)).status, 400);
     assert.ok(store.scores.some(score => score.id === 'route-v44-canyon'),
       'retiring an old result from comparable rankings does not erase it');

@@ -1920,19 +1920,20 @@ def siege_crawler():
     cube("Cannon mantlet", (0,.48,1.08), (.47,.25,.30), m["edge"], .075)
     # Twin hydraulic rams connect cradle to barrel; nested barrel sleeves make
     # the segmented artillery tube clear in silhouette.
+    cannon_parts = []
     for x in [-.20,.20]:
         cylinder("Recoil cylinder housing", (x,.67,1.08), .052,.42,m["steel"],10,(math.pi/2,0,0))
-        cylinder("Polished recoil ram", (x,.86,1.08), .025,.34,m["edge"],8,(math.pi/2,0,0))
+        cannon_parts.append(cylinder("Polished recoil ram", (x,.86,1.08), .025,.34,m["edge"],8,(math.pi/2,0,0)))
         cylinder("Ram clevis", (x,.48,1.08), .075,.09,m["dark"],8,(math.pi/2,0,0))
-    cylinder("Barrel root sleeve", (0,.77,1.08), .115,.36,m["dark"],12,(math.pi/2,0,0))
-    cylinder("Segmented cannon tube", (0,1.17,1.08), .092,.54,m["steel"],12,(math.pi/2,0,0))
+    cannon_parts.append(cylinder("Barrel root sleeve", (0,.77,1.08), .115,.36,m["dark"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Segmented cannon tube", (0,1.17,1.08), .092,.54,m["steel"],12,(math.pi/2,0,0)))
     for y in [.98,1.22,1.40]:
-        cylinder("Barrel reinforcement band", (0,y,1.08), .105,.045,m["edge"],12,(math.pi/2,0,0))
-    cylinder("Muzzle brake", (0,1.52,1.08), .145,.18,m["dark"],12,(math.pi/2,0,0))
-    cylinder("Muzzle crown", (0,1.62,1.08), .15,.045,m["edge"],12,(math.pi/2,0,0))
-    cylinder("Bore recess", (0,1.647,1.08), .095,.012,m["recess"],12,(math.pi/2,0,0))
+        cannon_parts.append(cylinder("Barrel reinforcement band", (0,y,1.08), .105,.045,m["edge"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Muzzle brake", (0,1.52,1.08), .145,.18,m["dark"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Muzzle crown", (0,1.62,1.08), .15,.045,m["edge"],12,(math.pi/2,0,0)))
+    cannon_parts.append(cylinder("Bore recess", (0,1.647,1.08), .095,.012,m["recess"],12,(math.pi/2,0,0)))
     for z in [.99,1.17]:
-        cube("Muzzle brake port", (0,1.53,z), (.12,.05,.035), m["recess"],.008)
+        cannon_parts.append(cube("Muzzle brake port", (0,1.53,z), (.12,.05,.035), m["recess"],.008))
     # Compact sights, sensors, and restrained faction-neutral markings.
     cube("Optic pedestal", (.31,-.19,1.24), (.17,.20,.12), m["dark"],.03)
     cube("Rangefinder glass", (.31,-.19,1.31), (.14,.15,.045), m["glass"],.025)
@@ -1942,6 +1943,12 @@ def siege_crawler():
         cube("Identification stripe", (x,.38,.79), (.035,.25,.025), m["accent"],.008)
         for y in [-.38,-.22]:
             cube("Status marker", (x*1.08,y,.77), (.025,.07,.025), m["accent"],.008)
+    # One authored multi-material node carries the barrel and polished ram rods.
+    # Its origin sits at the mantlet, so the renderer can slide the whole
+    # assembly rearward while the cylinder housings and clevises stay fixed.
+    consolidate_static_meshes(
+        join_groups=(("Artillery cannon assembly", cannon_parts, (0,.48,1.08)),),
+    )
     export("siege-crawler")
 
 

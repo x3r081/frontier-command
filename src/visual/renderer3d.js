@@ -185,6 +185,12 @@ function preserveMovingModelPart(key,object) {
   const name=object.name.replace(/_/g,' ').replace(/(\d{3})$/,'.$1');
   if(COMPACT_INFANTRY.has(key)) return /^Arm\.?[LR] (?:upper|forearm)$/.test(name);
   if(key==='mcv') return /^(?:Run-flat wheel|Wheel hub)(?:\.\d+)?$/.test(name);
+  if(key==='artillery') {
+    // A multi-material glTF node is a Group with generically named meshes.
+    // Preserve its descendants together so static batches cannot steal the gun.
+    for(let part=object;part;part=part.parent)
+      if(part.name.replace(/_/g,' ')==='Artillery cannon assembly') return true;
+  }
   return false;
 }
 
@@ -1196,7 +1202,7 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='stealthTank'?'?rev=2':'';
+      const revision=key==='stealthTank'?'?rev=2':key==='artillery'?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         compactAuthoredModel(gltf.scene,key);
@@ -3838,6 +3844,16 @@ export class Renderer3D {
       animation.cargo = [authoredPart(group,'Loaded crystal shard')].filter(Boolean);
       animation.lights = emissiveParts(group,
         ['Loaded crystal shard']);
+    } else if (o.defId === 'artillery' && authored) {
+      // The authored barrel and ram rods are one compact moving node. Its
+      // pivot is the mantlet; the recoil axis follows the cannon toward the
+      // vehicle rear in Three.js coordinates.
+      animation.pivot = animatedPivot(group,['Artillery cannon assembly'],0,1.08,-0.48);
+      if (animation.pivot) {
+        animation.lastArtilleryShotId = null;
+        animation.lastShotTime = -Infinity;
+        animation.recoilDistance = 0.095;
+      }
     } else if (o.defId === 'lightTank' && authored) {
       // The Striker GLB keeps the entire upper fighting compartment together
       // as one eight-material mesh, so its sights, armor and gun all turn as
@@ -3958,8 +3974,15 @@ export class Renderer3D {
       animation.pivot.add(muzzleSocket);
       animation.muzzleSocket = muzzleSocket;
     } else if (o.defId === 'artillery') {
-      muzzleSocket.position.set(0, 1.08, -1.647);
-      group.add(muzzleSocket);
+      // Exported muzzle face is at (0, 1.08, -1.647) in Three coordinates;
+      // attaching in pivot-local space makes the socket follow barrel recoil.
+      if(animation.pivot){
+        muzzleSocket.position.set(0,0,-1.167);
+        animation.pivot.add(muzzleSocket);
+      }else{
+        muzzleSocket.position.set(0,1.08,-1.647);
+        group.add(muzzleSocket);
+      }
       animation.muzzleSocket = muzzleSocket;
     }
     return animation.motion !== undefined || animation.pivot || animation.lights || animation.cargo ||
@@ -4077,6 +4100,22 @@ export class Renderer3D {
         if (shard.visible) shard.scale.y = 0.28+load*0.72+0.04*Math.sin(phase);
       });
       lightLevel = 0.8 + 0.35 * Math.sin(phase);
+    } else if (o.defId === 'artillery' && a.pivot) {
+      // Only a rendered projectile from this source drives the recoil. The
+      // effect TTL provides its shot age if the renderer observes it late.
+      let shot = null;
+      for (let i = (game.effects?.length || 0) - 1; i >= 0; i--) {
+        const effect = game.effects[i];
+        if (effect.type === 'projectile' && effect.sourceId === o.id) { shot = effect; break; }
+      }
+      const ageAvailable=shot&&Number.isFinite(shot.maxTtl)&&Number.isFinite(shot.ttl);
+      if (shot && (shot.id !== a.lastArtilleryShotId || ageAvailable)) {
+        a.lastArtilleryShotId = shot.id;
+        const age = ageAvailable?Math.max(0,shot.maxTtl-shot.ttl):0;
+        a.lastShotTime = time - age;
+      }
+      const age = Math.max(0,time-a.lastShotTime);
+      a.pivot.position.z = -0.48 + a.recoilDistance * Math.exp(-age * 8);
     } else if ((o.defId === 'lightTank' || o.defId === 'stealthTank' || o.defId === 'guardian') && a.pivot) {
       const shot = game.effects?.find(fx => fx.type === 'projectile' && fx.sourceId === o.id &&
         Number.isFinite(fx.tx) && Number.isFinite(fx.ty));
