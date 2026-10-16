@@ -14,6 +14,7 @@ import { loadSoloReplayArchive, addSoloReplayToArchive, deleteSoloReplayFromArch
   loadPendingSoloSubmission, savePendingSoloSubmission, clearPendingSoloSubmission } from './game/replayArchive.js';
 import { listSaveSlots, getSaveSlot, writeSaveSlot, deleteSaveSlot } from './game/saveSlots.js';
 import { clearSoloRecovery, loadSoloRecovery, saveSoloRecovery } from './game/soloRecovery.js';
+import { vehicleServiceView, workshopServiceView } from './ui/workshopServiceView.js';
 import { relayIntel } from './game/relayIntel.js';
 import { chooseRelayLocator } from './game/relayLocator.js';
 import { SelectionRoster } from './game/selectionRoster.js';
@@ -109,6 +110,8 @@ let deploymentIntro = null;
 let armoryAutoPaused = false;
 let promotionAutoPaused = false;
 let powerGridAutoPaused = false;
+let workshopRosterAutoPaused = false;
+let workshopRosterId = null;
 const pendingPowerCommands = new Set();
 let pendingFieldAbility = null;
 let fieldAbilityContextToken = 0;
@@ -218,12 +221,13 @@ let rankedRatingLoaded = false;
 let rankedUnavailableReason = 'Ranked season support has not been confirmed.';
 let rankedDataRequestVersion = 0;
 let pendingJoinCode = new URLSearchParams(location.search).get('join');
-const trackedDialogIds = ['#multiplayer-modal', '#leaderboard-modal', '#setup', '#manual', '#armory', '#promotion-modal', '#power-grid-modal'];
+const trackedDialogIds = ['#multiplayer-modal', '#leaderboard-modal', '#setup', '#manual', '#armory', '#promotion-modal', '#power-grid-modal', '#workshop-roster-modal'];
 const modalBackgroundIds = new Set([...trackedDialogIds, '#campaign-select', '#save-slots-modal', '#pause-modal', '#end-modal']);
 const trackedDialogOpeners = {
   '#multiplayer-modal': '#multiplayer-menu', '#leaderboard-modal': '#leaderboard-menu',
   '#setup': '#configure-game', '#manual': '#how-to-menu', '#armory': '#armory-menu',
   '#promotion-modal': '#selection-card', '#power-grid-modal': '#power-grid-trigger',
+  '#workshop-roster-modal': '#menu-toggle',
 };
 const dialogReturnFocus = new Map();
 function handleNetworkMessage(message) {
@@ -701,6 +705,15 @@ function closeTrackedDialog(id, restoreFocus = true) {
       lastTime = performance.now();
       audio.startAmbient();
       refreshFrameRateReadout();
+    }
+  }
+  if (id === '#workshop-roster-modal') {
+    workshopRosterId = null;
+    if (workshopRosterAutoPaused) {
+      workshopRosterAutoPaused = false;
+      if (playing && !gameEnded) {
+        paused = false; lastTime = performance.now(); audio.startAmbient(); refreshFrameRateReadout();
+      }
     }
   }
   const previous = dialogReturnFocus.get(id);
@@ -1675,6 +1688,53 @@ function openPowerGrid() {
   openTrackedDialog('#power-grid-modal');
 }
 function closePowerGrid() { closeTrackedDialog('#power-grid-modal'); }
+function openWorkshopRoster(workshopId) {
+  if (!game || !workshopServiceView(game,workshopId)) return;
+  workshopRosterId=workshopId;
+  if(playing&&!gameEnded&&currentMode!=='multiplayer'&&!paused){
+    paused=true;workshopRosterAutoPaused=true;audio.stopAmbient();refreshFrameRateReadout();
+  }
+  openTrackedDialog('#workshop-roster-modal');
+  renderWorkshopRoster();
+}
+function renderWorkshopRoster() {
+  const modal=$('#workshop-roster-modal');
+  if(modal.classList.contains('hidden'))return;
+  const view=workshopServiceView(game,workshopRosterId);
+  $('#workshop-roster-state').textContent=!view?'WORKSHOP UNAVAILABLE':view.powered?'WORKSHOP ONLINE':'WORKSHOP OFFLINE';
+  $('#workshop-roster-assigned').textContent=String(view?.patients.length||0);
+  $('#workshop-roster-approaching').textContent=String(view?.approaching||0);
+  $('#workshop-roster-repairing').textContent=String(view?.repairing||0);
+  $('#workshop-roster-cost').textContent=view
+    ?`Current damage: about ${fmt(view.repairCost)} CR to repair · ${fmt(view.credits)} CR available. ${view.rate} HP/s per vehicle at ${view.costPerHp} CR/HP.`
+    :'The Workshop was lost or changed hands. Existing service orders will return to their previous assignments.';
+  const list=$('#workshop-roster-list'),patients=view?.patients||[];
+  const keep=new Set(patients.map(patient=>String(patient.id)));
+  for(const row of [...list.children])if(!keep.has(row.dataset.patient))row.remove();
+  for(const patient of patients){
+    let row=[...list.children].find(item=>item.dataset.patient===String(patient.id));
+    if(!row){
+      row=document.createElement('li');row.dataset.patient=String(patient.id);
+      const button=document.createElement('button');button.type='button';button.dataset.servicePatient=String(patient.id);
+      button.innerHTML='<span class="workshop-patient-icon"></span><span class="workshop-patient-copy"><strong></strong><small class="workshop-patient-status"></small><span class="workshop-patient-health" role="progressbar" aria-valuemin="0" aria-valuemax="100"><i></i></span><small class="workshop-patient-return"></small></span><span class="workshop-patient-locate" aria-hidden="true">⌖ LOCATE</span>';
+      button.querySelector('.workshop-patient-icon').innerHTML=assetHTML(patient.defId,patient.faction);
+      row.append(button);list.append(row);
+    }
+    const button=row.firstElementChild;
+    button.dataset.state=patient.status;
+    button.setAttribute('aria-label',`Select and locate ${patient.name}, ${patient.hpPercent}% integrity, ${patient.statusLabel}. Return: ${patient.returnLabel}.`);
+    button.querySelector('strong').textContent=`${patient.name} · ${patient.hpPercent}%`;
+    button.querySelector('.workshop-patient-status').textContent=`${patient.statusLabel} · sector ${patient.sector}`;
+    button.querySelector('.workshop-patient-return').textContent=`Return: ${patient.returnLabel} · about ${patient.repairCost} CR remaining`;
+    const health=button.querySelector('.workshop-patient-health');
+    health.setAttribute('aria-label',`${patient.name} integrity`);health.setAttribute('aria-valuenow',String(patient.hpPercent));
+    health.firstElementChild.style.width=`${patient.hpPercent}%`;
+  }
+  $('#workshop-roster-empty').classList.toggle('hidden',patients.length>0);
+  $('#workshop-roster-empty').textContent=view
+    ?'No vehicles assigned. Select damaged ground vehicles, choose SERVICE, then choose this Workshop. Nearby friendly vehicles also receive automatic repairs.'
+    :'No active service assignments remain at this Workshop.';
+}
 function powerGridBuildings() {
   if (!game) return [];
   return game.buildings.filter(building => building.owner === 'player' && building.hp > 0 &&
@@ -5123,12 +5183,13 @@ function updateSelectionCard() {
   const kitEngineers=selectedKitEngineers();
   const onlyKitEngineers=kitEngineers.length>0&&kitEngineers.length===selected.length;
   const missingKits=kitEngineers.some(unit=>(unit.fieldRepairKits||0)<2);
-  $('#cmd-service').lastChild.textContent=onlyKitEngineers?'REFILL':'SERVICE';
-  $('#cmd-service').disabled=onlyKitEngineers?!missingKits||!serviceBays.some(b=>b.powered):!serviceUnits.length||!serviceBays.length;
-  $('#cmd-service').title=onlyKitEngineers?!missingKits?'Both Engineer field repair kits are ready. Use Engineer task (R) on a damaged vehicle.':
+  const rosterWorkshop=selected.length===1&&serviceBays.find(bay=>bay.id===selected[0].id);
+  $('#cmd-service').lastChild.textContent=rosterWorkshop?'ROSTER':onlyKitEngineers?'REFILL':'SERVICE';
+  $('#cmd-service').disabled=rosterWorkshop?false:onlyKitEngineers?!missingKits||!serviceBays.some(b=>b.powered):!serviceUnits.length||!serviceBays.length;
+  $('#cmd-service').title=rosterWorkshop?'View vehicles assigned to this Workshop, their repair costs and return orders.':onlyKitEngineers?!missingKits?'Both Engineer field repair kits are ready. Use Engineer task (R) on a damaged vehicle.':
     !serviceBays.some(b=>b.powered)?'Build and power a Field Workshop to refill repair kits.':'Return Engineers to a powered Field Workshop. Each kit costs 80 credits and takes 8 seconds. Engineers remain at the Workshop after refill.':
     !serviceUnits.length?'Select a damaged ground vehicle':!serviceBays.length?'Build a Field Workshop first':'Send selected damaged vehicles to a Field Workshop and restore their previous orders';
-  $('#cmd-service').setAttribute('aria-label',onlyKitEngineers?'Refill Engineer repair kits at a powered Field Workshop, 80 credits and 8 seconds per kit':'Service damaged ground vehicles at a Field Workshop');
+  $('#cmd-service').setAttribute('aria-label',rosterWorkshop?'Open Workshop service roster':onlyKitEngineers?'Refill Engineer repair kits at a powered Field Workshop, 80 credits and 8 seconds per kit':'Service damaged ground vehicles at a Field Workshop');
   updateMobileSquads();
   if(!selected.length){
     $('#cmd-repair').disabled=true;$('#cmd-repair').lastChild.textContent='REPAIR';$('#cmd-repair').title='Repair selected structure (R)';$('#cmd-repair').setAttribute('aria-label','Repair selected structure (R)');
@@ -5174,8 +5235,8 @@ function updateSelectionCard() {
   const recommissionState=first.order?.type==='recommissionWreck'
     ?recommissionWaiting||(recommissionTarget&&Math.hypot(first.x-recommissionTarget.x,first.y-recommissionTarget.y)>0.85
       ?'APPROACHING WRECK':`RECOMMISSIONING · ${Math.min(12,Math.floor(first._wreckRecommissionProgress||0))}/12S`):null;
-  const serviceOrderState=first.order?.type==='service'?first._serviceWaiting==='power'?'SERVICE PAUSED · NO POWER':
-    first._serviceWaiting==='credits'?'SERVICE PAUSED · LOW CREDITS':`FIELD WORKSHOP SERVICE · ${unitOrder}`:null;
+  const serviceView=vehicleServiceView(game,first);
+  const serviceOrderState=serviceView?`${serviceView.statusLabel.toUpperCase()}${serviceView.status==='repairing'?` · ${serviceView.rate} HP/S`:''} · RETURN: ${serviceView.returnLabel.toUpperCase()}`:null;
   const fieldActive=fieldUnit&&(fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)>(game.time||0)
     ?`${fieldAbility==='brace'?'BRACED ARMOR':'GHOST RUN'} · ${Math.ceil((fieldAbility==='brace'?fieldUnit.braceUntil:fieldUnit.ghostRunUntil)-game.time)}S`:null;
   const fieldHint=fieldAbility==='ghostRun'&&!(fieldUnit.abilityCooldown>0)&&
@@ -5287,7 +5348,10 @@ function updateSelectionCard() {
   const ironReclaimedRestore=currentMode==='campaign'&&missionIndex===15;
   const recommissionControl=selectedEngineer?`<button class="selection-recommission${ironReclaimedRestore?' selection-recommission-iron-reclaimed':''}" type="button" data-recommission-wreck ${recommissionEnabled?'':'disabled'} aria-label="${archivedRecommission?'Recommissioning unavailable in this archived battle. Start a new battle to enable it.':ironReclaimedRestore?'Restore the marked Guardian wreck with this Engineer at the powered Field Workshop.':'Choose a compatible visible wreck to recommission. Requires a powered Field Workshop within 6 tiles and credits; takes 12 seconds.'}" title="${archivedRecommission?'Start a new battle to enable recommissioning.':!recommissionEnabled?'Recommissioning is unavailable in this battle.':ironReclaimedRestore?'Select the marked Guardian wreck · powered Field Workshop nearby · costs 520 credits · restored at 40% integrity · 12 seconds':'Select a compatible visible wreck · powered Field Workshop within 6 tiles · 40% unit cost · 12 seconds'}">${archivedRecommission?'NEW BATTLE REQUIRED':ironReclaimedRestore?'<span class="selection-recommission-desktop">RECOMMISSION WRECK</span><span class="selection-recommission-mobile">RESTORE</span>':'RECOMMISSION WRECK'}</button><small class="selection-recommission-help">${archivedRecommission?'Unavailable in this archived battle · start a new battle.':ironReclaimedRestore?'Marked Guardian · 520 credits · 40% integrity · 12s · powered Workshop.':'Restore a compatible visible vehicle at 40% health · 40% cost · 12s · powered Workshop within 6 tiles.'}</small>`:'';
   $('#selection-card').classList.toggle('has-bunker-roster',!!fieldBunker);
-  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${bunkerRoster}${powerControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
+  const workshopControl=rosterWorkshop?'<button class="selection-workshop-roster" type="button" data-workshop-roster>VIEW SERVICE ROSTER</button>':'';
+  const restoreRosterFocus=document.activeElement?.matches('[data-workshop-roster]');
+  $('#selection-content').innerHTML=`<div class="selection-detail"><div class="selection-icon">${assetHTML(first.defId,first.faction||(first.owner==='enemy'?game.enemyFaction:faction))}</div><div class="selection-info"><div class="selection-heading"><h3>${selected.length>1?(units.length?'COMBAT GROUP':'STRUCTURES'):def?.name||keyName(first.defId)}</h3>${rankBadge}</div><small>${subtitle}</small><div class="health-bar"><span style="width:${pct}%"></span></div><div class="selection-meta">${meta}</div>${bunkerRoster}${powerControl}${workshopControl}${recommissionControl}${elevationBadge}${ammoLine||rankLine}</div></div>`;
+  if(restoreRosterFocus)$('#selection-content [data-workshop-roster]')?.focus({preventScroll:true});
 }
 function placeSquadControlBar() {
   const bar=$('#mobile-squads');
@@ -5383,6 +5447,7 @@ function updateUI(force=false) {
   $('#power-meter span').style.width=`${Math.min(100,production/Math.max(1,consumption)*100)}%`;
   $('#power-meter span').style.background=production<consumption?'#fd7868':'#c9ff66';
   renderPowerGrid();
+  renderWorkshopRoster();
   $('#game-status').textContent=production<consumption?'LOW POWER':'ONLINE';
   $('#game-status').style.color=production<consumption?'#fd7868':'';
   $('#energy-value').textContent=`${Math.floor(game.commandEnergy?.player||0)} / 100`;
@@ -7688,6 +7753,20 @@ $('#how-to-menu').addEventListener('click',openManual);
 $('#armory-menu').addEventListener('click',openArmory);
 $('#power-grid-trigger').addEventListener('click',openPowerGrid);
 $('#power-grid-close').addEventListener('click',closePowerGrid);
+$('#workshop-roster-close').addEventListener('click',()=>closeTrackedDialog('#workshop-roster-modal'));
+$('#workshop-roster-modal').addEventListener('click',event=>{
+  if(event.target===$('#workshop-roster-modal'))closeTrackedDialog('#workshop-roster-modal');
+});
+$('#workshop-roster-modal').addEventListener('keydown',event=>{
+  if(event.key==='Tab')containModalTab(event,$('#workshop-roster-modal'));
+});
+$('#workshop-roster-list').addEventListener('click',event=>{
+  const button=event.target.closest('[data-service-patient]');if(!button)return;
+  const unit=game?.units.find(item=>String(item.id)===button.dataset.servicePatient&&item.owner==='player'&&item.hp>0&&!item.embarkedIn);
+  if(!unit){renderWorkshopRoster();return;}
+  cancelActiveTargeting();game.select([unit.id]);setMobileRadarOpen(false);centerCamera(unit.x,unit.y);
+  closeTrackedDialog('#workshop-roster-modal',false);updateUI(true);$('#battlefield').focus();
+});
 $('#power-grid-modal').addEventListener('click',event=>{if(event.target===$('#power-grid-modal'))closePowerGrid();});
 $('#power-grid-list').addEventListener('click',event=>{
   const locate=event.target.closest('[data-locate-power-building]');
@@ -7706,6 +7785,10 @@ $('#power-grid-list').addEventListener('click',event=>{
   setBuildingStandby(button.dataset.powerBuilding,standby);
 });
 $('#selection-card').addEventListener('click',event=>{
+  if(event.target.closest('[data-workshop-roster]')){
+    const selected=selectedObjects();if(selected.length===1)openWorkshopRoster(selected[0].id);
+    return;
+  }
   const rosterToggle=event.target.closest('#selection-roster-toggle');
   if(rosterToggle&&!rosterToggle.classList.contains('hidden')){
     const expanded=rosterToggle.getAttribute('aria-expanded')!=='true';
@@ -8115,6 +8198,8 @@ $('#cmd-guard').addEventListener('click',activateGuardCommand);
 $('#cmd-patrol').addEventListener('click',()=>startTargetOrder('patrol','PATROL'));
 $('#cmd-follow').addEventListener('click',startFollowOrder);
 $('#cmd-service').addEventListener('click',()=>{
+  const selected=selectedObjects();
+  if(selected.length===1&&workshopServiceView(game,selected[0].id)){openWorkshopRoster(selected[0].id);return;}
   const engineers=selectedKitEngineers();
   if(engineers.length&&engineers.length===selectedObjects().length){
     resultMessage(game.issueRefillRepairKits(),'RETURNING FOR PAID KIT REFILLS');updateUI(true);

@@ -4,6 +4,7 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import * as SkeletonUtils from 'three/addons/utils/SkeletonUtils.js';
 import { createGroundContactBatch } from './groundContact.js';
 import { createEnvironmentTarget, environmentIntensityForQuality } from './environmentLighting.js';
+import { buildStormLightningBuffers, stormFlashStrength } from './stormLightning.js';
 import { getCampaignFieldOrderView } from '../game/campaign.js';
 import {
   unitWeaponRange, UNIT_PROMOTION_RULES_VERSION,
@@ -1934,6 +1935,11 @@ export class Renderer3D {
   setGraphicsQuality(quality) {
     if (!Object.hasOwn(GRAPHICS_QUALITY, quality) || quality === this.quality) return false;
     this.quality = quality;
+    if(this.stormVisual) {
+      this.scene.remove(this.stormVisual);
+      this._disposeGroup(this.stormVisual);
+      this.stormVisual=null;
+    }
     if(this.mapStyle) this._setTheaterEnvironment(this.mapStyle,quality);
     this.groundQualityUniform.value = quality === 'eco' ? 0 : quality === 'balanced' ? 1 : 2;
     this.vegetationWindMotionUniform.value=quality==='eco'||(this.reducedMotionQuery?.matches??false)?0:1;
@@ -7417,39 +7423,57 @@ export class Renderer3D {
     // rings above it so players can read the incoming damage radius without
     // exposing concealed terrain, units, or buildings.
     boundary.renderOrder=11;
-    // A cool outer corona separates the storm's footprint from its cloud and
-    // terrain. Both rings are reused across phases and respect scene fog.
-    const frontMaterial=new THREE.MeshBasicMaterial({
-      color:0x8be7ff,transparent:true,opacity:0.28,depthWrite:false,side:THREE.DoubleSide,
-      blending:THREE.AdditiveBlending,
-    });
-    const front=addMesh(g,new THREE.TorusGeometry(1,0.016,5,90),frontMaterial,0,0.12,0,false);
-    front.rotation.x=-Math.PI/2;
-    front.renderOrder=11;
-    const innerMaterial=new THREE.MeshBasicMaterial({
-      color:0xc7a4ff,transparent:true,opacity:0.18,depthWrite:false,side:THREE.DoubleSide,
-    });
-    const innerFront=addMesh(g,new THREE.TorusGeometry(1,0.008,4,72),innerMaterial,0,0.10,0,false);
-    innerFront.rotation.x=-Math.PI/2;
-    innerFront.renderOrder=11;
-    const field=addMesh(g,new THREE.CircleGeometry(1,64),new THREE.MeshBasicMaterial({color:0xaa6fdf,transparent:true,opacity:0.07,depthWrite:false,side:THREE.DoubleSide,blending:THREE.AdditiveBlending}),0,0.035,0,false);
-    field.rotation.x=-Math.PI/2;
-    const cloud=addMesh(g,new THREE.SphereGeometry(1,12,7),new THREE.MeshBasicMaterial({color:0x51426c,transparent:true,opacity:0.17,depthWrite:false}),0,3.8,0,false);
+    let front=null,innerFront=null,field=null,cloud=null,lightning=null,light=null;
     const cloudPuffs=[];
-    const puffMaterial=new THREE.MeshBasicMaterial({color:0x5d506d,transparent:true,opacity:0.115,depthWrite:false,side:THREE.DoubleSide});
-    for(let i=0;i<6;i++) {
-      const puff=addMesh(g,new THREE.SphereGeometry(1,9,6),puffMaterial,0,0,0,false);
-      cloudPuffs.push(puff);
+    if(this.quality!=='eco') {
+      // Decorative surfaces stay under the shroud; only the footprint rings
+      // use render order 11 so hidden terrain remains concealed.
+      const frontMaterial=new THREE.MeshBasicMaterial({
+        color:0x8be7ff,transparent:true,opacity:0.28,depthWrite:false,side:THREE.DoubleSide,
+        blending:THREE.AdditiveBlending,
+      });
+      front=addMesh(g,new THREE.TorusGeometry(1,0.016,5,90),frontMaterial,0,0.12,0,false);
+      front.rotation.x=-Math.PI/2;
+      front.renderOrder=11;
+      const innerMaterial=new THREE.MeshBasicMaterial({
+        color:0xc7a4ff,transparent:true,opacity:0.18,depthWrite:false,side:THREE.DoubleSide,
+      });
+      innerFront=addMesh(g,new THREE.TorusGeometry(1,0.008,4,72),innerMaterial,0,0.10,0,false);
+      innerFront.rotation.x=-Math.PI/2;
+      innerFront.renderOrder=11;
+      field=addMesh(g,new THREE.CircleGeometry(1,64),new THREE.MeshBasicMaterial({
+        color:0xaa6fdf,transparent:true,opacity:0.07,depthWrite:false,side:THREE.DoubleSide,
+        blending:THREE.AdditiveBlending,
+      }),0,0.035,0,false);
+      field.rotation.x=-Math.PI/2;
+      cloud=addMesh(g,new THREE.SphereGeometry(1,12,7),new THREE.MeshBasicMaterial({
+        color:0x51426c,transparent:true,opacity:0.13,depthWrite:false,
+      }),0,3.8,0,false);
+      const puffMaterial=new THREE.MeshBasicMaterial({color:0x5d506d,transparent:true,opacity:0.075,depthWrite:false,side:THREE.DoubleSide});
+      for(let i=0;i<6;i++) {
+        const puff=addMesh(g,new THREE.SphereGeometry(1,9,6),puffMaterial,0,0,0,false);
+        cloudPuffs.push(puff);
+      }
+      const boltBuffers=buildStormLightningBuffers();
+      const boltGeometry=new THREE.BufferGeometry();
+      boltGeometry.setAttribute('position',new THREE.BufferAttribute(boltBuffers.positions,3));
+      boltGeometry.setIndex(new THREE.BufferAttribute(boltBuffers.indices,1));
+      boltGeometry.computeVertexNormals();
+      lightning=new THREE.Mesh(boltGeometry,new THREE.MeshBasicMaterial({
+        color:0xbfeaff,transparent:true,opacity:0,depthWrite:false,side:THREE.DoubleSide,
+        blending:THREE.AdditiveBlending,toneMapped:false,
+      }));
+      lightning.name='storm-jagged-lightning-batch';
+      lightning.renderOrder=0;
+      lightning.visible=false;
+      g.add(lightning);
+      light=new THREE.PointLight(0xb98cff,0,16);
+      light.position.y=2;
+      g.add(light);
     }
-    const arcs=[];
-    for(let i=0;i<11;i++) {
-      const arc=addMesh(g,new THREE.CylinderGeometry(0.035,0.08,1,4),new THREE.MeshBasicMaterial({color:0xd8baff,transparent:true,opacity:0.7,depthWrite:false,toneMapped:false}),0,0,0,false);
-      arcs.push(arc);
-    }
-    const light=new THREE.PointLight(0xb98cff,2.5,16);light.position.y=2;g.add(light);
-    for(const part of [boundary,front,innerFront,field])
+    for(const part of [boundary,front,innerFront,field].filter(Boolean))
       followVisualSurface(part.material,this.visualHeightUniforms,{relative:true});
-    g.userData={boundary,front,innerFront,field,cloud,cloudPuffs,arcs,light};
+    g.userData={boundary,front,innerFront,field,cloud,cloudPuffs,lightning,light};
     this.scene.add(g);this.stormVisual=g;
   }
 
@@ -7458,10 +7482,8 @@ export class Renderer3D {
     const baseMood=storm?.phase==='surge'?0.24:storm?.phase==='warning'?0.11:storm?.phase==='recovery'?0.08:0;
     // A brief double flash sells the ion discharge across the battlefield. It
     // reuses scene lighting and stays out of the sand shader's fragment path.
-    const beat=((time+(storm?.cycle||0)*2.7)%7.6+7.6)%7.6;
-    const flashEnvelope=(center,width)=>{const x=clamp(1-Math.abs(beat-center)/width,0,1);return x*x*(3-2*x);};
-    const qualityScale=this.quality==='ultra'?1:this.quality==='balanced'?0.65:0;
-    const stormFlash=storm?.phase==='surge'?qualityScale*Math.max(flashEnvelope(0.18,0.12),flashEnvelope(0.43,0.17)*0.62):0;
+    const reducedMotion=this.reducedMotionQuery?.matches??false;
+    const stormFlash=stormFlashStrength(storm?.phase,storm?.phaseTime,this.quality,reducedMotion);
     const mood=baseMood+stormFlash*0.14;
     this.scene.environmentIntensity=this.environmentBaseIntensity*Math.max(0,1-mood*0.38-stormFlash*0.10);
     this.scene.background.copy(this.clearSky).lerp(this.stormSky,mood);
@@ -7477,47 +7499,48 @@ export class Renderer3D {
     this.sun.intensity=this.sunBaseIntensity*(1-mood*0.18+stormFlash*0.52);
     this.scene.fog.density=this.baseFogDensity*(1+mood*0.32);
     this.atmosphere.material.color.setHex(this.mapStyle.mist).lerp(this.stormSky,mood*0.48);
+    if(!storm||storm.phase==='calm') {if(this.stormVisual)this.stormVisual.visible=false;return;}
     if(!this.stormVisual) this._makeStormVisual();
     const g=this.stormVisual;
-    if(!storm||storm.phase==='calm') {g.visible=false;return;}
     g.visible=true;
     this._setGroundPosition(g,storm.x,0,storm.y);
     const surge=storm.phase==='surge', warning=storm.phase==='warning';
     const radius=storm.radius||5.5;
-    const {boundary,front,innerFront,field,cloud,cloudPuffs,arcs,light}=g.userData;
+    const {boundary,front,innerFront,field,cloud,cloudPuffs,lightning,light}=g.userData;
     boundary.scale.setScalar(radius);
-    const reducedMotion=this.reducedMotionQuery?.matches??false;
-    const frontPulse=reducedMotion?1:1+0.012*Math.sin(time*1.35);
-    front.scale.setScalar(radius*1.09*frontPulse);
-    innerFront.scale.setScalar(radius*0.91);
-    front.visible=innerFront.visible=this.quality!=='eco';
-    front.material.opacity=surge?0.36:warning?0.23:0.13;
-    innerFront.material.opacity=surge?0.20:warning?0.11:0.07;
-    field.scale.setScalar(radius);
-    cloud.scale.set(radius*0.72,0.42,radius*0.72);
+    const simTime=Number.isFinite(game.time)?game.time:time*0.001;
+    const motionTime=reducedMotion?0:simTime;
+    const frontPulse=reducedMotion?1:1+0.012*Math.sin(motionTime*1.35);
+    if(front) {
+      front.scale.setScalar(radius*1.09*frontPulse);
+      innerFront.scale.setScalar(radius*0.91);
+      front.material.opacity=surge?0.36:warning?0.23:0.13;
+      innerFront.material.opacity=surge?0.20:warning?0.11:0.07;
+      field.scale.setScalar(radius);
+    }
+    if(cloud) cloud.scale.set(radius*0.72,0.42,radius*0.72);
     boundary.material.color.setHex(surge?0xd191ff:warning?0xf8c577:0xbac9cd);
-    field.material.color.copy(boundary.material.color);
+    if(field) field.material.color.copy(boundary.material.color);
     boundary.material.opacity=surge?0.65:0.38;
-    field.material.opacity=surge?0.048:0.026;
-    cloud.material.opacity=surge?0.18:0.09;
+    if(field) field.material.opacity=surge?0.048:0.026;
+    if(cloud) cloud.material.opacity=surge?0.14:0.085;
     for(let i=0;i<cloudPuffs.length;i++) {
-      const puff=cloudPuffs[i], angle=i*Math.PI*2/cloudPuffs.length+time*0.018;
+      const puff=cloudPuffs[i], angle=i*Math.PI*2/cloudPuffs.length+motionTime*0.018;
       const orbit=radius*(0.24+(i%3)*0.12);
       puff.position.set(Math.cos(angle)*orbit,1.62+(i%2)*0.32,Math.sin(angle)*orbit);
       puff.scale.set(radius*(0.22+(i%2)*0.055),0.22+(i%3)*0.06,radius*(0.20+(i%2)*0.045));
       puff.material.color.copy(boundary.material.color).multiplyScalar(0.52);
-      puff.material.opacity=surge?0.10:0.055;
+      puff.material.opacity=surge?0.08:0.045;
     }
-    light.color.copy(boundary.material.color);light.intensity=surge?1.9+stormFlash*1.5:0.7;
-    cloud.rotation.y=time*0.07;
-    for(let i=0;i<arcs.length;i++) {
-      const a=arcs[i];
-      const angle=i*2.399+time*0.13;
-      const r=radius*(0.18+hash(i,storm.cycle||0,51)*0.73);
-      a.position.set(Math.cos(angle)*r,0.56+0.16*Math.sin(time*5+i),Math.sin(angle)*r);
-      a.rotation.z=Math.sin(time*4+i*2.2)*0.35;
-      a.scale.y=0.8+hash(i,storm.cycle||0,53)*1.5;
-      a.material.opacity=surge&&Math.sin(time*9+i*3)>0.22?0.92:warning?0.22:0.04;
+    if(cloud) cloud.rotation.y=motionTime*0.07;
+    if(lightning) {
+      lightning.scale.setScalar(radius/5.5);
+      lightning.material.opacity=stormFlash>0.035?0.88*stormFlash:0;
+      lightning.visible=stormFlash>0.035;
+    }
+    if(light) {
+      light.color.copy(boundary.material.color);
+      light.intensity=reducedMotion?0:surge?0.45+stormFlash*0.95:warning?0.16:0;
     }
   }
 

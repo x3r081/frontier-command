@@ -97,6 +97,9 @@ export const AI_FIELD_SUPPORT_RULES_VERSION = 88;
 export const COMBAT_ESCORT_RULES_VERSION = 89;
 export const AI_FIELD_SUPPORT_RESERVE = 1250;
 export const ENGINEER_FIELD_REPAIR_KITS = 2;
+export const WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION = 91;
+export const WORKSHOP_SERVICE_REPAIR_RATE_HP_PER_SECOND = 11;
+export const WORKSHOP_SERVICE_REPAIR_CREDIT_COST_PER_HP = 0.5;
 export const ENGINEER_FIELD_REPAIR_AMOUNT = 120;
 export const ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS = 5;
 export const ENGINEER_FIELD_REPAIR_REFILL_SECONDS = 8;
@@ -431,6 +434,7 @@ export class Game {
     this.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     this.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     this.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    this.workshopServiceReliabilityRulesVersion = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
     this.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     this.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     this.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
@@ -4583,6 +4587,10 @@ export class Game {
     return { ok: true };
   }
 
+  _workshopServiceReliabilityEnabled() {
+    return this.replayVersion == null || this.replayVersion >= WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+  }
+
   issueServiceAtWorkshop(workshopId) {
     const owner = this.commandOwner || 'player';
     if (this.replayVersion != null && this.replayVersion < 21)
@@ -4597,14 +4605,36 @@ export class Game {
         ['light', 'heavy'].includes(def.armor);
     });
     if (!eligible.length) return { ok: false, reason: 'Select a damaged ground vehicle.' };
+    const reliableService = this._workshopServiceReliabilityEnabled();
     const serviceOrders = [];
-    for (const unit of eligible) {
-      const point = this._aiWorkshopApproach(unit, workshop);
+    const orderedUnits = reliableService ? [...eligible].sort((a, b) => a.id.localeCompare(b.id)) : eligible;
+    for (const unit of orderedUnits) {
+      const reservedPoints = reliableService ? this.units.filter(other => other !== unit &&
+        other.owner === unit.owner && other.order?.type === 'service' && other.order.workshopId === workshopId &&
+        Number.isFinite(other.order.x) && Number.isFinite(other.order.y))
+        .map(other => ({ x: other.order.x, y: other.order.y })) : [];
+      const existingPoint = reliableService && unit.order?.type === 'service' && unit.order.workshopId === workshopId &&
+        Number.isFinite(unit.order.x) && Number.isFinite(unit.order.y)
+        ? { x: unit.order.x, y: unit.order.y } : null;
+      const existingPointValid = existingPoint && this._isPassable(Math.floor(existingPoint.x), Math.floor(existingPoint.y)) &&
+        this._distanceToEntity(existingPoint.x, existingPoint.y, workshop) <= 2.1 &&
+        !reservedPoints.some(reserved => dist(existingPoint.x, existingPoint.y, reserved.x, reserved.y) < 0.75) &&
+        this._findPath(unit.x, unit.y, existingPoint.x, existingPoint.y).length > 0;
+      const point = existingPointValid ? existingPoint :
+        this._aiWorkshopApproach(unit, workshop, reliableService ? { reservedPoints } : undefined);
       if (!point) continue;
-      unit.order = { type: 'service', workshopId, resumeOrder: structuredClone(unit.order || { type: 'idle' }),
+      const previousOrder = reliableService && unit.order?.type === 'service'
+        ? unit.order.resumeOrder : unit.order;
+      unit.order = { type: 'service', workshopId, resumeOrder: structuredClone(previousOrder || { type: 'idle' }),
         x: point.x, y: point.y };
       unit.path = []; unit._pathGoal = null;
       unit._serviceWaiting = null;
+      if (reliableService) {
+        unit._serviceStallSeconds = 0;
+        unit._serviceLastX = unit.x;
+        unit._serviceLastY = unit.y;
+        unit._serviceAvoidPoints = [];
+      }
       serviceOrders.push(unit);
     }
     if (!serviceOrders.length)
@@ -4619,6 +4649,10 @@ export class Game {
     unit.order = previous && typeof previous === 'object' ? structuredClone(previous) : { type: 'idle' };
     unit.path = []; unit._pathGoal = null; unit._pathEnd = null;
     unit._serviceWaiting = null;
+    unit._serviceStallSeconds = 0;
+    delete unit._serviceLastX;
+    delete unit._serviceLastY;
+    delete unit._serviceAvoidPoints;
     if (message) this._event('serviceOrderEnded', { unitId: unit.id, message });
   }
 
@@ -4633,7 +4667,7 @@ export class Game {
       this._finishServiceOrder(unit, 'Vehicle fully repaired; previous order restored.');
       return;
     }
-    const point = Number.isFinite(order.x) && Number.isFinite(order.y)
+    let point = Number.isFinite(order.x) && Number.isFinite(order.y)
       ? { x: order.x, y: order.y } : this._aiWorkshopApproach(unit, workshop);
     if (!point) {
       this._finishServiceOrder(unit, 'No reachable service approach; previous order restored.');
@@ -4641,6 +4675,43 @@ export class Game {
     }
     order.x = point.x; order.y = point.y;
     if (this._distanceToEntity(unit.x, unit.y, workshop) > 2.5) {
+      if (this._workshopServiceReliabilityEnabled()) {
+        const last = Number.isFinite(unit._serviceLastX) && Number.isFinite(unit._serviceLastY)
+          ? { x: unit._serviceLastX, y: unit._serviceLastY } : { x: unit.x, y: unit.y };
+        const moved = dist(unit.x, unit.y, last.x, last.y) >= 0.08;
+        unit._serviceStallSeconds = moved ? 0 : (unit._serviceStallSeconds || 0) + dt;
+        if (moved) {
+          unit._serviceLastX = unit.x;
+          unit._serviceLastY = unit.y;
+        } else if (!Number.isFinite(unit._serviceLastX) || !Number.isFinite(unit._serviceLastY)) {
+          unit._serviceLastX = unit.x;
+          unit._serviceLastY = unit.y;
+        }
+        if (unit._serviceStallSeconds >= 2) {
+          const avoided = Array.isArray(unit._serviceAvoidPoints) ? unit._serviceAvoidPoints.slice(-3) : [];
+          if (!avoided.some(candidate => Math.hypot(candidate.x - order.x, candidate.y - order.y) < 0.1))
+            avoided.push({ x: order.x, y: order.y });
+          if (avoided.length >= 4) {
+            this._finishServiceOrder(unit, 'Workshop route stayed blocked; previous order restored.');
+            return;
+          }
+          const reservedPoints = this.units.filter(other => other !== unit && other.owner === unit.owner &&
+            other.order?.type === 'service' && other.order.workshopId === workshop.id &&
+            Number.isFinite(other.order.x) && Number.isFinite(other.order.y))
+            .map(other => ({ x: other.order.x, y: other.order.y }));
+          const next = this._aiWorkshopApproach(unit, workshop, { reservedPoints, excludedPoints: avoided });
+          if (!next) {
+            this._finishServiceOrder(unit, 'No alternate Workshop route; previous order restored.');
+            return;
+          }
+          unit._serviceAvoidPoints = avoided;
+          order.x = next.x; order.y = next.y;
+          point = { x: next.x, y: next.y };
+          unit.path = []; unit._pathGoal = null; unit._pathEnd = null;
+          unit._serviceStallSeconds = 0;
+          unit._serviceLastX = unit.x; unit._serviceLastY = unit.y;
+        }
+      }
       this._moveUnit(unit, point.x, point.y, dt, 0.2);
       return;
     }
@@ -5668,10 +5739,11 @@ export class Game {
             !['light', 'heavy'].includes(unitDef.armor) || servicedVehicles.has(u.id) ||
             u.hp >= u.maxHp || this._distanceToEntity(u.x, u.y, b) > 2.5 ||
             this._repairCreditsAvailable(b.owner) <= 0) continue;
-          const repair = Math.min(u.maxHp - u.hp, dt * 11, this._repairCreditsAvailable(b.owner) * 2);
+          const repair = Math.min(u.maxHp - u.hp, dt * WORKSHOP_SERVICE_REPAIR_RATE_HP_PER_SECOND,
+            this._repairCreditsAvailable(b.owner) / WORKSHOP_SERVICE_REPAIR_CREDIT_COST_PER_HP);
           if (repair <= 0) continue;
           u.hp += repair;
-          this.credits[b.owner] -= repair * 0.5;
+          this.credits[b.owner] -= repair * WORKSHOP_SERVICE_REPAIR_CREDIT_COST_PER_HP;
           servicedVehicles.add(u.id);
         }
       }
@@ -8553,13 +8625,18 @@ export class Game {
     return r > 0.82 && count('radar') ? 'artillery' : r < 0.5 ? 'buggy' : 'lightTank';
   }
 
-  _aiWorkshopApproach(unit, bay) {
+  _aiWorkshopApproach(unit, bay, options = null) {
+    const reservedPoints = options?.reservedPoints || [];
+    const excludedPoints = options?.excludedPoints || [];
     const candidates = [];
     for (let y = bay.y - 3; y <= bay.y + bay.h + 2; y++) {
       for (let x = bay.x - 3; x <= bay.x + bay.w + 2; x++) {
         // Leave enough margin for _moveUnit's arrival tolerance so the vehicle
         // still ends inside the workshop's 2.5-tile repair radius.
-        if (!this._isPassable(x, y) || this._distanceToEntity(x + 0.5, y + 0.5, bay) > 2.1) continue;
+        const point = { x: x + 0.5, y: y + 0.5 };
+        if (!this._isPassable(x, y) || this._distanceToEntity(point.x, point.y, bay) > 2.1 ||
+            reservedPoints.some(reserved => dist(point.x, point.y, reserved.x, reserved.y) < 0.75) ||
+            excludedPoints.some(excluded => dist(point.x, point.y, excluded.x, excluded.y) < 0.1)) continue;
         candidates.push({ x: x + 0.5, y: y + 0.5, tileY: y, tileX: x,
           directDistance: dist(unit.x, unit.y, x + 0.5, y + 0.5) });
       }
@@ -9459,6 +9536,10 @@ export class Game {
     // markerless saves on their recorded routing behavior after prior guards.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion !== HARVESTER_HOME_RULES_VERSION)
       game.replayVersion = HARVESTER_HOME_RULES_VERSION - 1;
+    // Markerless pre-v91 saves keep their recorded Workshop approach behavior.
+    if (game.replayVersion == null &&
+        data.workshopServiceReliabilityRulesVersion !== WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION)
+      game.replayVersion = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION - 1;
     game.harvesterHomeRulesVersion = HARVESTER_HOME_RULES_VERSION;
     game.productionRepeatRulesVersion = PRODUCTION_REPEAT_RULES_VERSION;
     game.garrisonRulesVersion = GARRISON_RULES_VERSION;
@@ -9510,6 +9591,7 @@ export class Game {
     game.relayDominionExpansionPauseRulesVersion = RELAY_DOMINION_EXPANSION_PAUSE_RULES_VERSION;
     game.aiCounterPlanRulesVersion = AI_COUNTER_PLAN_RULES_VERSION;
     game.aiCommandRecoveryRulesVersion = AI_COMMAND_RECOVERY_RULES_VERSION;
+    game.workshopServiceReliabilityRulesVersion = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
     game.aiInfrastructureDefenseRulesVersion = AI_INFRASTRUCTURE_DEFENSE_RULES_VERSION;
     game.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     game.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;

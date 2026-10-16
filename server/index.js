@@ -8,7 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   INFANTRY_DIG_IN_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
-  COMBAT_ESCORT_RULES_VERSION,
+  WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
@@ -34,7 +34,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = COMBAT_ESCORT_RULES_VERSION;
+const RANKED_SEASON = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -94,10 +94,12 @@ const RANKED_SEASON = COMBAT_ESCORT_RULES_VERSION;
 // Rocket priorities; v87 adds Engineer escort repairs in all modes. Version 88
 // adds paid AI Engineer support in normal/hard skirmish only. Version 89 adds
 // bounded combat escort protection in all modes; all solo boards and ranked
-// multiplayer advance, while archived runs remain in history.
-const CAMPAIGN_SCORE_FLOOR = COMBAT_ESCORT_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = COMBAT_ESCORT_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = COMBAT_ESCORT_RULES_VERSION;
+// multiplayer advance, while archived runs remain in history. Version 91
+// improves Workshop service routing in all modes and advances every solo
+// comparison floor and ranked season without deleting archived runs.
+const CAMPAIGN_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&

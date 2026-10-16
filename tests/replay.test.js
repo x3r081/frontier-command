@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { Game, SKIRMISH_MAPS } from '../src/game/engine.js';
+import { Game, SKIRMISH_MAPS, WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_FIELD_ORDERS, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
 import { SoloClock, SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
 import { createSoloRecorder, createSoloPlayback, replaySoloRun, validateSoloEnvelope, validateSoloReplay,
@@ -109,36 +109,54 @@ test('Guardian Brace records and replays its campaign activation at the same sim
   assert.equal(playback.game.time, source.time);
 });
 
-test('solo recorder replays a deterministic workshop service order', () => {
-  const game = new Game({ mode: 'skirmish', difficulty: 'normal', faction: 'aegis',
-    seed: skirmish.seed, mapId: skirmish.scenarioId });
-  const bay = game._createBuilding('player', 'serviceBay', 20, 20, 1);
-  game._refreshPower();
-  const tank = game.units.find(unit => unit.owner === 'player' && unit.defId === 'lightTank');
-  tank.x = 21; tank.y = 21; tank.hp -= 50; tank.order = { type: 'guard', x: 12.5, y: 12.5 };
-  const baseline = game.serialize();
-  const clock = new SoloClock();
-  const recorder = createSoloRecorder(game, clock);
-  game.select(tank.id);
-  assert.equal(game.issueServiceAtWorkshop(bay.id).ok, true);
-  step(game, clock, 20);
-  recorder.dispose();
-  assert.deepEqual(recorder.commands.map(command => [command.method, command.args]),
-    [['issueServiceAtWorkshop', [bay.id]]]);
+test('Workshop service replay preserves archived v90 and current v91 routing', () => {
+  for (const replayVersion of [WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION - 1,
+    WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION]) {
+    const game = new Game({ mode: 'skirmish', difficulty: 'normal', faction: 'aegis',
+      seed: skirmish.seed, mapId: skirmish.scenarioId, replayVersion });
+    const bay = game._createBuilding('player', 'serviceBay', 20, 20, 1);
+    game._refreshPower();
+    const tank = game._createUnit('player', 'lightTank', 29.5, 25.5);
+    const buggy = game._createUnit('player', 'buggy', 29.5, 25.5);
+    tank.hp -= 50; buggy.hp -= 30;
+    tank.order = { type: 'guard', x: 12.5, y: 12.5 };
+    const baseline = game.serialize();
+    const clock = new SoloClock();
+    const recorder = createSoloRecorder(game, clock);
+    game.select([tank.id, buggy.id]);
+    assert.equal(game.issueServiceAtWorkshop(bay.id).ok, true);
+    if (replayVersion < WORKSHOP_SERVICE_RELIABILITY_RULES_VERSION)
+      assert.deepEqual([tank.order.x, tank.order.y], [buggy.order.x, buggy.order.y],
+        'archived routing preserves the shared approach point');
+    else assert.notDeepEqual([tank.order.x, tank.order.y], [buggy.order.x, buggy.order.y],
+      'current routing reserves distinct approaches for simultaneous service orders');
+    step(game, clock, 20);
+    recorder.dispose();
+    assert.deepEqual(recorder.commands.map(command => [command.method, command.args]),
+      [['issueServiceAtWorkshop', [bay.id]]]);
 
-  const playback = Game.deserialize(baseline);
-  playback.replayVersion = SOLO_REPLAY_VERSION;
-  let cursor = 0;
-  for (let tick = 0; tick < clock.completedTicks; tick++) {
-    while (cursor < recorder.commands.length && recorder.commands[cursor].tick === tick) {
-      const command = recorder.commands[cursor++];
-      playback.select(command.selectedIds);
-      assert.equal(playback[command.method](...command.args).ok, true);
+    const playback = Game.deserialize(baseline);
+    playback.replayVersion = replayVersion;
+    let cursor = 0;
+    for (let tick = 0; tick < clock.completedTicks; tick++) {
+      while (cursor < recorder.commands.length && recorder.commands[cursor].tick === tick) {
+        const command = recorder.commands[cursor++];
+        playback.select(command.selectedIds);
+        assert.equal(playback[command.method](...command.args).ok, true);
+      }
+      playback.update(SOLO_STEP_SECONDS);
     }
-    playback.update(SOLO_STEP_SECONDS);
+    assert.equal(playback.replayVersion, replayVersion);
+    const serviceState = instance => [tank.id, buggy.id].map(id => {
+      const unit = instance.getEntity(id);
+      return { id: unit.id, x: unit.x, y: unit.y, hp: unit.hp, order: unit.order, path: unit.path,
+        pathGoal: unit._pathGoal, serviceWaiting: unit._serviceWaiting,
+        serviceStallSeconds: unit._serviceStallSeconds, serviceLastX: unit._serviceLastX,
+        serviceLastY: unit._serviceLastY, serviceAvoidPoints: unit._serviceAvoidPoints };
+    });
+    assert.deepEqual(serviceState(playback), serviceState(game));
+    assert.deepEqual(playback.credits, game.credits);
   }
-  assert.deepEqual(JSON.parse(playback.serialize()).units, JSON.parse(game.serialize()).units);
-  assert.deepEqual(playback.credits, game.credits);
 });
 
 test('wreck recovery is a version 10 solo command and older playback rejects it', () => {
