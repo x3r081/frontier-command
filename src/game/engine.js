@@ -15,6 +15,10 @@ const AI_INFRASTRUCTURE_DEFENSE_ASSETS = new Set([
   'power', 'advancedPower', 'barracks', 'serviceBay', 'radar', 'helipad', 'tech', 'superweapon', 'warhead',
 ]);
 const MAX_LAST_SEEN_HOSTILE_UNITS = 96;
+const AI_ENGINEER_RAID_MAX_PATH = 24;
+const AI_ENGINEER_RAID_TIMEOUT = 48;
+const AI_ENGINEER_RAID_COOLDOWN = 120;
+const AI_ENGINEER_RAID_ECONOMY_BUFFER = 600;
 const relayDominionDuration = (mode, difficulty) =>
   mode === 'skirmish' && difficulty === 'easy' ? CADET_RELAY_DOMINION_SECONDS : RELAY_DOMINION_SECONDS;
 const skirmishObjective = (victoryMode, holdSeconds) => victoryMode === 'elimination'
@@ -59,6 +63,7 @@ export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const PRODUCTION_SITE_RULES_VERSION = 67;
 export const REINFORCEMENT_ASSEMBLY_RULES_VERSION = 68;
 export const AI_ECONOMY_RESERVE_RULES_VERSION = 69;
+export const AI_ENGINEER_RAID_RULES_VERSION = 70;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
@@ -363,6 +368,7 @@ export class Game {
     this.relayDominionReconRulesVersion = RELAY_DOMINION_RECON_RULES_VERSION;
     this.economyRecoveryRulesVersion = ECONOMY_RECOVERY_RULES_VERSION;
     this.aiEconomyReserveRulesVersion = AI_ECONOMY_RESERVE_RULES_VERSION;
+    this.aiEngineerRaidRulesVersion = AI_ENGINEER_RAID_RULES_VERSION;
     this.relayResponsePersistenceRulesVersion = RELAY_RESPONSE_PERSISTENCE_RULES_VERSION;
     this.doctrineReplacementRulesVersion = DOCTRINE_REPLACEMENT_RULES_VERSION;
     this.relayDominionTargetCommitmentRulesVersion = RELAY_DOMINION_TARGET_COMMITMENT_RULES_VERSION;
@@ -375,6 +381,7 @@ export class Game {
     this.reinforcementAssemblyRulesVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
     this.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     this._aiCommandRecovery = null;
+    this._aiEngineerRaidState = { active: null, cooldownUntil: 0 };
     this.salvageDrop = null;
     this.skirmishOpening = mode === 'skirmish' && skirmishOpening === 'command-rig' ? 'command-rig' : 'established';
     this._aiCommandRigOpeningComplete = this.skirmishOpening !== 'command-rig';
@@ -2656,6 +2663,7 @@ export class Game {
     radius = this._stormSight(observer.x, observer.y, radius);
     let best = null, score = Infinity;
     for (const e of [...this.units, ...this.buildings]) {
+      if (observer.owner === 'enemy' && this._aiEngineerRaidTargetReserved(e)) continue;
       if (e.owner === observer.owner || e.hp <= 0 || e.embarkedIn || e.progress < 1 || !this._canDetect(observer, e)) continue;
       const air = !!UNIT_DEFS[e.defId]?.flying;
       if (targetMode === 'air' && !air || targetMode === 'ground' && air) continue;
@@ -2666,6 +2674,15 @@ export class Game {
       if (s < score) { best = e; score = s; }
     }
     return best;
+  }
+
+  _aiEngineerRaidTargetReserved(entity) {
+    return this._aiEngineerRaidEnabled() && !!entity && entity.id === this._aiEngineerRaidState?.active?.targetId;
+  }
+
+  _aiEngineerRaidEnabled() {
+    return this.mode === 'skirmish' && ['normal', 'hard'].includes(this.difficulty) &&
+      (this.replayVersion == null || this.replayVersion >= AI_ENGINEER_RAID_RULES_VERSION);
   }
 
   _fire(source, target, weaponDef) {
@@ -3247,6 +3264,29 @@ export class Game {
 
   _updateEngineer(u, target, dt) {
     if (u.defId !== 'engineer' || !target || !('w' in target)) return false;
+    if (u.order?.aiEngineerRaid) {
+      const active = this._aiEngineerRaidState?.active;
+      if (active?.raidId !== u.order.aiEngineerRaid || active.engineerId !== u.id ||
+          !this._aiEngineerRaidTargetValid(target)) {
+        if (active?.raidId === u.order.aiEngineerRaid) this._aiFinishEngineerRaid(true);
+        else { u.order = { type: 'idle' }; u.path = []; u._pathGoal = null; }
+        return true;
+      }
+      this._aiEngineerRaidEmitSpotted(active, u, target);
+      const approachX = u.order.approachX;
+      const approachY = u.order.approachY;
+      const approachValid = Number.isFinite(approachX) && Number.isFinite(approachY) &&
+        this._isPassable(Math.floor(approachX), Math.floor(approachY)) &&
+        this._distanceToEntity(approachX, approachY, target) <= 0.7;
+      if (!approachValid) {
+        this._aiFinishEngineerRaid(true);
+        return true;
+      }
+      if (this._distanceToEntity(u.x, u.y, target) > 0.7) {
+        this._moveUnit(u, approachX, approachY, dt, 0.12);
+        return true;
+      }
+    }
     if (this.bridges.includes(target) && target.destroyed) {
       if (this._distanceToEntity(u.x, u.y, target) <= 0.9) {
         target.hp = Math.min(target.maxHp, target.hp + dt * 50);
@@ -3627,6 +3667,10 @@ export class Game {
       if (!target || target.hp <= 0 || target.owner === u.owner || !this._weaponCanTarget(d.weapon, target)) {
         if (this._advanceQueuedOrder(u, order)) return;
         u.order = { type: 'idle' }; target = null;
+      } else if (u.owner === 'enemy' && this._aiEngineerRaidTargetReserved(target)) {
+        // Keep existing focus orders intact while the capture team approaches.
+        // Generic target acquisition and enemy defenses also skip this target.
+        target = null;
       } else if (u.owner === 'enemy' && order.aiIntel) {
         if (this.isVisible(target, 'enemy')) {
           const center = this._entityCenter(target);
@@ -3971,8 +4015,21 @@ export class Game {
       if (!spawn) continue;
       b.queue.shift();
       const u = this._createUnit(b.owner, q.defId, spawn.x, spawn.y);
+      if (u.owner === 'enemy' && u.defId === 'engineer' && q.aiEngineerRaid &&
+          q.aiEngineerRaid.raidId === this._aiEngineerRaidState?.active?.raidId &&
+          q.aiEngineerRaid.targetId === this._aiEngineerRaidState.active.targetId) {
+        u._aiEngineerRaid = { raidId: q.aiEngineerRaid.raidId,
+          targetId: q.aiEngineerRaid.targetId, startedAt: q.aiEngineerRaid.startedAt,
+          deadline: q.aiEngineerRaid.deadline, approachX: q.aiEngineerRaid.approachX,
+          approachY: q.aiEngineerRaid.approachY };
+        this._aiEngineerRaidState.active.engineerId = u.id;
+        this._aiEngineerRaidState.active.queuedBuildingId = null;
+        u.order = { type: 'engineer', targetId: q.aiEngineerRaid.targetId,
+          aiEngineerRaid: q.aiEngineerRaid.raidId, approachX: q.aiEngineerRaid.approachX,
+          approachY: q.aiEngineerRaid.approachY };
+      }
       if (u.defId === 'harvester') u.order = { type: 'harvest' };
-      else if (b.rally && dist(u.x, u.y, b.rally.x, b.rally.y) > 1) {
+      else if (!u._aiEngineerRaid && b.rally && dist(u.x, u.y, b.rally.x, b.rally.y) > 1) {
         const assembly = this.replayVersion == null ||
           this.replayVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION
           ? this._productionAssemblyPoint(b, u) : b.rally;
@@ -5919,7 +5976,7 @@ export class Game {
       ((!unit.order || ['idle', 'move'].includes(unit.order.type)) ||
         unit.order?.type === 'engineer' && unit.order.targetId === repairTarget.id));
     const queuedEngineer = this.buildings.some(building => building.owner === 'enemy' && building.hp > 0 &&
-      building.queue?.some(item => item.defId === 'engineer'));
+      building.queue?.some(item => item.defId === 'engineer' && !item.aiEngineerRaid));
     if (!engineers.length && !queuedEngineer && this.credits.enemy >= UNIT_DEFS.engineer.cost + 450)
       this._queueUnit('enemy', 'engineer');
     engineers = engineers.filter(unit => !unit.order?.aiBridgeRepair ||
@@ -6154,6 +6211,7 @@ export class Game {
     if (!protectOutpostCash && harvesters + queuedHarvesters < harvesterLimit &&
       this.credits.enemy >= UNIT_DEFS.harvester.cost)
       this._queueUnit('enemy', 'harvester');
+    this._aiEngineerCaptureRaidTick({ protectedEconomy: protectOutpostCash, combatUnits });
     const cap = this.difficulty === 'hard' ? 27 : this.difficulty === 'easy' ? 14 : 21;
     const queued = enemyBuildings.reduce((sum, b) => sum + b.queue.length, 0);
     if (!protectOutpostCash && combatUnits.length + queued < cap) {
@@ -6592,6 +6650,212 @@ export class Game {
     }
   }
 
+  _aiEngineerRaidTargetValid(target) {
+    if (!this._aiEngineerRaidEnabled() || !target || !this.buildings.includes(target) ||
+        target.owner !== 'player' || target.hp <= 0 || target.progress < 1 ||
+        target.captureOnly || target.hp / target.maxHp > 0.75 || !this.isVisible(target, 'enemy')) return false;
+    return true;
+  }
+
+  _aiEngineerRaidApproach(unitOrPoint, target) {
+    const start = { x: unitOrPoint.x, y: unitOrPoint.y };
+    let best = null;
+    for (let y = target.y - 1; y <= target.y + target.h; y++) {
+      for (let x = target.x - 1; x <= target.x + target.w; x++) {
+        if (x >= target.x && x < target.x + target.w && y >= target.y && y < target.y + target.h) continue;
+        if (!this._isPassable(x, y)) continue;
+        const point = { x: x + 0.5, y: y + 0.5 };
+        if (this._distanceToEntity(point.x, point.y, target) > 0.7) continue;
+        const path = this._findPath(start.x, start.y, point.x, point.y);
+        if (!path.length) continue;
+        let length = 0, px = start.x, py = start.y;
+        for (const step of path) { length += dist(px, py, step.x, step.y); px = step.x; py = step.y; }
+        if (length > AI_ENGINEER_RAID_MAX_PATH) continue;
+        const score = length + dist(start.x, start.y, point.x, point.y) * 0.01;
+        if (!best || score < best.score || score === best.score && (y < best.yTile || y === best.yTile && x < best.xTile))
+          best = { ...point, score, yTile: y, xTile: x };
+      }
+    }
+    return best;
+  }
+
+  _aiEngineerRaidPriorityBusy(combatUnits = []) {
+    if (this._aiUnderRelayDominionPressure() || this._aiCommandRecovery ||
+        !this.hasBuilding('enemy', 'command') || combatUnits.some(unit => unit._aiDefenseTarget || unit.order?.aiDefense))
+      return true;
+    const homeAssets = [...this.buildings, ...this.units].filter(entity => entity.owner === 'enemy' && entity.hp > 0 &&
+      ['command', 'refinery', 'factory'].includes(entity.defId));
+    return this.units.some(unit => unit.owner === 'player' && unit.hp > 0 && !unit.embarkedIn &&
+      UNIT_DEFS[unit.defId]?.weapon && this.isVisible(unit, 'enemy') && homeAssets.some(asset => {
+        const center = this._entityCenter(asset);
+        return dist(unit.x, unit.y, center.x, center.y) < 8;
+      }));
+  }
+
+  _aiFinishEngineerRaid() {
+    const state = this._aiEngineerRaidState || { active: null, cooldownUntil: 0 };
+    const active = state.active;
+    if (active?.raidId) {
+      const previousOwner = this.commandOwner;
+      this.commandOwner = 'enemy';
+      try {
+        for (const building of this.buildings) {
+          const index = building.queue?.findIndex(item => item.aiEngineerRaid?.raidId === active.raidId) ?? -1;
+          if (index >= 0) this.cancelQueuedUnit(building.id, index);
+        }
+      } finally { this.commandOwner = previousOwner; }
+      for (const unit of this.units) if (unit._aiEngineerRaid?.raidId === active.raidId) {
+        delete unit._aiEngineerRaid;
+        if (unit.order?.aiEngineerRaid === active.raidId) {
+          unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
+        }
+      }
+    }
+    this._aiEngineerRaidState = { active: null,
+      cooldownUntil: Math.max(state.cooldownUntil || 0, this.time + AI_ENGINEER_RAID_COOLDOWN) };
+  }
+
+  _aiEngineerRaidEmitSpotted(active, engineer, target) {
+    if (!active.spotted && engineer && this.isVisible(engineer, 'player') &&
+        this._distanceToEntity(engineer.x, engineer.y, target) <= 8) {
+      active.spotted = true;
+      this._event('engineerRaidSpotted', { unitId: engineer.id, targetId: target.id,
+        sectorX: Math.floor(engineer.x), sectorY: Math.floor(engineer.y) });
+    }
+  }
+
+  _aiEngineerCaptureRaidTick({ protectedEconomy = false, combatUnits = [] } = {}) {
+    if (!this._aiEngineerRaidEnabled()) return false;
+    this._aiEngineerRaidState ||= { active: null, cooldownUntil: 0 };
+    const state = this._aiEngineerRaidState;
+    const active = state.active;
+    const target = active && this.getEntity(active.targetId);
+    if (active) {
+      const engineer = this.units.find(unit => unit.id === active.engineerId && unit.owner === 'enemy' &&
+        unit.defId === 'engineer' && unit.hp > 0 && !unit.embarkedIn) ||
+        this.units.find(unit => unit.owner === 'enemy' && unit.defId === 'engineer' && unit.hp > 0 &&
+          unit._aiEngineerRaid?.raidId === active.raidId && !unit.embarkedIn);
+      const queueJob = this.buildings.flatMap(building => (building.queue || []).map((item, index) =>
+        ({ building, item, index }))).find(entry => entry.building.owner === 'enemy' &&
+          entry.item.aiEngineerRaid?.raidId === active.raidId);
+      const timedOut = !Number.isFinite(active.deadline) || active.deadline <= this.time;
+      const harvesterReserve = this._aiEconomyReserve('enemy');
+      const reserveRecovery = !engineer && !!queueJob && harvesterReserve > 0 &&
+        this.credits.enemy < harvesterReserve;
+      const priority = reserveRecovery || this._aiEngineerRaidPriorityBusy(combatUnits);
+      const valid = !timedOut && !priority && this._aiEngineerRaidTargetValid(target);
+      if (!valid || !engineer && !queueJob) {
+        this._aiFinishEngineerRaid();
+        return false;
+      }
+      if (engineer) {
+        active.engineerId = engineer.id;
+        if (!engineer.order?.aiEngineerRaid) {
+          const raiderCanResume = engineer._aiEngineerRaid?.raidId === active.raidId ||
+            engineer.order?.type === 'idle' && !engineer._relayAssignment && !engineer._aiCommandRecovery;
+          if (!raiderCanResume) {
+            this._aiFinishEngineerRaid();
+            return false;
+          }
+          engineer.order = { type: 'engineer', targetId: target.id, aiEngineerRaid: active.raidId,
+            approachX: active.approachX, approachY: active.approachY };
+          engineer.path = []; engineer._pathGoal = null;
+        }
+        if (engineer.order.type !== 'engineer' || engineer.order.targetId !== target.id) {
+          this._aiFinishEngineerRaid();
+          return false;
+        }
+        const approach = this._aiEngineerRaidApproach(engineer, target);
+        if (!approach) {
+          this._aiFinishEngineerRaid();
+          return false;
+        }
+        active.approachX = approach.x;
+        active.approachY = approach.y;
+        engineer._aiEngineerRaid = { raidId: active.raidId, targetId: active.targetId,
+          startedAt: active.startedAt, deadline: active.deadline,
+          approachX: approach.x, approachY: approach.y };
+        engineer.order.approachX = approach.x;
+        engineer.order.approachY = approach.y;
+      } else if (queueJob) {
+        active.queuedBuildingId = queueJob.building.id;
+        const spawn = this._findSpawnTile(queueJob.building);
+        const approach = spawn && this._aiEngineerRaidApproach(spawn, target);
+        if (!approach) {
+          this._aiFinishEngineerRaid();
+          return false;
+        }
+        active.approachX = approach.x;
+        active.approachY = approach.y;
+        queueJob.item.aiEngineerRaid.approachX = approach.x;
+        queueJob.item.aiEngineerRaid.approachY = approach.y;
+      }
+      this._aiEngineerRaidEmitSpotted(active, engineer, target);
+      return true;
+    }
+
+    if (state.cooldownUntil > this.time || protectedEconomy ||
+        this._aiEngineerRaidPriorityBusy(combatUnits)) return false;
+    const reserve = this._aiEconomyReserve('enemy');
+    if (this.credits.enemy - UNIT_DEFS.engineer.cost < reserve + AI_ENGINEER_RAID_ECONOMY_BUFFER) return false;
+    const candidates = this.buildings.filter(building => this._aiEngineerRaidTargetValid(building))
+      .sort((a, b) => {
+        const priority = id => id === 'command' ? 0 : ['factory', 'refinery'].includes(id) ? 1 :
+          ['radar', 'tech', 'barracks', 'helipad'].includes(id) ? 2 : 3;
+        return priority(a.defId) - priority(b.defId) || a.hp / a.maxHp - b.hp / b.maxHp ||
+          a.id.localeCompare(b.id);
+      });
+    if (!candidates.length) return false;
+    const idleEngineers = this.units.filter(unit => unit.owner === 'enemy' && unit.hp > 0 &&
+      unit.defId === 'engineer' && !unit.embarkedIn && unit.order?.type === 'idle' &&
+      !unit._aiCommandRecovery && !unit._relayAssignment).sort((a, b) => a.id.localeCompare(b.id));
+    const barracks = this.buildings.filter(building => building.owner === 'enemy' && building.defId === 'barracks' &&
+      building.hp > 0 && building.progress >= 1 && building.powered && building.queue.length === 0)
+      .sort((a, b) => a.id.localeCompare(b.id));
+    for (const candidate of candidates) {
+      const idleRoute = idleEngineers.map(unit => ({ unit, approach: this._aiEngineerRaidApproach(unit, candidate) }))
+        .find(entry => entry.approach);
+      let queuedRoute = null;
+      if (!idleRoute) queuedRoute = barracks.map(building => {
+        const spawn = this._findSpawnTile(building);
+        return { building, approach: spawn && this._aiEngineerRaidApproach(spawn, candidate) };
+      }).find(entry => entry.approach);
+      const engineer = idleRoute?.unit || null;
+      const queuedAt = queuedRoute?.building || null;
+      const approach = idleRoute?.approach || queuedRoute?.approach;
+      if (!engineer && !queuedAt) continue;
+      const raidId = `engineer-raid-${candidate.id}-${Math.floor(this.time * 10)}`;
+      const startedAt = this.time;
+      const deadline = this.time + AI_ENGINEER_RAID_TIMEOUT;
+      state.active = { raidId, targetId: candidate.id, startedAt, deadline,
+        engineerId: engineer?.id || null, queuedBuildingId: queuedAt?.id || null, spotted: false,
+        approachX: approach.x, approachY: approach.y };
+      if (engineer) {
+        engineer._aiEngineerRaid = { raidId, targetId: candidate.id, startedAt, deadline,
+          approachX: approach.x, approachY: approach.y };
+        engineer.order = { type: 'engineer', targetId: candidate.id, aiEngineerRaid: raidId,
+          approachX: approach.x, approachY: approach.y };
+        engineer.path = []; engineer._pathGoal = null;
+        this._aiEngineerRaidEmitSpotted(state.active, engineer, candidate);
+      } else {
+        const previousOwner = this.commandOwner;
+        this.commandOwner = 'enemy';
+        let result;
+        try { result = this._queueUnit('enemy', 'engineer', queuedAt.id); }
+        finally { this.commandOwner = previousOwner; }
+        if (!result?.ok) {
+          state.active = null;
+          return false;
+        }
+        const item = queuedAt.queue.at(-1);
+        item.aiEngineerRaid = { raidId, targetId: candidate.id, startedAt, deadline,
+          approachX: approach.x, approachY: approach.y };
+      }
+      return true;
+    }
+    return false;
+  }
+
   _aiCoordinateAssaults() {
     if (!this._aiAssaultCoordinationActive()) return;
     const packets = new Map();
@@ -6986,6 +7250,12 @@ export class Game {
     if (game.mode === 'skirmish' && game.replayVersion == null &&
         data.aiEconomyReserveRulesVersion !== AI_ECONOMY_RESERVE_RULES_VERSION)
       game.replayVersion = AI_ECONOMY_RESERVE_RULES_VERSION - 1;
+    // Markerless null-version normal/hard skirmishes keep all previously
+    // recorded systems and retain pre-raid behavior. Earlier missing markers
+    // already pin the save to their oldest corresponding replay version.
+    if (game.mode === 'skirmish' && ['normal', 'hard'].includes(game.difficulty) &&
+        game.replayVersion == null && data.aiEngineerRaidRulesVersion !== AI_ENGINEER_RAID_RULES_VERSION)
+      game.replayVersion = AI_ENGINEER_RAID_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -7011,7 +7281,31 @@ export class Game {
     game.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
     game.reinforcementAssemblyRulesVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
     game.aiEconomyReserveRulesVersion = AI_ECONOMY_RESERVE_RULES_VERSION;
+    game.aiEngineerRaidRulesVersion = AI_ENGINEER_RAID_RULES_VERSION;
     game.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
+    const savedEngineerRaid = data._aiEngineerRaidState && typeof data._aiEngineerRaidState === 'object'
+      ? data._aiEngineerRaidState : {};
+    const savedActiveRaid = savedEngineerRaid.active;
+    const activeRaidValid = game._aiEngineerRaidEnabled() && savedActiveRaid &&
+      typeof savedActiveRaid.raidId === 'string' && savedActiveRaid.raidId.length <= 96 &&
+      typeof savedActiveRaid.targetId === 'string' && savedActiveRaid.targetId.length <= 64 &&
+      Number.isFinite(savedActiveRaid.startedAt) && savedActiveRaid.startedAt >= 0 &&
+      savedActiveRaid.startedAt <= game.time && Number.isFinite(savedActiveRaid.deadline) &&
+      savedActiveRaid.deadline > game.time && savedActiveRaid.deadline <= game.time + AI_ENGINEER_RAID_TIMEOUT &&
+      Number.isFinite(savedActiveRaid.approachX) && savedActiveRaid.approachX >= 0 && savedActiveRaid.approachX < game.width &&
+      Number.isFinite(savedActiveRaid.approachY) && savedActiveRaid.approachY >= 0 && savedActiveRaid.approachY < game.height;
+    game._aiEngineerRaidState = {
+      active: activeRaidValid ? { raidId: savedActiveRaid.raidId, targetId: savedActiveRaid.targetId,
+        startedAt: savedActiveRaid.startedAt, deadline: savedActiveRaid.deadline,
+        ...(typeof savedActiveRaid.engineerId === 'string' && savedActiveRaid.engineerId.length <= 64
+          ? { engineerId: savedActiveRaid.engineerId } : {}),
+        ...(typeof savedActiveRaid.queuedBuildingId === 'string' && savedActiveRaid.queuedBuildingId.length <= 64
+          ? { queuedBuildingId: savedActiveRaid.queuedBuildingId } : {}),
+        approachX: savedActiveRaid.approachX, approachY: savedActiveRaid.approachY,
+        spotted: savedActiveRaid.spotted === true } : null,
+      cooldownUntil: Number.isFinite(savedEngineerRaid.cooldownUntil)
+        ? clamp(savedEngineerRaid.cooldownUntil, game.time, game.time + AI_ENGINEER_RAID_COOLDOWN * 2) : 0,
+    };
     const savedRecovery = game._aiCommandRecovery;
     game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)
       ? {
@@ -7107,6 +7401,33 @@ export class Game {
       enemy: Number.isFinite(salvageEarned.enemy) ? Math.max(0, salvageEarned.enemy) : 0,
     };
     for (const unit of game.units) {
+      const savedRaidTag = unit._aiEngineerRaid;
+      if (game._aiEngineerRaidState.active && unit.owner === 'enemy' && unit.defId === 'engineer' &&
+          savedRaidTag?.raidId === game._aiEngineerRaidState.active.raidId &&
+          savedRaidTag.targetId === game._aiEngineerRaidState.active.targetId &&
+          Number.isFinite(savedRaidTag.startedAt) && Number.isFinite(savedRaidTag.deadline) &&
+          Number.isFinite(savedRaidTag.approachX) && savedRaidTag.approachX >= 0 && savedRaidTag.approachX < game.width &&
+          Number.isFinite(savedRaidTag.approachY) && savedRaidTag.approachY >= 0 && savedRaidTag.approachY < game.height) {
+        unit._aiEngineerRaid = { raidId: savedRaidTag.raidId, targetId: savedRaidTag.targetId,
+          startedAt: savedRaidTag.startedAt, deadline: savedRaidTag.deadline,
+          approachX: savedRaidTag.approachX, approachY: savedRaidTag.approachY };
+      } else delete unit._aiEngineerRaid;
+      const savedRaidOrderId = unit.order?.aiEngineerRaid;
+      if (savedRaidOrderId != null) {
+        const active = game._aiEngineerRaidState.active;
+        const canRestoreRaidOrder = active?.raidId === savedRaidOrderId &&
+          unit._aiEngineerRaid?.raidId === savedRaidOrderId && unit.order.type === 'engineer' &&
+          unit.order.targetId === active.targetId && Number.isFinite(unit.order.approachX) &&
+          Number.isFinite(unit.order.approachY);
+        if (canRestoreRaidOrder) {
+          unit.order.approachX = active.approachX;
+          unit.order.approachY = active.approachY;
+        } else {
+          unit.order = { type: 'idle' };
+          unit.path = []; unit._pathGoal = null;
+          delete unit._aiEngineerRaid;
+        }
+      }
       unit.stance = ['aggressive', 'defensive', 'holdFire'].includes(unit.stance) ? unit.stance : 'aggressive';
       const oldRank = Number.isFinite(unit.veterancy) ? Math.trunc(unit.veterancy) : 0;
       unit.veterancy = clamp(oldRank, 0, VETERANCY_RANKS.length - 1);
@@ -7168,7 +7489,37 @@ export class Game {
       unit._stormglassCargo = game._stormglassBloomEnabled() && unit.defId === 'harvester' &&
         Number.isFinite(unit._stormglassCargo) ? clamp(unit._stormglassCargo, 0, Math.max(0, unit.cargo || 0)) : 0;
     }
-    for (const building of game.buildings) if (building.defId === 'refinery') building._unloadHarvesterId ??= null;
+    for (const building of game.buildings) {
+      if (building.defId === 'refinery') building._unloadHarvesterId ??= null;
+      for (const item of building.queue || []) {
+        const job = item.aiEngineerRaid;
+        const active = game._aiEngineerRaidState.active;
+        if (building.owner === 'enemy' && item.defId === 'engineer' && active &&
+            building.id === active.queuedBuildingId && job?.raidId === active.raidId &&
+            job.targetId === active.targetId && Number.isFinite(job.startedAt) && Number.isFinite(job.deadline)) {
+          item.aiEngineerRaid = { raidId: job.raidId, targetId: job.targetId,
+            startedAt: job.startedAt, deadline: job.deadline,
+            approachX: active.approachX, approachY: active.approachY };
+        } else delete item.aiEngineerRaid;
+      }
+    }
+    const activeEngineerRaid = game._aiEngineerRaidState.active;
+    if (activeEngineerRaid) {
+      const taggedEngineer = game.units.find(unit => unit.owner === 'enemy' && unit.hp > 0 &&
+        unit.defId === 'engineer' && unit._aiEngineerRaid?.raidId === activeEngineerRaid.raidId);
+      const taggedJob = game.buildings.find(building => building.owner === 'enemy' &&
+        building.id === activeEngineerRaid.queuedBuildingId && building.queue?.some(item =>
+          item.aiEngineerRaid?.raidId === activeEngineerRaid.raidId));
+      if (taggedEngineer) {
+        activeEngineerRaid.engineerId = taggedEngineer.id;
+        activeEngineerRaid.queuedBuildingId = null;
+      } else if (taggedJob) activeEngineerRaid.engineerId = null;
+      else {
+        game._aiEngineerRaidState.active = null;
+        game._aiEngineerRaidState.cooldownUntil = Math.max(game._aiEngineerRaidState.cooldownUntil,
+          game.time + AI_ENGINEER_RAID_COOLDOWN);
+      }
+    }
     game.mapId = SKIRMISH_MAPS.some(map => map.id === game.mapId) ? game.mapId : 'shard-valley';
     game.mapVariant = ['twin-passes', 'canyon-ring'].includes(game.mapId) &&
       (game.mapVariant === 0 || game.mapVariant === 1) ? game.mapVariant : 0;

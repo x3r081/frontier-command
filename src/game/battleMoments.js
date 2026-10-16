@@ -26,6 +26,8 @@ export function battleMomentFromEvent(event) {
       title = 'Relay Dominion countdown started'; priority = 4; break;
     case 'salvageDropIncoming':
       title = 'Public salvage drop inbound'; priority = 2; break;
+    case 'engineerRaidSpotted':
+      title = 'Hostile Engineer spotted'; priority = 3; break;
     case 'stormglassBloom':
       title = 'Stormglass Bloom opened'; priority = 2; break;
     case 'salvageDropClaimed':

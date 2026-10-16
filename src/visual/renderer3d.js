@@ -1207,7 +1207,7 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      const revision=key==='stealthTank'?'?rev=2':['artillery','orca','apc'].includes(key)?'?rev=1':'';
+      const revision=key==='stealthTank'?'?rev=2':['artillery','orca','apc','engineer'].includes(key)?'?rev=1':'';
       modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         compactAuthoredModel(gltf.scene,key);
@@ -4806,7 +4806,9 @@ export class Renderer3D {
         refinery:'vesperRefinery',barracks:'vesperBarracks',factory:'vesperFactory',
         radar:'vesperRadar',tech:'vesperTech'}[o.defId]);
       const assetVersion=this.assetVersions.get(assetKey||o.defId)||0;
-      if(state && state.version!==assetVersion) {this._removeEntity(o.id,state);state=null;}
+      if(state && (state.version!==assetVersion||state.owner!==o.owner||state.faction!==o.faction)) {
+        this._removeEntity(o.id,state);state=null;
+      }
       if(!state) {
         let group=this._authoredModel(o)||(building?makeBuilding(o.defId,o.faction,o.w,o.h):makeUnit(o.defId,o.faction));
         if(!building&&!group.userData.authoredVisual) {
@@ -4843,7 +4845,8 @@ export class Renderer3D {
         const veteranRing=this._veterancyRing(radius);
         group.add(veteranRing);
         this.entityGroup.add(group);
-        state={group,ring,targetRing,veteranRing,building,defId:o.defId,version:assetVersion,baseScale:group.scale.clone(),
+        state={group,ring,targetRing,veteranRing,building,defId:o.defId,owner:o.owner,faction:o.faction,
+          version:assetVersion,baseScale:group.scale.clone(),
           unitVisual,unitVisualBaseScale:unitVisual?.scale.clone(),
           damageReaction:{lastHp:clamp(o.hp/(o.maxHp||1),0,1),hitAt:-Infinity,applied:0,
             radius:building?Math.max(o.w,o.h)*0.62:game.unitDefs?.[o.defId]?.flying?0.70:game.unitDefs?.[o.defId]?.armor==='infantry'?0.34:0.56,

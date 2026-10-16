@@ -44,7 +44,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
-const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'||id==='guardian'?'?rev=2':id==='orca'?'?rev=1':''}`;
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'||id==='guardian'?'?rev=2':['orca','engineer'].includes(id)?'?rev=1':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
@@ -692,13 +692,14 @@ function renderTacticalAlert() {
     return;
   }
   const def = game.unitDefs?.[tacticalAlert.defId] || game.buildingDefs?.[tacticalAlert.defId];
-  const name = (def?.name || keyName(tacticalAlert.defId)).toUpperCase();
+  const engineer = tacticalAlert.kind === 'engineer';
+  const name = engineer ? 'HOSTILE ENGINEER' : (def?.name || keyName(tacticalAlert.defId)).toUpperCase();
   const sector = `${Math.floor(tacticalAlert.x)} // ${Math.floor(tacticalAlert.y)}`;
-  const condition = tacticalAlert.kind === 'lost' ? 'LOST' : 'DAMAGED';
+  const condition = engineer ? 'SPOTTED' : tacticalAlert.kind === 'lost' ? 'LOST' : 'DAMAGED';
   const shortName = ({ command: 'YARD', harvester: 'HARVESTER', refinery: 'REFINERY',
     factory: 'FACTORY', power: 'POWER' })[tacticalAlert.defId] || name;
   $('#tactical-alert-text').textContent = innerWidth <= 670
-    ? `${shortName} ${tacticalAlert.kind === 'lost' ? 'LOST' : 'HIT'}`
+    ? engineer ? 'ENGINEER SPOTTED' : `${shortName} ${tacticalAlert.kind === 'lost' ? 'LOST' : 'HIT'}`
     : `${name} ${condition} · ${sector}`;
   button.setAttribute('aria-label', `${name} ${condition.toLowerCase()} at sector ${sector}. Center camera on alert.`);
   button.title = `Center on ${name.toLowerCase()} alert · sector ${sector}`;
@@ -4579,6 +4580,25 @@ function processEvents() {
         audio.play('alert');
       }
       continue;
+    }
+    if(type==='engineerRaidSpotted'){
+      const raider=game.getEntity?.(e.unitId);
+      if(game.mode!=='skirmish'||replayMode||raider?.owner!=='enemy'||raider.hp<=0||
+          !game.isVisible(raider,'player')||!Number.isFinite(e.sectorX)||!Number.isFinite(e.sectorY))continue;
+      // Keep the observed sector fixed: the alert must not track a raider into fog.
+      if(!tacticalAlert||game.time>=tacticalAlert.until||tacticalAlert.priority<=4){
+        tacticalAlert={kind:'engineer',defId:'engineer',x:e.sectorX+0.5,y:e.sectorY+0.5,
+          priority:4,until:game.time+10};
+        renderTacticalAlert();
+      }
+      toast('HOSTILE ENGINEER SPOTTED · INTERCEPT OR REPAIR ABOVE 75%',true,6500);
+      audio.play('alert');continue;
+    }
+    if(type==='buildingCaptured'){
+      const target=game.getEntity?.(e.id);
+      const name=(game.buildingDefs?.[target?.defId]?.name||'Structure').toUpperCase();
+      toast(e.owner==='player'?`${name} CAPTURED`:`ENEMY CAPTURED YOUR ${name}`,e.owner!=='player',5500);
+      audio.play(e.owner==='player'?'ready':'alert');updateSelectionCard();continue;
     }
     if(type==='salvageDropIncoming'){
       toast('PUBLIC SALVAGE DROP INBOUND · FIND THE AMBER BEACON',false,5000);audio.play('alert');continue;

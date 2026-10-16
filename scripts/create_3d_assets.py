@@ -1528,23 +1528,109 @@ def vesper_scout_infantry():
 
 
 def engineer_infantry():
+    global LOW_POLY_BEVEL
+    previous_bevel = LOW_POLY_BEVEL
+    # Tiny equipment bevels look identical at tactical zoom with one segment,
+    # while keeping this more detailed specialist cheaper than the baseline.
+    LOW_POLY_BEVEL = True
     clean(); m = palette()
+    m["warning"] = material("Engineer safety yellow", (1.0, .76, .015), .12, .43)
     infantry_body(m, "engineer")
-    cube("Utility chest plate", (0, .11, .34), (.20, .045, .16), m["warning"], .025)
-    cube("Work helmet", (0, -.015, .52), (.24, .20, .13), m["warning"], .04)
-    cube("Helmet brow", (0, .105, .55), (.19, .055, .045), m["dark"], .012)
-    cube("Inspection visor", (0, .13, .53), (.13, .025, .04), m["glass"], .012)
-    cube("Tool pack", (-.19, -.09, .35), (.20, .24, .30), m["dark"], .04)
-    cube("Repair canister", (-.20, -.10, .42), (.11, .13, .20), m["warning"], .025)
-    cylinder("Spare conduit", (-.20, -.10, .31), .035, .23, m["accent"], 8, (math.pi/2, 0, 0))
-    # Clearly visible handheld service tool and a compact diagnostic tablet.
-    cube("Repair tool grip", (.17, .12, .31), (.08, .20, .10), m["dark"], .025)
-    cube("Repair tool head", (.17, .25, .34), (.22, .11, .12), m["warning"], .035)
-    cube("Tool jaws", (.17, .315, .34), (.14, .035, .15), m["edge"], .02)
-    cube("Diagnostic tablet", (.11, .12, .43), (.17, .045, .15), m["glass"], .02)
-    cube("Shoulder service tab", (-.15, .02, .37), (.06, .12, .13), m["accent"], .015)
+    # Replace the rifleman's helmet cluster rather than stacking a hard hat
+    # over a duplicate visor and comms pads.
+    for obj in list(bpy.context.scene.objects):
+        if obj.name in {"Helmet", "Helmet crown plate", "Visor", "Comms status lamp", "Helmet faction stripe"} or obj.name.startswith("Helmet comms pad"):
+            bpy.data.objects.remove(obj, do_unlink=True)
+    # A compact Aegis field technician: the hard hat, high-visibility shoulder
+    # shells and layered service rig remain legible at tactical zoom.
+    cube("Engineer hardhat crown", (0, -.01, .579), (.225, .18, .075), m["warning"], .028)
+    cube("Engineer hardhat brim", (0, .012, .539), (.285, .22, .028), m["warning"], .009)
+    cube("Hardhat crown ridge", (0, -.012, .62), (.038, .12, .014), m["edge"], .006)
+    cube("Hardhat lamp housing", (0, .132, .56), (.075, .035, .045), m["dark"], .01)
+    cube("Hardhat work lamp", (0, .153, .56), (.038, .012, .024), m["glass"], .005)
+    cube("Engineer face shield", (0, .145, .515), (.165, .018, .055), m["glass"], .012)
+    # The chest rig is visibly different from a rifleman's clean armor. A
+    # yellow shoulder pad carries the unit stripe while cyan remains the
+    # renderer-swappable TeamAccent for either faction.
+    cube("Engineer chest rig", (0, .112, .337), (.225, .045, .17), m["dark"], .022)
+    cube("Engineer chest armor", (0, .14, .355), (.19, .026, .13), m["warning"], .02)
+    cube("Engineer chest signal", (0, .157, .395), (.105, .014, .025), m["accent"], .006)
+    cube("Engineer shoulder hazard plate", (-.145, .015, .414), (.105, .128, .088), m["warning"], .02)
+    cube("Engineer shoulder service tab", (-.145, .083, .416), (.055, .012, .028), m["accent"], .005)
+    for side in (-1, 1):
+        # Boxed work boots, toe armor and a small high-vis band give the lower
+        # legs enough shape to read separately at the same infantry scale.
+        cube("Engineer boot toe cap", (side*.066, .093, .115), (.072, .025, .045), m["edge"], .009)
+        cube("Engineer boot hazard band", (side*.066, .108, .127), (.060, .008, .012), m["warning"], .003)
+        cube("Engineer tool belt pouch", (side*.145, .118, .247), (.082, .062, .092), m["dark"], .014)
+        cube("Tool pouch clasp", (side*.145, .153, .251), (.035, .012, .026), m["warning"], .005)
+    cube("Field tool belt", (0, .113, .245), (.235, .052, .055), m["steel"], .012)
+    cube("Belt service buckle", (0, .145, .245), (.062, .016, .047), m["warning"], .008)
+    # Deep, framed toolbox with visible canister, hose and a chunky top handle
+    # creates a strong profile without adding any external textures.
+    cube("Field toolkit shell", (.175, -.145, .365), (.245, .17, .285), m["dark"], .028)
+    cube("Field toolkit lid", (.175, -.145, .508), (.245, .17, .045), m["steel"], .012)
+    cube("Toolkit safety panel", (.175, -.053, .394), (.155, .018, .126), m["warning"], .01)
+    cube("Toolkit team marker", (.175, -.041, .394), (.075, .012, .022), m["accent"], .004)
+    cube("Toolkit handle base left", (.122, -.145, .541), (.038, .055, .032), m["edge"], .006)
+    cube("Toolkit handle base right", (.228, -.145, .541), (.038, .055, .032), m["edge"], .006)
+    cube("Toolkit grab handle", (.175, -.145, .568), (.12, .055, .025), m["dark"], .008)
+    cylinder("Insulated repair canister", (.322, -.145, .364), .046, .235, m["warning"], 8)
+    cylinder("Canister cap", (.322, -.145, .491), .053, .028, m["edge"], 8)
+    cylinder("Canister retaining band", (.322, -.145, .326), .052, .027, m["steel"], 8)
+    cylinder("Coiled service hose", (.319, -.046, .364), .018, .19, m["accent"], 8, (math.pi/2, 0, 0))
+    # Front-mounted diagnostic reader: dark enclosure, signal screen and
+    # physical keys remain within the chest/waist silhouette.
+    cube("Diagnostic reader housing", (-.065, .148, .29), (.105, .032, .086), m["dark"], .01)
+    cube("Diagnostic reader screen", (-.065, .167, .304), (.073, .008, .044), m["glass"], .004)
+    for x in (-.088, -.065, -.042):
+        cube("Diagnostic reader key", (x, .168, .268), (.012, .007, .009), m["warning"], .002)
+
+    # Build an open-jaw spanner profile in the camera-facing X/Z plane. Joining
+    # it into the right forearm means the wrench follows authored gait/aim poses.
+    wrench_x = .23
+    wrench_profile = [(-.021,.237),(.021,.237),(.021,.392),(.056,.392),
+                      (.069,.444),(.048,.489),(.026,.459),(.016,.436),
+                      (-.016,.436),(-.026,.459),(-.048,.489),(-.069,.444),
+                      (-.056,.392),(-.021,.392)]
+    y_front, y_back = .255, .217
+    vertices = [(wrench_x+x, y, z) for y in (y_back, y_front) for x,z in wrench_profile]
+    count = len(wrench_profile)
+    faces = [tuple(reversed(range(count))), tuple(range(count, count*2))]
+    faces += [(i, (i+1)%count, (i+1)%count+count, i+count) for i in range(count)]
+    mesh = bpy.data.meshes.new("Service spanner mesh")
+    mesh.from_pydata(vertices, [], faces); mesh.materials.append(m["warning"]); mesh.update()
+    wrench = bpy.data.objects.new("Service spanner", mesh)
+    bpy.context.collection.objects.link(wrench)
+    # Give both animated hands a dark work glove; the right glove grips the
+    # service tool. Join glove/tool geometry into their authored forearm nodes.
+    right_glove = cube("Engineer right glove", (.176, .171, .265), (.078, .078, .055), m["dark"], .012)
+    left_glove = cube("Engineer left glove", (-.176, .171, .265), (.078, .078, .055), m["dark"], .012)
+    # Dark grip ribs make the handle distinct from the wrench head at portrait
+    # size. Join the glove, grip and spanner into the forearm pivot.
+    cube("Spanner grip", (wrench_x, .239, .317), (.045, .045, .09), m["dark"], .006)
+    arm = bpy.data.objects.get("Arm.R forearm")
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True); wrench.select_set(True); right_glove.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.join()
+    # The grip was created after the selection above, so add it to the same
+    # authored arm node; its geometry remains in world space.
+    grip = bpy.data.objects.get("Spanner grip")
+    if grip:
+        bpy.ops.object.select_all(action="DESELECT")
+        arm.select_set(True); grip.select_set(True)
+        bpy.context.view_layer.objects.active = arm
+        bpy.ops.object.join()
+    arm = bpy.data.objects.get("Arm.L forearm")
+    bpy.ops.object.select_all(action="DESELECT")
+    arm.select_set(True); left_glove.select_set(True)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.join()
     scale_infantry_for_game_readability()
+    consolidate_static_meshes(preserved=("Arm.L upper", "Arm.L forearm", "Arm.R upper", "Arm.R forearm"))
     export("engineer")
+    LOW_POLY_BEVEL = previous_bevel
 
 
 def field_medic():
