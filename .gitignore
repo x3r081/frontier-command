@@ -13,6 +13,7 @@ server/data.json.*
 *.log
 *.tmp
 coverage/
+__pycache__/
 public/assets/models/aegis-heavy-tank-meshy.glb
 docs/screenshots/multiplayer-*.jpg
 docs/screenshots/reconnect-vesper-live-*.png

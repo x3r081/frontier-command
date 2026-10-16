@@ -1193,7 +1193,8 @@ export class Renderer3D {
       artillery:'siege-crawler.glb', orca:'gunship.glb', apache:'apache.glb', dropship:'dropship.glb',
       crashedDropship:'crashed-dropship.glb',
     })) {
-      modelLoads.push(loader.loadAsync(`/assets/models/${file}`).then(gltf => {
+      const revision=key==='stealthTank'?'?rev=2':'';
+      modelLoads.push(loader.loadAsync(`/assets/models/${file}${revision}`).then(gltf => {
         gltf.scene.updateMatrixWorld(true);
         compactAuthoredModel(gltf.scene,key);
         this.assetModels.set(key,gltf.scene);
@@ -3720,6 +3721,19 @@ export class Renderer3D {
       animation.aim = 0;
       animation.recoil = 0;
       animation.lastShotTime = -Infinity;
+      animation.turretBaseZ = animation.pivot?.position.z ?? -0.035;
+      animation.recoilDistance = 0.055;
+    } else if (o.defId === 'stealthTank' && authored) {
+      const turret=authoredPart(group,'Stealth turret');
+      if(turret?.parent===group) {
+        animation.pivot=animatedPivot(group,['Stealth turret'],
+          turret.position.x,turret.position.y,turret.position.z);
+        animation.aim=0;
+        animation.recoil=0;
+        animation.lastShotTime=-Infinity;
+        animation.turretBaseZ=animation.pivot.position.z;
+        animation.recoilDistance=0.025;
+      }
     } else if (o.defId === 'apache' && authored) {
       animation.pivot = animatedPivot(group,
         ['Apache main rotor blade', 'Apache main rotor blade.001',
@@ -3929,7 +3943,7 @@ export class Renderer3D {
         if (shard.visible) shard.scale.y = 0.28+load*0.72+0.04*Math.sin(phase);
       });
       lightLevel = 0.8 + 0.35 * Math.sin(phase);
-    } else if (o.defId === 'lightTank' && a.pivot) {
+    } else if ((o.defId === 'lightTank' || o.defId === 'stealthTank') && a.pivot) {
       const shot = game.effects?.find(fx => fx.type === 'projectile' && fx.sourceId === o.id &&
         Number.isFinite(fx.tx) && Number.isFinite(fx.ty));
       if (shot) {
@@ -3944,7 +3958,7 @@ export class Renderer3D {
       a.aim+=delta*(shot?0.25:0.06);
       a.pivot.rotation.y=a.aim;
       a.recoil+=(Number(Boolean(shot))-a.recoil)*0.25;
-      a.pivot.position.z=-0.035+a.recoil*0.055;
+      a.pivot.position.z=a.turretBaseZ+a.recoil*a.recoilDistance;
     } else if (o.defId === 'orca' || o.defId === 'apache' || o.defId === 'dropship') {
       if (a.pivot) a.pivot.rotation.y = time * 12.5;
       if (a.rotor) a.rotor.rotation.y = time * 12.5;

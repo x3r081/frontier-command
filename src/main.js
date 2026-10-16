@@ -44,6 +44,7 @@ let graphicsQuality = ['eco','balanced','ultra'].includes(storedGraphicsQuality)
 const soloClock = new SoloClock();
 const TEAM = { player: '#caff75', enemy: '#ff7869' };
 const ASSET_PATH = '/assets/';
+const portraitSource=id=>`${ASSET_PATH}portraits/${id}.png${id==='stealthTank'?'?rev=2':''}`;
 const portraitVariant = (faction, id) => faction === 'vesper'
   ? id === 'scout' ? 'scout-vesper'
     : id === 'harvester' ? 'harvester-vesper'
@@ -585,7 +586,7 @@ function assetHTML(id, shownFaction=faction) {
   if (UNIT_DEFS[id] || BUILDING_DEFS[id]) {
     const fallback = key ? `${ASSET_PATH}${key}.svg` : '';
     const portrait=portraitVariant(shownFaction,id);
-    return `<img class="asset-icon asset-portrait" src="${ASSET_PATH}portraits/${portrait}.png" alt="" decoding="async" onerror="this.onerror=null;${fallback ? `this.src='${fallback}'` : `this.replaceWith(Object.assign(document.createElement('span'),{className:'item-icon-fallback',textContent:'${symbol}'}))`}">`;
+    return `<img class="asset-icon asset-portrait" src="${portraitSource(portrait)}" alt="" decoding="async" onerror="this.onerror=null;${fallback ? `this.src='${fallback}'` : `this.replaceWith(Object.assign(document.createElement('span'),{className:'item-icon-fallback',textContent:'${symbol}'}))`}">`;
   }
   return key ? `<img class="asset-icon" src="${ASSET_PATH}${key}.svg" alt="" onerror="this.replaceWith(Object.assign(document.createElement('span'),{className:'item-icon-fallback',textContent:'${symbol}'}))">` : `<span class="item-icon-fallback">${symbol}</span>`;
 }
@@ -1246,13 +1247,13 @@ function renderArmory() {
   for (const [id,d] of entries) {
     const button=document.createElement('button'); button.type='button'; button.className=`armory-entry-card${id===armorySelected?' active':''}`; button.dataset.armoryItem=id; button.setAttribute('aria-pressed',String(id===armorySelected));
     const img=document.createElement('img'); img.className='armory-thumb'; img.alt=''; img.loading='lazy';
-    const variant=portraitVariant(armoryFaction,id); img.src=`${ASSET_PATH}portraits/${variant}.png`; img.onerror=()=>{img.onerror=null;img.src=`${ASSET_PATH}portraits/${id}.png`;};
+    const variant=portraitVariant(armoryFaction,id); img.src=portraitSource(variant); img.onerror=()=>{img.onerror=null;img.src=portraitSource(id);};
     const copy=document.createElement('span');copy.className='armory-entry-copy'; const name=document.createElement('strong');name.textContent=d.name;const meta=document.createElement('small');meta.textContent=armoryKind==='units'?(d.role||'unit').toUpperCase():(d.power?`${d.power>0?'+':''}${d.power} POWER`:'STRUCTURE');copy.append(name,meta);button.append(img,copy);list.append(button);
   }
   const detail=$('#armory-detail'); detail.replaceChildren(); const d=defs[armorySelected]; if(!d)return;
   const title=document.createElement('h3');title.textContent=d.name;
   const faction=document.createElement('div');faction.className=`armory-faction-tag ${armoryFaction}`;faction.textContent=armoryFaction==='aegis'?'AEGIS DEFENSE NETWORK':'VESPER STRIKE COMMAND';
-  const visual=document.createElement('div');visual.className='armory-portrait';const portrait=document.createElement('img');portrait.alt=`${d.name} field portrait`;const detailPortrait=portraitVariant(armoryFaction,armorySelected);portrait.src=`${ASSET_PATH}portraits/${detailPortrait}.png`;portrait.onerror=()=>{portrait.onerror=null;portrait.src=`${ASSET_PATH}portraits/${armorySelected}.png`;};visual.append(portrait);
+  const visual=document.createElement('div');visual.className='armory-portrait';const portrait=document.createElement('img');portrait.alt=`${d.name} field portrait`;const detailPortrait=portraitVariant(armoryFaction,armorySelected);portrait.src=portraitSource(detailPortrait);portrait.onerror=()=>{portrait.onerror=null;portrait.src=portraitSource(armorySelected);};visual.append(portrait);
   const desc=document.createElement('p');desc.className='armory-description';desc.textContent=factionDescription(armoryFaction,armorySelected,d);
   const stats=document.createElement('dl');stats.className='armory-stats';
   const rows=[['COST',d.cost===0?'FREE':`${Number(d.cost).toLocaleString()} CR`],['BUILD TIME',`${d.buildTime||0}s`],['HEALTH',Number(d.health).toLocaleString()],['ARMOR',String(d.armor||'—').toUpperCase()],armoryKind==='units'?['SPEED',d.flying?`${d.speed} · AIR`:`${d.speed} TILES/S`]:['POWER',`${d.power>0?'+':''}${d.power||0}`]];
@@ -1542,7 +1543,7 @@ function campaignVeteranRank(veteran) {
 }
 function createVeteranPortrait(veteran) {
   const image = document.createElement('img');
-  image.src = `${ASSET_PATH}portraits/${portraitVariant(veteran.faction, veteran.defId)}.png`;
+  image.src = portraitSource(portraitVariant(veteran.faction, veteran.defId));
   image.alt = `${campaignVeteranName(veteran)} portrait`;
   return image;
 }

@@ -9,6 +9,7 @@ Run from the repository root with Blender 5.x:
 import argparse
 import math
 import os
+import struct
 import sys
 
 import bpy
@@ -18,6 +19,26 @@ from mathutils import Vector
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODELS = os.path.join(ROOT, "public", "assets", "models")
 OUTPUT = os.path.join(ROOT, "public", "assets", "portraits")
+
+
+def strip_png_source_metadata(path):
+    """Keep rendered pixels and color data while removing Blender source stamps."""
+    with open(path, "rb") as stream:
+        data = stream.read()
+    if data[:8] != b"\x89PNG\r\n\x1a\n":
+        raise ValueError("Portrait output is not a PNG")
+    chunks = [data[:8]]
+    offset = 8
+    while offset < len(data):
+        length = struct.unpack_from(">I", data, offset)[0]
+        end = offset + length + 12
+        if end > len(data):
+            raise ValueError("Truncated portrait PNG")
+        if data[offset + 4:offset + 8] not in (b"tEXt", b"iTXt", b"zTXt", b"eXIf"):
+            chunks.append(data[offset:end])
+        offset = end
+    with open(path, "wb") as stream:
+        stream.write(b"".join(chunks))
 
 # id, source model, faction lighting accent
 ASSETS = {
@@ -151,6 +172,7 @@ def render_one(asset_id):
     destination = os.path.join(OUTPUT, asset_id + ".png")
     bpy.context.scene.render.filepath = destination
     bpy.ops.render.render(write_still=True)
+    strip_png_source_metadata(destination)
     print(f"RENDERED {asset_id} {os.path.getsize(destination)} bytes")
 
 

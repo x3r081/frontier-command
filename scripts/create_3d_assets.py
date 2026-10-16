@@ -1655,58 +1655,84 @@ def guardian_tank():
 def stealth_tank():
     global LOW_POLY_BEVEL
     LOW_POLY_BEVEL = True
-    clean(); m = palette()
-    cloak = material("Specter reclaimed plum armor", (.16, .105, .19), .42, .48)
-    edge = material("Specter salvage alloy", (.43, .34, .47), .54, .37)
-    shadow = material("Specter carbon recess", (.035, .022, .052), .37, .56)
-    covert = material("Specter signal violet", (.62, .22, 1.0), .18, .22,
-                      (.50, .09, 1.0), 1.35)
-    heat = material("Specter heat warning", (.94, .32, .16), .26, .44)
-    for x in [-.48, .48]:
-        side = 1 if x > 0 else -1
-        cube("Low profile track", (x, 0, .18), (.22, 1.24, .32), m["rubber"], .08)
-        for y in [-.42, -.12, .18, .48]:
-            cylinder("Track roller", (x*1.13, y, .18), .105, .035, edge, 8, (0, math.pi/2, 0))
-        faceted_prism("Angular side skirt", [(x-.10,-.52),(x+.10,-.52),(x+.11,.42),(x+.04,.57),(x-.06,.57),(x-.11,.42)],
-                      [(x-.08,-.48),(x+.08,-.48),(x+.08,.38),(x+.035,.52),(x-.035,.52),(x-.08,.38)],
-                      .30,.39,cloak)
-        for y in [-.36,-.13,.10,.33]:
-            cube("Skirt stealth seam", (x+side*.106, y, .345), (.012, .016, .05), shadow, .003)
-    faceted_prism("Wide stealth lower hull", [(-.41,-.59),(.41,-.59),(.43,.29),(.25,.65),(-.25,.65),(-.43,.29)],
-                  [(-.34,-.51),(.34,-.51),(.35,.22),(.17,.54),(-.17,.54),(-.35,.22)],
-                  .30,.51,cloak)
-    faceted_prism("Faceted wedge glacis", [(-.35,.15),(.35,.15),(.25,.63),(-.25,.63)],
-                  [(-.28,.10),(.28,.10),(.15,.54),(-.15,.54)], .50,.57,edge)
-    cube("Recessed forward sensor", (0, .575, .445), (.31, .025, .033), covert, .004)
-    for x in [-.28,.28]:
-        cube("Covert nose lamp", (x, .558, .395), (.048, .02, .025), covert, .004)
-        cube("Hull diamond panel", (x, .18, .583), (.12, .28, .018), shadow, .004)
-    cylinder("Concealed turret bearing", (0, -.12, .535), .30, .05, shadow, 10)
-    faceted_prism("Stealth turret", [(-.30,-.34),(.30,-.34),(.34,-.14),(.27,.16),(.10,.29),(-.10,.29),(-.27,.16),(-.34,-.14)],
-                  [(-.23,-.28),(.23,-.28),(.26,-.11),(.20,.11),(.075,.22),(-.075,.22),(-.20,.11),(-.26,-.11)],
-                  .55,.74,edge)
-    faceted_prism("Shadow turret crown", [(-.19,-.25),(.19,-.25),(.23,-.08),(.14,.11),(-.14,.11),(-.23,-.08)],
-                  [(-.14,-.20),(.14,-.20),(.17,-.07),(.10,.06),(-.10,.06),(-.17,-.07)],
-                  .74,.79,shadow)
-    for x in [-.205,.205]:
-        cube("Low missile pod", (x, .105, .715), (.145, .31, .085), cloak, .022)
-        cube("Missile port cover", (x, .267, .719), (.11, .012, .048), shadow, .004)
-        for xx in [x-.033,x+.033]:
-            cylinder("Missile aperture", (xx, .276, .719), .016, .008, covert, 8, (math.pi/2,0,0))
-    cube("Turret covert sight", (0, .215, .675), (.082, .024, .026), covert, .004)
-    for x in [-.23,.23]:
-        cube("Rear heat suppressor", (x, -.405, .515), (.12, .19, .037), shadow, .008)
-        for y in [-.46,-.41,-.36]:
-            cube("Heat vent slit", (x, y, .538), (.105, .012, .009), edge, .003)
-    cube("Specter identity stripe", (0, -.314, .595), (.23, .025, .026), covert, .005)
-    # Off-center sensor fin and warm exhaust marks distinguish the covert
-    # Vesper hunter from the broad, blue Aegis gun platforms at normal zoom.
-    faceted_prism("Asymmetric sensor fin", [(.22,-.22),(.37,-.20),(.36,.02),(.27,.12)],
-                  [(.24,-.18),(.32,-.17),(.32,.00),(.27,.07)], .72,.97,edge)
-    cube("Sensor fin signal strip", (.326,-.08,.91), (.025,.17,.045), covert, .006)
-    for x in [-.23,.23]:
-        cube("Exhaust heat marker", (x,-.516,.53), (.075,.022,.026), heat, .005)
-    consolidate_static_meshes(("Stealth turret",))
+    clean()
+    cloak = material("Specter plum ceramic", (.12, .075, .155), .42, .48)
+    edge = material("Specter pale salvage alloy", (.35, .29, .40), .54, .37)
+    steel = material("Specter violet gunmetal", (.20, .14, .25), .58, .42)
+    shadow = material("Specter carbon recess", (.022, .016, .034), .37, .56)
+    tread = material("Specter track rubber", (.032, .027, .045), .16, .82)
+    covert = material("Specter restrained ion channel", (.40, .16, .68), .22, .28,
+                      (.20, .035, .42), .62)
+
+    # Low arrowhead hull between two track pods. Broken guards leave the
+    # tread loop and road wheels visible in the isometric view.
+    for side in [-1, 1]:
+        x=side*.49
+        cube("Specter track loop", (x, 0, .18), (.23, 1.30, .31), tread, .055)
+        for y in [-.47,-.22,.03,.28,.53]:
+            cylinder("Specter road wheel", (side*.615, y, .18), .088, .035, edge, 8,
+                     (0, math.pi/2, 0))
+        for y in [-.52,-.27,-.02,.23,.48]:
+            cube("Track grouser", (side*.62, y, .33), (.035,.12,.028), edge, .006)
+        for y in [-.43,.37]:
+            panel=cube("Split track guard", (side*.625,y,.335), (.11,.39,.16), cloak, .035)
+            panel.rotation_euler[2]=side*math.radians(5)
+            cube("Guard inset", (side*.686,y,.34), (.012,.20,.075), shadow, .004)
+            cube("Guard ion pin", (side*.694,y,.355), (.012,.07,.018), covert, .003)
+        cube("Track nose deflector", (side*.61,.625,.29), (.13,.15,.11), edge, .025)
+        cube("Track rear cap", (side*.61,-.64,.28), (.12,.11,.10), shadow, .02)
+
+    faceted_prism("Specter keel", [(-.39,-.63),(.39,-.63),(.41,.30),(.24,.68),(-.24,.68),(-.41,.30)],
+                  [(-.32,-.55),(.32,-.55),(.34,.25),(.18,.56),(-.18,.56),(-.34,.25)], .24,.43,shadow)
+    faceted_prism("Specter angular hull", [(-.43,-.57),(.43,-.57),(.44,.25),(.27,.67),(-.27,.67),(-.44,.25)],
+                  [(-.35,-.49),(.35,-.49),(.36,.20),(.21,.56),(-.21,.56),(-.36,.20)], .38,.64,cloak)
+    faceted_prism("Split nose glacis", [(-.34,.18),(.34,.18),(.24,.67),(-.24,.67)],
+                  [(-.27,.14),(.27,.14),(.15,.57),(-.15,.57)], .54,.68,edge)
+    cube("Centerline stealth keel", (0,.34,.681), (.06,.47,.025), edge, .006)
+    for side in [-1,1]:
+        cube("Hull ion channel", (side*.358,-.03,.54), (.018,.67,.025), covert, .006)
+        cube("Nose marker", (side*.25,.61,.43), (.045,.025,.022), covert, .005)
+        cube("Upper hull armor break", (side*.25,.05,.646), (.10,.29,.018), edge, .006)
+        cube("Rear heat suppressor", (side*.22,-.48,.49), (.12,.19,.035), shadow, .008)
+        for y in [-.53,-.48,-.43]:
+            cube("Exhaust vent blade", (side*.22,y,.513), (.09,.012,.009), edge, .003)
+        cube("Exhaust heat marker", (side*.22,-.585,.49), (.055,.018,.018), covert, .004)
+    cube("Recessed nose sensor slit", (0,.674,.49), (.22,.018,.022), covert, .004)
+
+    # Keep this named mesh independent and centered for the runtime turret
+    # aim hook. Its low emitter shoulders and offset passive fin read covert,
+    # rather than like a conventional cannon turret.
+    turret_parts=[]
+    turret_parts.append(cylinder("Turret race", (0,-.035,.625), .245,.065, steel, 10))
+    turret_parts.append(cylinder("Turret bearing lip", (0,-.035,.657), .205,.022, steel, 10))
+    turret_parts.append(faceted_prism("Low faceted turret shell",
+        [(-.29,-.31),(.29,-.31),(.32,-.11),(.24,.18),(.10,.29),(-.10,.29),(-.24,.18),(-.32,-.11)],
+        [(-.24,-.26),(.24,-.26),(.26,-.09),(.19,.14),(.075,.23),(-.075,.23),(-.19,.14),(-.26,-.09)], .655,.79,cloak))
+    turret_parts.append(faceted_prism("Turret armored brow",
+        [(-.235,.12),(.235,.12),(.17,.30),(-.17,.30)],
+        [(-.19,.12),(.19,.12),(.13,.24),(-.13,.24)], .765,.82,steel))
+    # A recessed beam aperture and paired armored emitter pods make a compact
+    # weapon crown with no forward barrel to dominate the silhouette.
+    turret_parts.append(cube("Recessed emitter well", (0,.285,.715), (.15,.035,.085), cloak, .012))
+    turret_parts.append(cube("Ion emitter aperture", (0,.307,.716), (.072,.012,.035), covert, .003))
+    for side in [-1,1]:
+        pod=cube("Paired emitter pod", (side*.19,.185,.724), (.13,.24,.085), steel, .018)
+        pod.rotation_euler[2]=side*math.radians(5)
+        turret_parts.append(pod)
+        turret_parts.append(cube("Emitter pod recess", (side*.19,.312,.724), (.075,.014,.040), cloak, .004))
+        turret_parts.append(cube("Emitter pod slit", (side*.19,.321,.724), (.043,.008,.015), covert, .002))
+    turret_parts.append(cube("Turret optic housing", (.14,.08,.78), (.10,.15,.06), cloak, .012))
+    turret_parts.append(cube("Turret optic slit", (.14,.158,.78), (.06,.012,.015), covert, .003))
+    fin=cube("Passive sensor fin", (-.18,-.105,.851), (.055,.15,.16), steel, .01)
+    fin.rotation_euler[1]=math.radians(-9)
+    turret_parts.append(fin)
+    turret_parts.append(cube("Sensor fin aperture", (-.18,-.025,.88), (.065,.012,.024), covert, .003))
+    turret_parts.append(cube("Forked sensor receiver", (-.18,-.15,.925), (.19,.11,.035), steel, .008))
+    turret_parts.append(cube("Receiver glass", (-.18,-.092,.925), (.08,.012,.018), covert, .003))
+    for side in [-1,1]:
+        turret_parts.append(cube("Turret cheek armor", (side*.275,-.05,.71), (.055,.28,.09), steel, .012))
+    consolidate_static_meshes(("Stealth turret",),
+        (("Stealth turret",turret_parts,(0,-.035,.625)),))
     export("stealth-tank")
     LOW_POLY_BEVEL = False
 
