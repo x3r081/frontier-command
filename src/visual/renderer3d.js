@@ -4348,6 +4348,7 @@ export class Renderer3D {
   }
 
   _removeEntity(id,state) {
+    state.group.visible=false;
     this.entityGroup.remove(state.group);
     if(state.dust) {this.effectGroup.remove(state.dust);state.dust.material.dispose();}
     state.group.traverse(obj=>{if(obj.geometry&&!obj.userData.sharedAssetGeometry)obj.geometry.dispose();if(obj.material)(Array.isArray(obj.material)?obj.material:[obj.material]).forEach(m=>m.dispose());});
@@ -4359,6 +4360,53 @@ export class Renderer3D {
     if(!animation||state.building) return;
     const braced=o.defId==='guardian'&&o.faction==='aegis'&&(o.braceUntil||0)>game.time;
     const ghosting=o.defId==='stealthTank'&&o.faction==='vesper'&&(o.ghostRunUntil||0)>game.time;
+    const suppressed=Number.isFinite(o.suppressedUntil)&&o.suppressedUntil>game.time;
+    if(suppressed&&!animation.suppressionCue) {
+      // A single shallow broken ring marks units whose weapons are disabled.
+      // The low segment count keeps this transient cue cheap at battle scale.
+      const radius=clamp(game.unitDefs?.[o.defId]?.radius||0.34,0.27,0.43);
+      const halfWidth=0.035;
+      const segments=14;
+      const positions=[];
+      const indices=[];
+      for(const start of [0.12,Math.PI+0.12]) {
+        const arc=Math.PI*0.68;
+        const first=positions.length/3;
+        for(let i=0;i<=segments;i++) {
+          const angle=start+arc*i/segments;
+          const c=Math.cos(angle),s=Math.sin(angle);
+          positions.push(c*(radius-halfWidth),0,s*(radius-halfWidth),
+            c*(radius+halfWidth),0,s*(radius+halfWidth));
+        }
+        for(let i=0;i<segments;i++) {
+          const a=first+i*2,b=a+1,c=a+2,d=a+3;
+          indices.push(a,c,b,b,c,d);
+        }
+      }
+      const geometry=new THREE.BufferGeometry();
+      geometry.setAttribute('position',new THREE.Float32BufferAttribute(positions,3));
+      geometry.setIndex(indices);
+      geometry.computeVertexNormals();
+      const material=new THREE.MeshBasicMaterial({color:0xff895f,transparent:true,opacity:0.74,
+        depthWrite:false,toneMapped:false,side:THREE.DoubleSide});
+      const cue=new THREE.Mesh(geometry,material);
+      cue.position.y=0.7;
+      cue.renderOrder=7;
+      cue.visible=false;
+      cue.userData.suppressionCue=true;
+      state.group.add(cue);
+      animation.suppressionCue=cue;
+    }
+    if(animation.suppressionCue) {
+      const cue=animation.suppressionCue;
+      cue.visible=suppressed;
+      if(suppressed) {
+        const phase=animation.phase||0;
+        cue.material.opacity=0.65+0.12*(0.5+0.5*Math.sin(time*7.5+phase));
+        const pulse=0.98+0.04*(0.5+0.5*Math.sin(time*5.2+phase));
+        cue.scale.set(pulse,1,pulse);
+      } else cue.scale.set(1,1,1);
+    }
     if(braced&&!animation.braceCue) {
       const cue=new THREE.Group();
       const material=new THREE.MeshBasicMaterial({color:0x7feaff,transparent:true,opacity:0.44,
@@ -4388,7 +4436,7 @@ export class Renderer3D {
       state.group.add(cue);animation.ghostRunCue=cue;
       animation.ghostMaterials=[];
       (state.group.userData.authoredVisual||state.group.userData.proceduralVisual||state.group).traverse(object=>{
-        if(!object.isMesh||object.userData.rendererBatchSource) return;
+        if(!object.isMesh||object.userData.rendererBatchSource||object.userData.suppressionCue) return;
         for(const m of (Array.isArray(object.material)?object.material:[object.material]))
           animation.ghostMaterials.push({material:m,opacity:m.opacity,transparent:m.transparent,depthWrite:m.depthWrite});
       });

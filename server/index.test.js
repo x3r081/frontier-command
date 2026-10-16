@@ -8,7 +8,8 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { spawn } from 'node:child_process';
 import WebSocket from 'ws';
-import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, aiCommanderProfileForSeed } from '../src/game/engine.js';
+import { Game, SKIRMISH_MAPS, UNIT_DEFS, AI_COMMANDER_PROFILES, AI_ECONOMY_RESERVE_RULES_VERSION,
+  aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_FIELD_ORDERS, CAMPAIGN_MISSIONS, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
 import { deriveCampaignVeteran } from '../src/game/campaignVeteran.js';
 import { createSoloPlayback, createSoloRecorder, validateSoloEnvelope, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
@@ -478,7 +479,7 @@ test('leaderboard validates filters and ranks only compatible verified scores', 
   assert.equal(history[1].score, 7410);
 });
 
-test('v68 leaderboard floors cover every solo mode and preserve v67 history', async () => {
+test('v69 skirmish floor advances while campaign stays at v68 and older history remains', async () => {
   const profile = await createProfile('Assembly Floor');
   const base = { profileId: profile.profile.id, difficulty: 'normal', faction: 'aegis',
     seconds: 42, kills: 2, completedAt: 900, verified: true };
@@ -487,26 +488,26 @@ test('v68 leaderboard floors cover every solo mode and preserve v67 history', as
       scoreVersion: 67 },
     { ...base, id: 'assembly-campaign-v68', mode: 'campaign', scenarioId: 'first-harvest',
       scoreVersion: 68 },
-    { ...base, id: 'assembly-skirmish-v67', mode: 'skirmish', scenarioId: 'shard-valley',
-      scoreVersion: 67, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
     { ...base, id: 'assembly-skirmish-v68', mode: 'skirmish', scenarioId: 'shard-valley',
       scoreVersion: 68, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+    { ...base, id: 'assembly-skirmish-v69', mode: 'skirmish', scenarioId: 'shard-valley',
+      scoreVersion: 69, aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
   ];
-  const history = { id: 'history-assembly-campaign-v67', profileId: profile.profile.id,
-    mode: 'campaign', scenarioId: 'first-harvest', scenarioName: 'First Harvest',
+  const history = { id: 'history-assembly-skirmish-v68', profileId: profile.profile.id,
+    mode: 'skirmish', scenarioId: 'shard-valley', scenarioName: 'Shard Valley',
     difficulty: 'normal', faction: 'aegis', seconds: 42, kills: 2,
-    result: 'victory', completedAt: 901, scoreId: 'assembly-campaign-v67' };
+    result: 'victory', completedAt: 901, scoreId: 'assembly-skirmish-v68' };
   store.scores.push(...rows);
   store.history.push(history);
   try {
-    for (const mode of ['campaign', 'skirmish']) {
-      const response = await api(`/api/leaderboard?mode=${mode}&scenarioId=${mode === 'campaign' ? 'first-harvest' : 'shard-valley'}`,
-        profile.token);
-      assert.deepEqual((await response.json()).entries.map(entry => entry.id), [`assembly-${mode}-v68`]);
-    }
-    assert.equal(SOLO_REPLAY_VERSION, 68);
+    const campaign = await api('/api/leaderboard?mode=campaign&scenarioId=first-harvest', profile.token);
+    assert.deepEqual((await campaign.json()).entries.map(entry => entry.id), ['assembly-campaign-v68']);
+    const skirmish = await api('/api/leaderboard?mode=skirmish&scenarioId=shard-valley', profile.token);
+    assert.deepEqual((await skirmish.json()).entries.map(entry => entry.id), ['assembly-skirmish-v69']);
+    assert.equal(SOLO_REPLAY_VERSION, 69);
+    assert.equal(AI_ECONOMY_RESERVE_RULES_VERSION, 69);
     assert.ok((await (await api('/api/records/history', profile.token)).json()).entries
-      .some(entry => entry.id === history.id), 'v67 stays visible in private battle history');
+      .some(entry => entry.id === history.id), 'v68 stays visible in private battle history');
   } finally {
     for (const row of rows) {
       const index = store.scores.indexOf(row);
@@ -517,7 +518,7 @@ test('v68 leaderboard floors cover every solo mode and preserve v67 history', as
   }
 });
 
-test('v68 skirmish boards require reinforcement assembly while preserving older results', async () => {
+test('v69 skirmish boards require economic recovery reserves while preserving older results', async () => {
   const profile = await createProfile('Route Compatibility');
   const base = { profileId: profile.profile.id, mode: 'skirmish', difficulty: 'normal',
     faction: 'aegis', skirmishOpening: 'established', victoryMode: 'dominion',
@@ -626,6 +627,20 @@ test('v68 skirmish boards require reinforcement assembly while preserving older 
     { ...base, id: 'siege-easy-v68', difficulty: 'easy', scenarioId: 'twin-passes', scoreVersion: 68,
       aiCommanderProfileId: AI_COMMANDER_PROFILES[2].id },
   ];
+  rows.push(
+    { ...base, id: 'route-v69-shard', scenarioId: 'shard-valley', scoreVersion: 69,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[1].id },
+    { ...base, id: 'route-v69-canyon', scenarioId: 'canyon-ring', scoreVersion: 69,
+      aiCommanderProfileId: AI_COMMANDER_PROFILES[0].id },
+  );
+  for (const difficulty of ['easy', 'normal', 'hard']) for (const commander of AI_COMMANDER_PROFILES) {
+    const key = `${difficulty}-${commander.id}`;
+    rows.push(
+      { ...base, id: `siege-v68-${key}`, difficulty, scenarioId: 'twin-passes', scoreVersion: 68,
+        aiCommanderProfileId: commander.id },
+      { ...base, id: `siege-v69-${key}`, difficulty, scenarioId: 'twin-passes', scoreVersion: 69,
+        aiCommanderProfileId: commander.id });
+  }
   store.scores.push(...rows);
   store.history.push({ id: 'history-route-v48', profileId: profile.profile.id, mode: 'skirmish',
     scenarioId: 'shard-valley', scenarioName: 'Shard Valley', difficulty: 'normal', faction: 'aegis',
@@ -638,30 +653,26 @@ test('v68 skirmish boards require reinforcement assembly while preserving older 
   try {
     const shard = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=shard-valley', profile.token)).json()).entries;
     const canyon = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=canyon-ring', profile.token)).json()).entries;
-    assert.deepEqual(shard.map(entry => entry.id), ['route-v68-shard']);
-    assert.deepEqual(canyon.map(entry => entry.id), ['route-v68-canyon']);
-    const siege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=normal',
-      profile.token)).json()).entries;
-    assert.deepEqual(siege.map(entry => entry.id), ['siege-v68'],
-      'normal scores before reinforcement assembly are incomparable');
-    const hardSiege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=hard',
-      profile.token)).json()).entries;
-    assert.deepEqual(hardSiege.map(entry => entry.id), ['siege-hard-v68'],
-      'hard scores before reinforcement assembly are incomparable');
-    const easySiege = (await (await api('/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=siege-director&difficulty=easy',
-      profile.token)).json()).entries;
-    assert.deepEqual(easySiege.map(entry => entry.id), ['siege-easy-v68'],
-      'easy scores also require reinforcement assembly');
+    assert.deepEqual(shard.map(entry => entry.id), ['route-v69-shard']);
+    assert.deepEqual(canyon.map(entry => entry.id), ['route-v69-canyon']);
+    for (const difficulty of ['easy', 'normal', 'hard']) for (const commander of AI_COMMANDER_PROFILES) {
+      const entries = (await (await api(`/api/leaderboard?mode=skirmish&scenarioId=twin-passes&aiCommanderProfileId=${commander.id}&difficulty=${difficulty}`,
+        profile.token)).json()).entries;
+      assert.deepEqual(entries.map(entry => entry.id), [`siege-v69-${difficulty}-${commander.id}`],
+        `${difficulty} ${commander.id} scores use v69 recovery-reserve rules`);
+    }
     assert.equal(shard[0].aiCommanderProfileId, AI_COMMANDER_PROFILES[1].id);
     assert.deepEqual((await (await api(`/api/leaderboard?mode=skirmish&scenarioId=canyon-ring&aiCommanderProfileId=${AI_COMMANDER_PROFILES[0].id}`,
-      profile.token)).json()).entries.map(entry => entry.id), ['route-v68-canyon']);
+      profile.token)).json()).entries.map(entry => entry.id), ['route-v69-canyon']);
     assert.equal((await api('/api/leaderboard?mode=skirmish&aiCommanderProfileId=unknown', profile.token)).status, 400);
     assert.ok(store.scores.some(score => score.id === 'route-v44-canyon'),
       'retiring an old result from comparable rankings does not erase it');
     assert.ok(store.scores.some(score => score.id === 'route-v49-shard'),
       'v49 results stay stored after leaving the current skirmish board');
     assert.ok(store.scores.some(score => score.id === 'route-v59-shard'),
-      'v59 runs remain stored after leaving the v68 board');
+      'v59 runs remain stored after leaving the v69 board');
+    assert.ok(store.scores.includes(rows.find(row => row.id === 'route-v68-shard')),
+      'v68 results remain stored after leaving the v69 board');
     assert.ok(rows.filter(row => row.scoreVersion < 48).every(row => store.scores.includes(row)),
       'older results remain in storage for private history');
     assert.ok((await (await api('/api/records/history', profile.token)).json()).entries

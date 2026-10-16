@@ -6,7 +6,7 @@ import { randomBytes, randomInt, createHash } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
-  REINFORCEMENT_ASSEMBLY_RULES_VERSION,
+  AI_ECONOMY_RESERVE_RULES_VERSION, REINFORCEMENT_ASSEMBLY_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, getCampaignCarryoverUnlocks, getCampaignRequisitionBalance } from '../src/game/campaign.js';
@@ -59,12 +59,16 @@ const RANKED_SEASON = 68;
 // every skirmish difficulty. Campaign rules and multiplayer season are unchanged.
 // Version 65 coordinates normal/hard ground assaults on observed fortifications.
 // Version 68 changes reinforcement assembly for newly produced units in both
-// solo modes, so all campaign and skirmish boards start at v68.
+// solo modes, so campaign and skirmish boards start at v68. Version 69 changes
+// skirmish-only economic recovery reserves, advancing only skirmish boards.
+const CAMPAIGN_SCORE_FLOOR = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = Math.max(REINFORCEMENT_ASSEMBLY_RULES_VERSION,
+  AI_ECONOMY_RESERVE_RULES_VERSION);
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
-  (score.mode === 'skirmish' ? score.scoreVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION &&
+  (score.mode === 'skirmish' ? score.scoreVersion >= SKIRMISH_SCORE_FLOOR &&
       score.scoreVersion <= SCORE_VERSION &&
       AI_COMMANDER_PROFILES.some(commander => commander.id === score.aiCommanderProfileId)
-    : score.mode === 'campaign' && score.scoreVersion >= REINFORCEMENT_ASSEMBLY_RULES_VERSION &&
+    : score.mode === 'campaign' && score.scoreVersion >= CAMPAIGN_SCORE_FLOOR &&
         score.scoreVersion <= SCORE_VERSION);
 const MAX_REPLAY_BODY_BYTES = 1_000_000;
 const MAX_VERIFICATIONS = 2;

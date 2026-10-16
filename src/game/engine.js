@@ -58,6 +58,7 @@ export const AIR_SERVICE_RULES_VERSION = 66;
 export const QUEUED_ORDERS_RULES_VERSION = 56;
 export const PRODUCTION_SITE_RULES_VERSION = 67;
 export const REINFORCEMENT_ASSEMBLY_RULES_VERSION = 68;
+export const AI_ECONOMY_RESERVE_RULES_VERSION = 69;
 export const REVERSE_MOVE_RULES_VERSION = 61;
 export const MATCHED_PACE_RULES_VERSION = 63;
 export const TACTICAL_ELEVATION_RULES_VERSION = 58;
@@ -361,6 +362,7 @@ export class Game {
     this.relayDominionCounterattackRulesVersion = RELAY_DOMINION_COUNTERATTACK_RULES_VERSION;
     this.relayDominionReconRulesVersion = RELAY_DOMINION_RECON_RULES_VERSION;
     this.economyRecoveryRulesVersion = ECONOMY_RECOVERY_RULES_VERSION;
+    this.aiEconomyReserveRulesVersion = AI_ECONOMY_RESERVE_RULES_VERSION;
     this.relayResponsePersistenceRulesVersion = RELAY_RESPONSE_PERSISTENCE_RULES_VERSION;
     this.doctrineReplacementRulesVersion = DOCTRINE_REPLACEMENT_RULES_VERSION;
     this.relayDominionTargetCommitmentRulesVersion = RELAY_DOMINION_TARGET_COMMITMENT_RULES_VERSION;
@@ -1958,6 +1960,8 @@ export class Game {
     if (!center) return { ok: false, reason: 'A completed powered Research Center is required.' };
     const cost = replacing ? DOCTRINE_REPLACEMENT_COST : doctrine.cost;
     if (this.credits[owner] < cost) return { ok: false, reason: 'Insufficient credits.' };
+    if (owner === 'enemy' && !this._aiCanSpendCredits(owner, cost))
+      return { ok: false, reason: 'Credits are reserved for a replacement Harvester.' };
     this.credits[owner] -= cost;
     state.project = { id, progress: 0 };
     if (replacing) state.replacementUsed = true;
@@ -1977,6 +1981,8 @@ export class Game {
     const center = this.buildings.some(b => b.owner === owner && b.defId === 'tech' && b.hp > 0 && b.progress >= 1 && b.powered);
     if (!center) return { ok: false, reason: 'A completed powered Research Center is required.' };
     if (this.credits[owner] < packageDef.cost) return { ok: false, reason: 'Insufficient credits.' };
+    if (owner === 'enemy' && !this._aiCanSpendCredits(owner, packageDef.cost))
+      return { ok: false, reason: 'Credits are reserved for a replacement Harvester.' };
     this.credits[owner] -= packageDef.cost;
     state.tacticalProject = { id, progress: 0 };
     this._event('tacticalPackageResearch', { owner, id, progress: 0 });
@@ -2146,6 +2152,9 @@ export class Game {
       return { ok: false, reason: 'Production site selection requires replay version 67.' };
     const check = this.canQueueUnit(defId, owner);
     if (!check.ok) return check;
+    if (owner === 'enemy' && defId !== 'harvester' &&
+        !this._aiCanSpendCredits(owner, UNIT_DEFS[defId].cost))
+      return { ok: false, reason: 'Credits are reserved for a replacement Harvester.' };
     const producer = explicitProducer
       ? check.producers.find(building => building.id === producerId)
       : [...check.producers].sort((a, b) => a.queue.length - b.queue.length)[0];
@@ -3926,8 +3935,9 @@ export class Game {
         if (b.progress >= 1) this._onBuildingComplete(b);
         continue;
       }
-      if (b.repairing && !(b.captureOnly && b.owner === 'enemy') && b.hp < b.maxHp && this.credits[b.owner] > 0) {
-        const amount = Math.min(b.maxHp - b.hp, dt * 33, this.credits[b.owner] * 3.7);
+      if (b.repairing && !(b.captureOnly && b.owner === 'enemy') && b.hp < b.maxHp &&
+          this._repairCreditsAvailable(b.owner) > 0) {
+        const amount = Math.min(b.maxHp - b.hp, dt * 33, this._repairCreditsAvailable(b.owner) * 3.7);
         b.hp += amount; this.credits[b.owner] -= amount / 3.7;
         if (b.hp >= b.maxHp - 0.1) { b.hp = b.maxHp; b.repairing = false; }
       }
@@ -3936,8 +3946,9 @@ export class Game {
           const unitDef = UNIT_DEFS[u.defId];
           if (u.owner !== b.owner || u.hp <= 0 || u.embarkedIn || unitDef.flying ||
             !['light', 'heavy'].includes(unitDef.armor) || servicedVehicles.has(u.id) ||
-            u.hp >= u.maxHp || this._distanceToEntity(u.x, u.y, b) > 2.5 || this.credits[b.owner] <= 0) continue;
-          const repair = Math.min(u.maxHp - u.hp, dt * 11, this.credits[b.owner] * 2);
+            u.hp >= u.maxHp || this._distanceToEntity(u.x, u.y, b) > 2.5 ||
+            this._repairCreditsAvailable(b.owner) <= 0) continue;
+          const repair = Math.min(u.maxHp - u.hp, dt * 11, this._repairCreditsAvailable(b.owner) * 2);
           if (repair <= 0) continue;
           u.hp += repair;
           this.credits[b.owner] -= repair * 0.5;
@@ -3969,6 +3980,24 @@ export class Game {
       }
       this._event('unitReady', { id: u.id, owner: u.owner, defId: u.defId, buildingId: b.id });
     }
+  }
+
+  _aiEconomyReserve(owner = 'enemy') {
+    if (owner !== 'enemy' || this.mode !== 'skirmish' ||
+        (this.replayVersion != null && this.replayVersion < AI_ECONOMY_RESERVE_RULES_VERSION) ||
+        !this.hasBuilding('enemy', 'refinery') || !this.hasBuilding('enemy', 'factory')) return 0;
+    const hasHarvester = this.units.some(unit => unit.owner === 'enemy' && unit.defId === 'harvester' && unit.hp > 0) ||
+      this.buildings.some(building => building.owner === 'enemy' && building.hp > 0 &&
+        building.queue?.some(item => item.defId === 'harvester'));
+    return hasHarvester ? 0 : UNIT_DEFS.harvester.cost;
+  }
+
+  _repairCreditsAvailable(owner) {
+    return Math.max(0, (Number(this.credits[owner]) || 0) - this._aiEconomyReserve(owner));
+  }
+
+  _aiCanSpendCredits(owner, amount) {
+    return this.credits[owner] - amount >= this._aiEconomyReserve(owner);
   }
 
   sellBuilding(buildingId) {
@@ -4025,6 +4054,7 @@ export class Game {
   _aiBuild(defId, anchorId = null, placement = null) {
     if (this.buildings.some(b => b.owner === 'enemy' && b.progress < 1 && b.hp > 0)) return false;
     if (!this.canBuild(defId, 'enemy').ok) return false;
+    if (!this._aiCanSpendCredits('enemy', BUILDING_DEFS[defId].cost)) return false;
     const pos = placement || this._findAiPlacement(defId, anchorId);
     if (!pos) return false;
     this.credits.enemy -= BUILDING_DEFS[defId].cost;
@@ -5995,6 +6025,10 @@ export class Game {
         this._aiCommandRigOpeningComplete = true;
     }
     this._aiRecoverEconomy();
+    // Replace the economy's first worker before optional expansion, recovery,
+    // research, or combat spending can reserve its remaining replacement cost.
+    // A full factory queue is left untouched; the AI will retry next tick.
+    if (this._aiEconomyReserve('enemy') > 0) this._queueUnit('enemy', 'harvester');
     this._aiRecoverCommandYard();
     const reserveCommandRecovery = this._aiCommandRecovery?.stage === 'funding' &&
       this._aiCommandRecoveryCanQueue();
@@ -6948,6 +6982,10 @@ export class Game {
     if (game.replayVersion == null &&
         data.reinforcementAssemblyRulesVersion !== REINFORCEMENT_ASSEMBLY_RULES_VERSION)
       game.replayVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION - 1;
+    // Markerless skirmish saves keep their pre-reserve economy decisions.
+    if (game.mode === 'skirmish' && game.replayVersion == null &&
+        data.aiEconomyReserveRulesVersion !== AI_ECONOMY_RESERVE_RULES_VERSION)
+      game.replayVersion = AI_ECONOMY_RESERVE_RULES_VERSION - 1;
     game.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
     game.aiCommanderProfileRulesVersion = AI_COMMANDER_PROFILE_RULES_VERSION;
     game.siegeDirectorRulesVersion = SIEGE_DIRECTOR_RULES_VERSION;
@@ -6972,6 +7010,7 @@ export class Game {
     game.aiAssaultCoordinationRulesVersion = AI_ASSAULT_COORDINATION_RULES_VERSION;
     game.airServiceRulesVersion = AIR_SERVICE_RULES_VERSION;
     game.reinforcementAssemblyRulesVersion = REINFORCEMENT_ASSEMBLY_RULES_VERSION;
+    game.aiEconomyReserveRulesVersion = AI_ECONOMY_RESERVE_RULES_VERSION;
     game.matchedPaceRulesVersion = MATCHED_PACE_RULES_VERSION;
     const savedRecovery = game._aiCommandRecovery;
     game._aiCommandRecovery = savedRecovery && ['funding', 'queued', 'moving', 'waiting-site'].includes(savedRecovery.stage)
