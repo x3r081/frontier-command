@@ -92,6 +92,7 @@ export const TARGET_PRIORITY_RULES_VERSION = 82;
 export const MEDIC_ESCORT_RULES_VERSION = 83;
 export const ENGINEER_FIELD_REPAIR_RULES_VERSION = 85;
 export const AI_ROCKET_PRIORITY_RULES_VERSION = 86;
+export const ENGINEER_ESCORT_RULES_VERSION = 87;
 export const ENGINEER_FIELD_REPAIR_KITS = 2;
 export const ENGINEER_FIELD_REPAIR_AMOUNT = 120;
 export const ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS = 5;
@@ -181,7 +182,7 @@ export const UNIT_DEFS = Object.freeze({
     description: 'Long-range missiles excel against armor and structures.' },
   engineer: { id: 'engineer', name: 'Engineer', faction: 'all', role: 'engineer', producer: 'barracks', cost: 450, buildTime: 11,
     health: 70, armor: 'infantry', speed: 1.35, sight: 5, radius: 0.24, weapon: null,
-    description: 'Captures damaged enemy structures and restores friendly ones. Carries two field repair kits for ground vehicles; refill them at a powered Field Workshop.' },
+    description: 'Captures damaged enemy structures and restores friendly ones. Carries two field repair kits. Follow a ground vehicle to patch it when it stops; refill at a powered Field Workshop.' },
   harvester: { id: 'harvester', name: 'Crystal Harvester', faction: 'all', role: 'harvester', producer: 'factory', cost: 1250, buildTime: 23,
     health: 610, armor: 'heavy', speed: 0.92, sight: 5, radius: 0.42, capacity: 700, weapon: null,
     description: 'Collects crystal and delivers it to a refinery for credits. Aegis harvesters extract 20% faster within 6 tiles of a powered refinery.' },
@@ -395,6 +396,7 @@ export class Game {
     this.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
     this.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
     this.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
+    this.engineerEscortRulesVersion = ENGINEER_ESCORT_RULES_VERSION;
     this._aiFieldBunkerBuilt = false;
     this.tacticalElevationRulesVersion = TACTICAL_ELEVATION_RULES_VERSION;
     this.unitAbilityRulesVersion = UNIT_ABILITY_RULES_VERSION;
@@ -1815,6 +1817,12 @@ export class Game {
     for (const u of units) {
       u.order = { type: 'follow', targetId };
       u.path = []; u._pathGoal = null;
+      if (u.defId === 'engineer' && this._engineerFollowRepairEnabled()) {
+        u._fieldRepairProgress = 0;
+        u._fieldRepairLastTargetX = Number.isFinite(target.x) ? target.x : undefined;
+        u._fieldRepairLastTargetY = Number.isFinite(target.y) ? target.y : undefined;
+        u._fieldRepairWaiting = null;
+      }
     }
     this._event('order', { order: 'follow', ids: units.map(u => u.id), targetId });
     return { ok: true };
@@ -2583,6 +2591,11 @@ export class Game {
   _aiRocketTargetPriorityEnabled() {
     return this.mode === 'skirmish' &&
       (this.replayVersion == null || this.replayVersion >= AI_ROCKET_PRIORITY_RULES_VERSION);
+  }
+
+  _engineerFollowRepairEnabled() {
+    return this._engineerFieldRepairEnabled() &&
+      (this.replayVersion == null || this.replayVersion >= ENGINEER_ESCORT_RULES_VERSION);
   }
 
   _aiAdaptRocketTargetPriorities() {
@@ -4622,6 +4635,74 @@ export class Game {
     if (message) this._event('fieldRepairOrderEnded', { engineerId: unit.id, owner: unit.owner, message });
   }
 
+  _completeEngineerFieldRepair(unit, target, { keepFollow = false } = {}) {
+    const amount = Math.min(ENGINEER_FIELD_REPAIR_AMOUNT, target.maxHp - target.hp);
+    if (amount <= 0) return false;
+    target.hp += amount;
+    unit.fieldRepairKits = Math.max(0, Math.min(ENGINEER_FIELD_REPAIR_KITS,
+      Math.trunc(unit.fieldRepairKits || 0)) - 1);
+    unit._fieldRepairProgress = 0;
+    this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'heal', x: target.x, y: target.y,
+      radius: 0.7, ttl: 0.75, maxTtl: 0.75, sourceId: unit.id, targetId: target.id,
+      owner: unit.owner, kind: 'fieldRepair' });
+    this._event('fieldRepairCompleted', { engineerId: unit.id, targetId: target.id,
+      owner: unit.owner, amount, kits: unit.fieldRepairKits });
+    if (!keepFollow && (target.hp >= target.maxHp || unit.fieldRepairKits <= 0))
+      this._finishEngineerFieldOrder(unit);
+    return true;
+  }
+
+  _updateEngineerFollowRepair(unit, target, dt) {
+    if (!this._engineerFollowRepairEnabled() || unit.defId !== 'engineer' || unit.hp <= 0 || unit.embarkedIn ||
+        !target || target.hp <= 0 || target.owner !== unit.owner || target.embarkedIn ||
+        !this._isFieldRepairVehicle(target) || target.hp >= target.maxHp || (unit.fieldRepairKits || 0) < 1) {
+      unit._fieldRepairProgress = 0;
+      unit._fieldRepairWaiting = null;
+      return false;
+    }
+    const targetReservedByOther = this.units.some(other => other !== unit && other.owner === unit.owner &&
+      other.hp > 0 && !other.embarkedIn && other.defId === 'engineer' &&
+      (other.order?.type === 'fieldRepair' && other.order.targetId === target.id ||
+        this._engineerFollowRepairEnabled() && other.order?.type === 'follow' &&
+          other.order.targetId === target.id && (other.fieldRepairKits || 0) > 0 &&
+          this.units.indexOf(other) < this.units.indexOf(unit)));
+    if (targetReservedByOther) {
+      unit._fieldRepairProgress = 0;
+      this._setEngineerFieldRepairWaiting(unit, 'target-assigned', target);
+      return false;
+    }
+    const moved = Number.isFinite(unit._fieldRepairLastTargetX) &&
+      (Math.abs(target.x - unit._fieldRepairLastTargetX) > 0.001 ||
+        Math.abs(target.y - unit._fieldRepairLastTargetY) > 0.001);
+    unit._fieldRepairLastTargetX = target.x;
+    unit._fieldRepairLastTargetY = target.y;
+    if (moved) {
+      unit._fieldRepairProgress = 0;
+      this._setEngineerFieldRepairWaiting(unit, 'target-moving', target);
+      return false;
+    }
+    this._setEngineerFieldRepairWaiting(unit, null, target);
+    if (this._distanceToEntity(unit.x, unit.y, target) > 1.2) {
+      unit._fieldRepairProgress = 0;
+      this._setEngineerFieldRepairWaiting(unit, null, target);
+      this._moveUnit(unit, target.x, target.y, dt, 0.9);
+      return true;
+    }
+    if (unit.path.length) { unit.path = []; unit._pathGoal = null; }
+    unit._fieldRepairProgress = Math.min(ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS,
+      Math.max(0, unit._fieldRepairProgress || 0) + dt);
+    if (unit._fieldRepairProgress + 0.000001 < ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS) return true;
+    if (target.hp <= 0 || target.owner !== unit.owner || target.embarkedIn || target.hp >= target.maxHp ||
+        this._distanceToEntity(unit.x, unit.y, target) > 1.2 ||
+        Math.abs(target.x - unit._fieldRepairLastTargetX) > 0.001 ||
+        Math.abs(target.y - unit._fieldRepairLastTargetY) > 0.001) {
+      unit._fieldRepairProgress = 0;
+      return true;
+    }
+    this._completeEngineerFieldRepair(unit, target, { keepFollow: true });
+    return true;
+  }
+
   _updateFieldRepair(unit, dt) {
     if (!this._engineerFieldRepairEnabled() || unit.defId !== 'engineer' || unit.hp <= 0 || unit.embarkedIn) {
       this._finishEngineerFieldOrder(unit);
@@ -4672,19 +4753,7 @@ export class Game {
       unit._fieldRepairProgress = 0;
       return;
     }
-    const amount = Math.min(ENGINEER_FIELD_REPAIR_AMOUNT, target.maxHp - target.hp);
-    if (amount <= 0) { this._finishEngineerFieldOrder(unit); return; }
-    target.hp += amount;
-    unit.fieldRepairKits = Math.max(0, Math.min(ENGINEER_FIELD_REPAIR_KITS,
-      Math.trunc(unit.fieldRepairKits || 0)) - 1);
-    unit._fieldRepairProgress = 0;
-    this.effects.push({ id: `fx${this._nextEffectId++}`, type: 'heal', x: target.x, y: target.y,
-      radius: 0.7, ttl: 0.75, maxTtl: 0.75, sourceId: unit.id, targetId: target.id,
-      owner: unit.owner, kind: 'fieldRepair' });
-    this._event('fieldRepairCompleted', { engineerId: unit.id, targetId: target.id,
-      owner: unit.owner, amount, kits: unit.fieldRepairKits });
-    if (target.hp >= target.maxHp || unit.fieldRepairKits <= 0)
-      this._finishEngineerFieldOrder(unit);
+    this._completeEngineerFieldRepair(unit, target);
   }
 
   _updateRepairKitRefill(unit, dt) {
@@ -5062,16 +5131,24 @@ export class Game {
       const followed = this.getEntity(order.targetId);
       if (!followed || followed.hp <= 0 || followed.owner !== u.owner || followed.id === u.id) {
         u.order = { type: 'idle' }; u.path = []; u._pathGoal = null;
+        if (u.defId === 'engineer' && this._engineerFollowRepairEnabled()) {
+          u._fieldRepairProgress = 0; u._fieldRepairRefillProgress = 0; u._fieldRepairWaiting = null;
+          delete u._fieldRepairLastTargetX; delete u._fieldRepairLastTargetY;
+        }
         return;
       }
       const c = this._entityCenter(followed);
       const clearance = (d.radius || 0.3) + (UNIT_DEFS[followed.defId]?.radius || 0.35) + 0.55;
-      if (this._distanceToEntity(u.x, u.y, followed) > clearance) {
-        const stopDistance = 'w' in followed
-          ? Math.hypot(followed.w / 2, followed.h / 2) + clearance
-          : clearance;
-        this._moveUnit(u, c.x, c.y, dt, stopDistance);
-      } else if (u.path.length) u.path = [];
+      const repairHandled = u.defId === 'engineer' && this._engineerFollowRepairEnabled() &&
+        this._updateEngineerFollowRepair(u, followed, dt);
+      if (!repairHandled) {
+        if (this._distanceToEntity(u.x, u.y, followed) > clearance) {
+          const stopDistance = 'w' in followed
+            ? Math.hypot(followed.w / 2, followed.h / 2) + clearance
+            : clearance;
+          this._moveUnit(u, c.x, c.y, dt, stopDistance);
+        } else if (u.path.length) u.path = [];
+      }
       // Following is a movement order; nearby enemies may still be engaged below.
     }
     if (order.type === 'forceFire') {
@@ -8967,6 +9044,10 @@ export class Game {
     if (game.replayVersion == null && data.engineerFieldRepairRulesVersion === ENGINEER_FIELD_REPAIR_RULES_VERSION &&
         data.aiRocketPriorityRulesVersion !== AI_ROCKET_PRIORITY_RULES_VERSION)
       game.replayVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
+    // Markerless v86 saves predate Engineers auto-using kits while following a vehicle.
+    if (game.replayVersion == null && data.aiRocketPriorityRulesVersion === AI_ROCKET_PRIORITY_RULES_VERSION &&
+        data.engineerEscortRulesVersion !== ENGINEER_ESCORT_RULES_VERSION)
+      game.replayVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
     // Markerless v77 saves predate optional production repeat intents. Pin them
     // before any remaining migrations so their saved battles keep prior rules.
     if (game.replayVersion == null && data.harvesterHomeRulesVersion === HARVESTER_HOME_RULES_VERSION &&
@@ -9118,6 +9199,7 @@ export class Game {
     game.medicEscortRulesVersion = MEDIC_ESCORT_RULES_VERSION;
     game.engineerFieldRepairRulesVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
     game.aiRocketPriorityRulesVersion = AI_ROCKET_PRIORITY_RULES_VERSION;
+    game.engineerEscortRulesVersion = ENGINEER_ESCORT_RULES_VERSION;
     game._aiFieldBunkerBuilt = data.aiFieldBunkerRulesVersion === AI_FIELD_BUNKER_RULES_VERSION &&
       data._aiFieldBunkerBuilt === true || game.buildings.some(building =>
         building.owner === 'enemy' && building.defId === 'bunker');
@@ -9285,6 +9367,9 @@ export class Game {
     const engineerFieldRepairDataEnabled = game._engineerFieldRepairEnabled() &&
       (data.engineerFieldRepairRulesVersion === ENGINEER_FIELD_REPAIR_RULES_VERSION ||
         game.replayVersion != null && game.replayVersion >= ENGINEER_FIELD_REPAIR_RULES_VERSION);
+    const engineerEscortDataEnabled = game._engineerFollowRepairEnabled() &&
+      (data.engineerEscortRulesVersion === ENGINEER_ESCORT_RULES_VERSION ||
+        game.replayVersion != null && game.replayVersion >= ENGINEER_ESCORT_RULES_VERSION);
     const assignedFieldRepairTargets = new Set();
     for (const unit of game.units) {
       unit._recommissioned = game._wreckRecommissionEnabled() && unit._recommissioned === true;
@@ -9381,6 +9466,20 @@ export class Game {
             unit.order = { type: 'idle' }; unit.path = []; unit._pathGoal = null;
             unit._fieldRepairRefillProgress = 0; unit._fieldRepairWaiting = null;
           }
+        } else if (engineerEscortDataEnabled && unit.order?.type === 'follow') {
+          const target = game.getEntity(unit.order.targetId);
+          const valid = unit.hp > 0 && !unit.embarkedIn && unit.fieldRepairKits > 0 && target &&
+            target.hp > 0 && target.owner === unit.owner && !target.embarkedIn &&
+            game.units.includes(target) && game._isFieldRepairVehicle(target) && target.hp < target.maxHp;
+          unit._fieldRepairProgress = valid && Number.isFinite(unit._fieldRepairProgress)
+            ? clamp(unit._fieldRepairProgress, 0, ENGINEER_FIELD_REPAIR_CHANNEL_SECONDS) : 0;
+          unit._fieldRepairLastTargetX = Number.isFinite(unit._fieldRepairLastTargetX)
+            ? clamp(unit._fieldRepairLastTargetX, 0, game.width) : target?.x;
+          unit._fieldRepairLastTargetY = Number.isFinite(unit._fieldRepairLastTargetY)
+            ? clamp(unit._fieldRepairLastTargetY, 0, game.height) : target?.y;
+          unit._fieldRepairWaiting = [null, 'target-moving', 'target-assigned'].includes(unit._fieldRepairWaiting)
+            && valid ? unit._fieldRepairWaiting : null;
+          unit._fieldRepairRefillProgress = 0;
         } else {
           unit._fieldRepairProgress = 0; unit._fieldRepairRefillProgress = 0;
           unit._fieldRepairWaiting = null;

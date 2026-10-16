@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ENGINEER_FIELD_REPAIR_RULES_VERSION } from '../src/game/engine.js';
+import { ENGINEER_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, createCampaignGame, updateCampaign } from '../src/game/campaign.js';
 import { createSoloPlayback, createSoloRecorder, validateSoloReplay, SOLO_REPLAY_VERSION } from '../src/game/replay.js';
 import { SOLO_STEP_SECONDS } from '../src/game/soloClock.js';
@@ -32,7 +32,8 @@ function publicState(game) {
 
 test('Engineer field repair and Workshop kit refill replay deterministically under rules 85', () => {
   assert.equal(ENGINEER_FIELD_REPAIR_RULES_VERSION, 85);
-  assert.equal(SOLO_REPLAY_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION);
+  assert.ok(SOLO_REPLAY_VERSION >= ENGINEER_FIELD_REPAIR_RULES_VERSION,
+    'current replay rules retain the version-85 repair command');
   const game = createCampaignGame(15, 'normal', envelope.seed, 'standard', 'none', 'none', 'none', 'none', null,
     ENGINEER_FIELD_REPAIR_RULES_VERSION);
   game.replayVersion = ENGINEER_FIELD_REPAIR_RULES_VERSION;
@@ -71,6 +72,56 @@ test('Engineer field repair and Workshop kit refill replay deterministically und
   playback.step(clock.completedTicks);
   assert.deepEqual(publicState(playback.game), publicState(game),
     'the repair amount, kit consumption/refill, Workshop cost and orders match playback');
+});
+
+test('Engineer Follow repair is deterministic in rules 87 and absent from archived rules 86', () => {
+  const version = ENGINEER_ESCORT_RULES_VERSION;
+  assert.equal(version, 87);
+  assert.equal(SOLO_REPLAY_VERSION, version);
+  const game = createCampaignGame(15, 'normal', envelope.seed, 'standard', 'none', 'none', 'none', 'none', null,
+    version);
+  game.replayVersion = version;
+  const clock = { completedTicks: 0 };
+  const recorder = createSoloRecorder(game, clock);
+  const advance = () => {
+    game.update(SOLO_STEP_SECONDS);
+    updateCampaign(game, 15, SOLO_STEP_SECONDS, version);
+    clock.completedTicks++;
+  };
+  const engineer = game.getEntity(game.campaignState.engineerId);
+  game.select([engineer.id]);
+  assert.equal(game.issueRecommissionWreck(game.campaignState.wreckId).ok, true);
+  for (let tick = 0; tick < 1200 && !game.campaignState.recommissionedVehicleId && game.status === 'playing'; tick++)
+    advance();
+  const guardian = game.getEntity(game.campaignState.recommissionedVehicleId);
+  assert.ok(guardian, 'the marked Guardian is recommissioned');
+  const damagedHp = guardian.hp;
+  game.select([guardian.id]);
+  assert.equal(game.issueStop().ok, true, 'keep the patient stationary for the support channel');
+  game.select([engineer.id]);
+  assert.equal(game.issueFollow(guardian.id).ok, true);
+  for (let tick = 0; tick < 600 && engineer.fieldRepairKits === 2 && game.status === 'playing'; tick++)
+    advance();
+  assert.equal(engineer.fieldRepairKits, 1, 'one kit is spent after an ordinary five-second channel');
+  assert.equal(guardian.hp, Math.min(guardian.maxHp, damagedHp + 120));
+  assert.deepEqual(engineer.order, { type: 'follow', targetId: guardian.id }, 'repair leaves Follow active');
+  recorder.dispose();
+  assert.deepEqual(recorder.commands.map(command => command.method), [
+    'issueRecommissionWreck', 'issueStop', 'issueFollow',
+  ]);
+
+  const current = createSoloPlayback(envelope, recorder.commands, clock.completedTicks, version);
+  current.step(clock.completedTicks);
+  assert.equal(current.game.getEntity(engineer.id).fieldRepairKits, 1);
+  assert.equal(current.game.getEntity(guardian.id).hp, guardian.hp);
+  assert.deepEqual(current.game.getEntity(engineer.id).order, { type: 'follow', targetId: guardian.id });
+
+  const archived = createSoloPlayback(envelope, recorder.commands, clock.completedTicks, version - 1);
+  archived.step(clock.completedTicks);
+  assert.equal(archived.game.getEntity(engineer.id).fieldRepairKits, 2,
+    'archived v86 Follow does not gain the v87 repair behavior');
+  assert.equal(archived.game.getEntity(guardian.id).hp, damagedHp);
+  assert.deepEqual(archived.game.getEntity(engineer.id).order, { type: 'follow', targetId: guardian.id });
 });
 
 test('field repair commands require rules 85 and strict target/argument shapes', () => {

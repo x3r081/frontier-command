@@ -4193,3 +4193,19 @@ body:has(#end-modal:not(.hidden)),
 .command-priority select:disabled { cursor: default; }
 .command-actions.production-commands .command-priority { display: none; }
 @media (max-width: 670px) { .command-priority select { min-height: 44px; } }
+
+/* Left-slot phone Objects buttons need a left-aligned popover. */
+@media (max-width: 670px) {
+  .battlefield-wrap:not(.tactical-targeting):has(.campaign-tracker:not(.hidden):not(.campaign-tracker-guided)) .battlefield-picker-panel,
+  .game-shell:has(#multiplayer-status:not(.hidden)) .battlefield-wrap:not(.tactical-targeting) .battlefield-picker-panel,
+  .game-shell:has(#relay-dominion:not(.hidden)) .battlefield-wrap:not(.tactical-targeting) .battlefield-picker-panel {
+    left: 0; right: auto;
+  }
+}
+@media (max-width: 670px) {
+  .battlefield-wrap .toast-container .toast:not(:last-child) { display: none; }
+  .battlefield-wrap .toast-container .toast {
+    min-width: 0; max-height: 44px; padding: 6px 8px; overflow: hidden;
+    font-size: 10px; line-height: 1.3;
+  }
+}

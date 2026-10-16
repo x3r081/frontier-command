@@ -6059,21 +6059,32 @@ export class Renderer3D {
       // meshes and one light per shot; only their proportions and tint change.
       const ion=fx.damageType==='ion';
       const explosive=fx.damageType==='explosive';
+      const rocketMissile=fx.sourceDefId==='rocket';
       const siegeShell=fx.sourceDefId==='artillery'||(fx.splash||0)>=1.2;
       const cannon=fx.damageType==='cannon';
       const flame=fx.damageType==='flame';
-      const tint=ion?0xa9fff8:flame?0xffedaa:explosive?0xffb06e:cannon?0xffe0a0:0xf4fbff;
-      const beam=siegeShell
+      const tint=ion?0xa9fff8:flame?0xffedaa:rocketMissile?0xffdf90:explosive?0xffb06e:cannon?0xffe0a0:0xf4fbff;
+      const beam=rocketMissile
+        ?addMesh(g,new THREE.ConeGeometry(0.083,0.36,8),new THREE.MeshBasicMaterial({
+          color:0xffe4a6,toneMapped:false}),0,0.3,0,false)
+        :siegeShell
         ?addMesh(g,new THREE.CylinderGeometry(0.075,0.16,0.48,8),new THREE.MeshBasicMaterial({color:0xffd18a,toneMapped:false}),0,0.3,0,false)
         :addMesh(g,new THREE.SphereGeometry(0.11,8,6),new THREE.MeshBasicMaterial({color:tint,toneMapped:false}),0,0.3,0,false);
-      if(siegeShell) beam.rotation.x=Math.PI/2;
-      beam.scale.set(flame?0.8:siegeShell?1.18:explosive?1.15:1,flame?0.72:explosive?0.9:1,ion?1.3:siegeShell?1.2:explosive?1.7:cannon?1.35:0.9);
+      if(rocketMissile) {
+        // A pointed, forward-facing shell separates antiarmor missiles from
+        // the round explosive shots without adding another per-shot draw.
+        beam.rotation.x=-Math.PI/2;
+        beam.userData.rocketMissileBody=true;
+      } else if(siegeShell) beam.rotation.x=Math.PI/2;
+      beam.scale.set(rocketMissile?0.92:flame?0.8:siegeShell?1.18:explosive?1.15:1,
+        rocketMissile?0.92:flame?0.72:explosive?0.9:1,
+        rocketMissile?1.06:ion?1.3:siegeShell?1.2:explosive?1.7:cannon?1.35:0.9);
       beam.material.depthWrite=false;
-      const trail=addMesh(g,new THREE.CylinderGeometry(0.012,explosive?(siegeShell?0.14:0.09):flame?0.11:0.065,explosive?(siegeShell?1.05:0.78):flame?0.42:ion?0.62:0.48,7),new THREE.MeshBasicMaterial({color:ion?0x6bf5ed:flame?0xff723f:explosive?0xff7a45:cannon?0xffa64e:0xffd98c,transparent:true,opacity:0.76,depthWrite:false,toneMapped:false}),0,0.3,0.34,false);
+      const trail=addMesh(g,new THREE.CylinderGeometry(0.012,explosive?(siegeShell?0.14:0.09):flame?0.11:0.065,explosive?(siegeShell?1.05:0.78):flame?0.42:ion?0.62:0.48,7),new THREE.MeshBasicMaterial({color:ion?0x6bf5ed:flame?0xff723f:rocketMissile?0xff7442:explosive?0xff7a45:cannon?0xffa64e:0xffd98c,transparent:true,opacity:0.76,depthWrite:false,toneMapped:false}),0,0.3,0.34,false);
       trail.rotation.x=Math.PI/2;
       trail.userData.projectileTrail=true;
       trail.scale.set(ion?0.9:flame?0.72:explosive?(siegeShell?1.38:1.16):cannon?0.94:0.62,1,1);
-      const coreTrail=addMesh(g,new THREE.CylinderGeometry(0.008,flame?0.035:0.027,explosive?0.56:flame?0.32:0.45,6),new THREE.MeshBasicMaterial({color:ion?0xd8fffa:flame?0xffd26e:explosive?0xffd09a:cannon?0xfff0c8:0xffffff,transparent:true,opacity:0.9,depthWrite:false,toneMapped:false}),0,0.3,0.29,false);
+      const coreTrail=addMesh(g,new THREE.CylinderGeometry(0.008,flame?0.035:0.027,explosive?0.56:flame?0.32:0.45,6),new THREE.MeshBasicMaterial({color:ion?0xd8fffa:flame?0xffd26e:rocketMissile?0xfff0be:explosive?0xffd09a:cannon?0xfff0c8:0xffffff,transparent:true,opacity:0.9,depthWrite:false,toneMapped:false}),0,0.3,0.29,false);
       coreTrail.rotation.x=Math.PI/2;
       coreTrail.userData.projectileTrail=true;
       // A fine, growing wake connects the shot to its source while it is in

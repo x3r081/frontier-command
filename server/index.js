@@ -8,7 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { Game, UNIT_DEFS, BUILDING_DEFS, SKIRMISH_MAPS, AI_COMMANDER_PROFILES,
   INFANTRY_DIG_IN_RULES_VERSION,
   TARGET_PRIORITY_OPTIONS, MEDIC_ESCORT_RULES_VERSION, ENGINEER_FIELD_REPAIR_RULES_VERSION,
-  AI_ROCKET_PRIORITY_RULES_VERSION,
+  ENGINEER_ESCORT_RULES_VERSION,
   aiCommanderProfileForSeed } from '../src/game/engine.js';
 import { CAMPAIGN_MISSIONS, CAMPAIGN_DOCTRINES, CAMPAIGN_FIELD_ORDERS, CAMPAIGN_CARRYOVERS,
   CAMPAIGN_SUPPLIES, CAMPAIGN_ROUTE_PAYOFFS, IRON_RECLAIMED_RULES_VERSION,
@@ -33,7 +33,7 @@ const now = () => Date.now();
 const SCORE_VERSION = SOLO_REPLAY_VERSION;
 // Multiplayer rating seasons are independent of solo replay versions.
 // Increment only when ranked multiplayer balance or rules change.
-const RANKED_SEASON = ENGINEER_FIELD_REPAIR_RULES_VERSION;
+const RANKED_SEASON = ENGINEER_ESCORT_RULES_VERSION;
 // Version 36 changed both solo modes through faction field actions. Version 42
 // changed Last Light's victory rule; version 43 changes Ashes in Transit and skirmish AI.
 // Version 44 changes Canyon Ring variant 1 terrain in solo and ranked multiplayer.
@@ -89,12 +89,12 @@ const RANKED_SEASON = ENGINEER_FIELD_REPAIR_RULES_VERSION;
 // across solo and ranked play, advancing every solo floor and ranked season.
 // Version 84 adds Counterbattery as a bonus sequel; only its campaign board
 // requires v84, while earlier campaign/skirmish boards and multiplayer stay put.
-// Version 85 adds Engineer Field Repair, advancing all solo floors and ranked play.
-// Version 86 changes visibility-gated skirmish Rocket priorities only; campaign
-// and ranked behavior remain at the v85 floor/season.
-const CAMPAIGN_SCORE_FLOOR = ENGINEER_FIELD_REPAIR_RULES_VERSION;
-const SKIRMISH_SCORE_FLOOR = AI_ROCKET_PRIORITY_RULES_VERSION;
-const EASY_SKIRMISH_SCORE_FLOOR = AI_ROCKET_PRIORITY_RULES_VERSION;
+// Version 85 adds Engineer Field Repair; v86 changes visibility-gated skirmish
+// Rocket priorities; v87 adds Engineer escort repairs in every solo mode and
+// multiplayer. The latest combat heal advances all comparison floors and season.
+const CAMPAIGN_SCORE_FLOOR = ENGINEER_ESCORT_RULES_VERSION;
+const SKIRMISH_SCORE_FLOOR = ENGINEER_ESCORT_RULES_VERSION;
+const EASY_SKIRMISH_SCORE_FLOOR = ENGINEER_ESCORT_RULES_VERSION;
 const comparableRankedScore = score => Number.isInteger(score.scoreVersion) &&
   (score.mode === 'skirmish' ? score.scoreVersion >=
       (score.difficulty === 'easy' ? EASY_SKIRMISH_SCORE_FLOOR : SKIRMISH_SCORE_FLOOR) &&

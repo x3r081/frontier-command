@@ -87,6 +87,21 @@ test('projectile wake grows from launch point and fades with the shot',()=>{
     'the wake appears after the enemy firing position is actually visible');
 });
 
+test('Rocket Trooper missiles get a pointed body without adding Eco draws',()=>{
+  const renderer=Object.create(Renderer3D.prototype);
+  renderer.quality='eco';
+  renderer.effectGroup=new THREE.Group();
+  const rocket=renderer._makeEffect({id:'rocket-shot',type:'projectile',sourceDefId:'rocket',
+    damageType:'explosive',splash:0.5,x:0,y:0,tx:8,ty:0,ttl:1,maxTtl:1});
+  const generic=renderer._makeEffect({id:'generic-shot',type:'projectile',sourceDefId:'buggy',
+    damageType:'explosive',splash:0.5,x:0,y:0,tx:8,ty:0,ttl:1,maxTtl:1});
+  const body=rocket.children.find(child=>child.userData.rocketMissileBody);
+  assert.ok(body?.geometry instanceof THREE.ConeGeometry,'the antiarmor shot has a directional pointed shell');
+  assert.equal(body.rotation.x,-Math.PI/2,'the cone tip faces the projectile heading');
+  assert.equal(rocket.children.length,generic.children.length,'the distinct shell reuses the existing projectile draw budget');
+  assert.equal(rocket.userData.projectileWake,undefined,'Eco keeps its existing bounded no-wake path');
+});
+
 async function authoredAnimation(defId,file,building=false,faction='aegis',compact=false,modelKey=defId) {
   const bytes=await readFile(new URL(`../public/assets/models/${file}`,import.meta.url));
   const payload=bytes.buffer.slice(bytes.byteOffset,bytes.byteOffset+bytes.byteLength);
